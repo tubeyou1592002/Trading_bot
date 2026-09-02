@@ -5,6 +5,7 @@ import requests
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
 from models.order import Order
+from models.trading_state import UNVERIFIED, TradingState
 
 from .base import Broker
 from .device_info import ExternalDeviceInfoProvider
@@ -51,6 +52,35 @@ class AgaahBroker(Broker):
     @property
     def name(self):
         return "آگاه"
+
+    # =================================================
+    # Trading State
+    # =================================================
+
+    def get_trading_state(
+        self,
+        nsc_id: str,
+    ) -> TradingState:
+        """
+        پیاده‌سازی صریح برای آگاه.
+
+        منبع رسمی وضعیت معاملاتی نماد در API آگاه هنوز
+        به‌صورت کامل شناسایی و تأیید نشده است (طبق
+        AI_PROJECT_MEMORY و DECISIONS 009). به‌جای
+        حدس زدن یا فراخوانی endpoint نامشخص، صریحاً
+        `UNVERIFIED` برگردانده می‌شود تا موتور سفارش
+        به‌صورت ایمن سفارش را بلاک کند.
+
+        این یک تصمیم آگاهانه است، نه یک پیش‌فرض
+        پنهان از لایه Broker پایه.
+        """
+
+        if not nsc_id:
+            raise ValueError(
+                "nsc_id نمی‌تواند خالی باشد."
+            )
+
+        return UNVERIFIED
 
     # =================================================
     # Helpers

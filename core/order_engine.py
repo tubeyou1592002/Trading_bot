@@ -7,6 +7,10 @@ from models.order_validator import (
     OrderValidationError,
     OrderValidator,
 )
+from models.trading_state import (
+    TradingState,
+    TradingStateUnavailable,
+)
 
 
 @dataclass
@@ -65,10 +69,53 @@ class OrderEngine:
         # ---------------------------------------------
         # Trading State
         # ---------------------------------------------
+        # فقط خطای واقعی «منبع در دسترس نیست» بلاک
+        # می‌شود. خطاهای برنامه‌نویسی (AttributeError،
+        # TypeError، NotImplementedError و ...) عمداً
+        # منتشر می‌شوند تا باگ‌ها پنهان نشوند.
 
-        state = broker.get_trading_state(
-            instrument.nsc_id
-        )
+        try:
+            state = broker.get_trading_state(
+                instrument.nsc_id
+            )
+        except TradingStateUnavailable as exc:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=broker.name,
+                message=(
+                    "منبع وضعیت معاملاتی نماد در دسترس "
+                    f"نیست: {exc}"
+                ),
+            )
+
+        if not isinstance(state, TradingState):
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=broker.name,
+                message=(
+                    "broker.get_trading_state مقدار نامعتبر "
+                    "برگرداند."
+                ),
+            )
+
+        if not state.is_verified:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="UNVERIFIED",
+                order=order,
+                broker_name=broker.name,
+                message=(
+                    "وضعیت معاملاتی نماد هنوز از منبع معتبر "
+                    "تأیید نشده است؛ ارسال سفارش بلاک شد."
+                ),
+            )
 
         if not state.is_order_entry_allowed:
             return OrderExecutionResult(
@@ -145,6 +192,31 @@ class OrderEngine:
 
         if not prepared.success:
             return prepared
+
+        # ---------------------------------------------
+        # Engine-level safety
+        # ---------------------------------------------
+        # حتی اگر broker قفل داخلی داشته باشد، موتور نیز
+        # از ارسال واقعی بدون فعال‌سازی صریح جلوگیری می‌کند.
+
+        if live:
+            enabled = getattr(
+                broker,
+                "live_trading_enabled",
+                False,
+            )
+            if not enabled:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "ارسال زنده سفارش غیرفعال است "
+                        "(live_trading_enabled=False)."
+                    ),
+                )
 
         try:
             broker_result = broker.place_order(
