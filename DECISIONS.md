@@ -652,3 +652,44 @@ This provides a reliable recovery point for the current project.
 
 
 
+\---
+
+
+
+## Decision 017 — Trading State Policy
+
+
+
+**Status:** Accepted
+
+
+
+A trading state is considered `UNVERIFIED` until it is confirmed by a verified, authoritative source for the given broker.
+
+`UNVERIFIED` is never treated as tradable.
+
+
+
+### Policy
+
+
+
+* The OrderEngine must safely block order submission whenever the trading state for the target symbol is `UNVERIFIED`.
+
+* Each broker must explicitly implement `Broker.get_trading_state(nsc_id)`. There is no silent default at the abstract layer; a broker that does not implement the contract cannot be instantiated.
+
+* The base `Broker` interface must not provide a fallback that could hide a missing implementation. A newly added broker is required to make an explicit, documented choice about how it reports trading state.
+
+* For Agah specifically, the implementation continues to return `UNVERIFIED` as the intentional, documented behavior until a real, verified tradability source is identified. No Agah endpoint, field, header, or status is invented in the meantime.
+
+* When a broker has a verified source but that source is currently unavailable (for example, a transient network or service failure), it must signal the condition narrowly via `models.trading_state.TradingStateUnavailable`. The engine catches only that narrow case for safe blocking and lets programming errors propagate.
+
+
+
+### Reason
+
+
+
+A wrongly-allowed order has direct financial consequences, while a wrongly-blocked order only delays execution. The safe default is therefore to refuse to send until the tradability of a symbol is explicitly verified.
+
+Centralizing this rule in a single decision prevents future agents from "helpfully" weakening the default to `VERIFIED_TRADABLE` or from inventing an undocumented Agah endpoint to bypass the `UNVERIFIED` return.
