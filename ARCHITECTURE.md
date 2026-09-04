@@ -282,15 +282,47 @@ Responsibilities include concepts such as:
 
 \* execution orchestration
 
-\* scheduling
-
 \* coordinating broker calls
 
 \* handling execution results
 
+\* resolving instrument identity through an abstract `InstrumentProvider`
 
 
-The core layer should operate using domain-level concepts rather than raw broker HTTP details.
+
+The core layer provides two entry points for order execution:
+
+
+
+\* `OrderEngine.execute(...)` — accepts a fully resolved `BrokerInstrument` and an `Order`; performs validation, trading-state check, and dry-run/live dispatch.
+
+\* `OrderEngine.execute_by_ins_code(...)` — accepts a TSETMC `ins_code` plus an `InstrumentProvider`; calls `provider.get_instrument(ins_code)` to resolve the `BrokerInstrument` and then delegates to `execute(...)`. The orchestration belongs to the core layer, not to a broker adapter, so the core stays broker-independent (Decision 003).
+
+
+
+Pipeline of `execute_by_ins_code`:
+
+
+
+```text
+
+ins_code
+
+    → InstrumentProvider.get_instrument(ins_code)
+
+    → (Instrument, BrokerInstrument)
+
+    → nsc_id consistency check (no overwrite)
+
+    → OrderEngine.execute(...)  (existing)
+
+    → Broker.place\_order(...)
+
+```
+
+
+
+If the provider raises `InstrumentLookupError`, the engine returns `OrderExecutionResult` with `mode="BLOCKED"` and a message of the form `Instrument lookup failed: {detail}`. If `order.nsc_id` does not match the provider-resolved `nsc_id`, the engine returns `mode="BLOCKED"` without silently overwriting `order.nsc_id`.
 
 
 
@@ -391,6 +423,28 @@ Broker
 
 
 Exact method names may differ from this conceptual representation.
+
+
+
+In addition to `Broker`, the project defines a separate abstraction, `InstrumentProvider`, for resolving the broker-side identifier of an instrument from a TSETMC `ins_code`:
+
+
+
+```text
+
+InstrumentProvider
+
+&#x20;├── get_instrument(ins_code)   -> (Instrument, BrokerInstrument)
+
+&#x20;├── get_nsc_id(ins_code)        -> Optional[str]
+
+&#x20;└── refresh_cache()
+
+```
+
+`InstrumentProvider` lives next to `Broker` in `brokers/base.py`. The contract failure type is `InstrumentLookupError`, defined in the same module (Decision 019). Concrete providers (e.g. `AgaahInstrumentProvider`) raise this exception on lookup failure; the core engine catches it by name and never imports it from a concrete provider.
+
+`OrderEngine.execute_by_ins_code(...)` depends on `InstrumentProvider` as an abstract type, not on any concrete implementation. This is what allows the core engine to remain broker-independent (Decision 003) while still being able to resolve an `ins_code` to a broker-specific `nsc_id` before submitting an order.
 
 
 
@@ -756,7 +810,49 @@ The corresponding Agah identifier must be resolved through verified mapping logi
 
 
 
-Conceptual flow:
+Conceptual flow for the `ins_code`-driven path (Milestone 2):
+
+
+
+```text
+
+ins_code
+
+&#x20;      │
+
+&#x20;      ▼
+
+InstrumentProvider.get_instrument(ins_code)
+
+&#x20;      │
+
+&#x20;      ▼
+
+(Instrument, BrokerInstrument)
+
+&#x20;      │
+
+&#x20;      ▼
+
+OrderEngine.execute_by_ins_code(...)
+
+&#x20;      │ (delegates internally)
+
+&#x20;      ▼
+
+OrderEngine.execute(...)
+
+&#x20;      │
+
+&#x20;      ▼
+
+Broker.place_order(order, live=live)
+
+```
+
+
+
+Conceptual flow (legacy / fully-resolved path):
 
 
 

@@ -66,6 +66,16 @@ The project currently has:
 
 \* Local Git repository with an initial baseline commit.
 
+\* `AgaahInstrumentProvider` for safe `TSETMC insCode → Agah nscId` mapping (Decision 018).
+
+\* `InstrumentLookupError` as the official `InstrumentProvider` contract exception in `brokers/base.py` (Decision 019).
+
+\* `OrderEngine.execute_by_ins_code(...)` that resolves `ins_code` through an `InstrumentProvider` and delegates to the existing `execute(...)` (commit 91bd2b4).
+
+\* Integration tests covering the `Provider → OrderEngine` flow end-to-end (`test_engine_provider_integration.py`, 4/4 PASS).
+
+\* Interactive scripts (`test_order_engine.py`, `test_order_dry_run.py`, `test_tsetmc_to_agah.py`) migrated to the new `InstrumentProvider` path; legacy `get_instrument_by_instrument_id(...)` no longer used in these scripts (commit 1a0d2d4).
+
 
 
 \---

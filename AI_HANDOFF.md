@@ -221,7 +221,7 @@ base-data/csv در آگاه شامل tseId نیست و برای نگاشت مس�
 6. Current Implementation
 فایل‌های مهم و مسئولیت‌ها
 فایل	مسئولیت
-brokers/base.py	کلاس‌های انتزاعی Broker و InstrumentProvider
+brokers/base.py	کلاس‌های انتزاعی Broker، InstrumentProvider و InstrumentLookupError (طبق Decision 019)
 brokers/agaah/__init__.py	صادرات AgaahBroker, AgaahInstrumentProvider, InstrumentLookupError
 brokers/agaah/broker.py	کلاس AgaahBroker برای ارتباط با API آگاه
 brokers/agaah/instrument_provider.py	کلاس AgaahInstrumentProvider برای نگاشت insCode → nscId
@@ -229,8 +229,9 @@ market/tsetmc.py	کلاس TSETMC برای دریافت اطلاعات نماده
 market/symbol_resolver.py	حل‌کننده‌ی نماد با نرمال‌سازی فارسی
 models/instrument.py	مدل Instrument
 models/broker_instrument.py	مدل BrokerInstrument
-core/order_engine.py	هسته‌ی ثبت سفارش
+core/order_engine.py	هسته‌ی ثبت سفارش؛ شامل `execute_by_ins_code(...)` که insCode را از طریق InstrumentProvider به nscId تبدیل می‌کند و سپس به `execute(...)` موجود delegate می‌کند
 test_instrument_provider.py	تست‌های واحد AgaahInstrumentProvider
+test_engine_provider_integration.py	تست‌های واحد end-to-end: AgaahInstrumentProvider → OrderEngine.execute_by_ins_code
 منطق AgaahInstrumentProvider.get_nsc_id(ins_code)
 اگر ins_code در _nsc_cache موجود است، برگردان.
 
@@ -254,9 +255,11 @@ symbol = instrument.symbol.
 تست	نتیجه
 test_instrument_provider.py	۱۱/۱۱ پاس
 test_engine_interface.py	۱۷/۱۷ پاس
+test_engine_provider_integration.py	۴/۴ پاس
 test_order_build.py	پاس
 test_broker_dry_run.py	پاس
 Smoke test (main.py import)	پاس
+جمع تست‌های واحد آفلاین	۳۲/۳۲ پاس
 موارد تأییدشده
 منطق tseId == insCode به‌درستی کار می‌کند.
 
@@ -270,10 +273,18 @@ insCode هرگز مستقیماً به broker.get_instrument() داده نمی�
 
 خطاهای شبکه به InstrumentLookupError تبدیل می‌شوند.
 
+OrderEngine.execute_by_ins_code می‌تواند insCode را از طریق AgaahInstrumentProvider به BrokerInstrument معتبر resolve کند.
+
+عدم تطابق nscId بین Order و provider-resolved، بدون overwrite، به‌صورت BLOCKED بلاک می‌شود.
+
+خطای InstrumentLookupError در provider، به‌صورت BLOCKED با پیام «Instrument lookup failed: ...» منتشر می‌شود.
+
+مسیر legacy broker.get_instrument_by_instrument_id(...) در flow جدید فراخوانی نمی‌شود.
+
 8. Known Issues / Risks
 get_trading_state(): فعلاً برای آگاه UNVERIFIED برمی‌گرداند (طبق Decision 017). نیاز به پیاده‌سازی واقعی دارد.
 
-OrderEngine: هنوز با AgaahInstrumentProvider یکپارچه نشده است.
+OrderEngine: یکپارچه‌سازی با AgaahInstrumentProvider انجام شده (execute_by_ins_code). get_trading_state برای آگاه همچنان UNVERIFIED است.
 
 سفارش واقعی: فعلاً live_trading_enabled = False است و باید با تأیید شما فعال شود.
 
@@ -301,22 +312,22 @@ OrderEngine: هنوز با AgaahInstrumentProvider یکپارچه نشده اس�
 Decision 018 در DECISIONS.md: این تصمیم نباید بدون شواهد جدید حذف یا تغییر کند.
 
 10. Current Task / Milestone
-ما در انتهای فاز ۴ (نگاشت شناسه‌ها) قرار داریم و در آستانه‌ی فاز ۵ (یکپارچه‌سازی Order Engine) هستیم.
+Milestone 3 completed — integration of OrderEngine with InstrumentProvider and migration of interactive scripts.
 
-Milestone فعلی: تکمیل AgaahInstrumentProvider و تأیید نگاشت.
+جزئیات:
+* Milestone 1: پیاده‌سازی و تأیید AgaahInstrumentProvider (commit 2020f92).
+* Milestone 2: افزودن OrderEngine.execute_by_ins_code و رسمی‌سازی InstrumentLookupError (Decision 019، commit 91bd2b4).
+* Milestone 3: مهاجرت اسکریپت‌های تعاملی (test_order_engine.py، test_order_dry_run.py، test_tsetmc_to_agah.py) به مسیر InstrumentProvider (commit 1a0d2d4).
 
-وضعیت: ✅ کامل و commit شده (2020f92).
+وضعیت فعلی: ✅ کامل و commit شده.
 
 11. Next Step
-گام منطقی بعدی، یکپارچه‌سازی AgaahInstrumentProvider با OrderEngine است تا:
+Milestone 4 — اتصال BrokerManager و main.py به InstrumentProvider.
 
-OrderEngine بتواند nscId را از insCode دریافت کند.
-
-سفارش‌ها (ابتدا در حالت dry-run) ثبت شوند.
-
-سپس get_trading_state برای آگاه پیاده‌سازی شود تا وضعیت معاملاتی واقعی بررسی شود.
-
-پیشنهاد من: ابتدا OrderEngine را اصلاح کنیم تا از InstrumentProvider استفاده کند و سپس get_trading_state را تکمیل کنیم.
+گام منطقی بعدی:
+* ثبت یک InstrumentProvider متناظر با هر broker در BrokerManager.
+* به‌روزرسانی main.py (یا لایه‌ی UI) برای استفاده از مسیر ins_code → AgaahInstrumentProvider → OrderEngine.execute_by_ins_code.
+* در ادامه: پیاده‌سازی واقعی get_trading_state برای آگاه (طبق Decision 017) پس از شناسایی منبع معتبر.
 
 12. Important Context for Future AI
 تاریخچه‌ی تصمیمات حیاتی
@@ -343,13 +354,11 @@ endpointهای کلیدی:
 فایل‌های investigate_mapping_v*.py و mapping_v*_results.json برای آزمایش و تأیید روش‌های مختلف استفاده شدند و اکنون حذف شده‌اند (به .gitignore اضافه شده‌اند).
 
 13. Checkpoint Metadata
-Date: 1405/06/20 (2026-09-04)
+Date: 1405/06/13 (2026-09-04)
 
-Project State: آماده برای فاز بعدی (یکپارچه‌سازی Order Engine)
+Project State: آماده برای Milestone 4 (اتصال BrokerManager و main.py).
 
-Last Completed Milestone: پیاده‌سازی و تأیید AgaahInstrumentProvider (commit 2020f92)
+Last Completed Milestone: Milestone 3 — integration of OrderEngine with InstrumentProvider و مهاجرت اسکریپت‌های تعاملی (commits 91bd2b4 و 1a0d2d4).
 
-Current Milestone: یکپارچه‌سازی OrderEngine و get_trading_state
-
-Next Action: اصلاح OrderEngine برای استفاده از InstrumentProvider و سپس پیاده‌سازی get_trading_state برای آگاه
+Next Action: اتصال BrokerManager و main.py به InstrumentProvider در Milestone 4.
 
