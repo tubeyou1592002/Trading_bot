@@ -744,3 +744,36 @@ The first search result is never blindly selected.
 **Evidence:**
 
 `mapping_v6_results.json` (7/7 symbols matched).
+
+---
+
+## Decision 019 — InstrumentLookupError as InstrumentProvider Contract
+
+**Status:** Accepted
+
+**Decision:**
+
+`InstrumentLookupError` is the official exception of the `InstrumentProvider` contract and is defined in `brokers/base.py` next to the `InstrumentProvider` ABC.
+
+All concrete providers (including `AgaahInstrumentProvider`) and any consumer of the provider (including `core.order_engine.OrderEngine`) must use this single exception class.
+
+A concrete provider must not define its own local `InstrumentLookupError` class. A consumer must not import `InstrumentLookupError` from a concrete provider module.
+
+**Reason:**
+
+* `InstrumentProvider` is a shared abstraction that the core engine depends on. The engine catches the failure of `provider.get_instrument(ins_code)` to block order submission safely.
+* The exception type is part of the contract; if each provider defines its own class, the engine would either need a fragile `isinstance` check on the concrete provider or a runtime import of the provider module — both of which break broker independence (Decision 003).
+* Defining `InstrumentLookupError` in `brokers/base.py` keeps the contract symmetric: the abstract provider and its abstract failure type live in the same module.
+
+**Constraints:**
+
+* The exception is a plain `Exception` subclass with no required fields beyond the standard message.
+* Providers may include diagnostic details in the message; consumers must not parse the message.
+* The exception does not carry financial intent and is purely a "lookup failed" signal; it must not be used to communicate tradability or trading state (those are governed by Decision 017).
+
+**Evidence:**
+
+* `brokers/base.py` defines `InstrumentLookupError`.
+* `brokers/agaah/instrument_provider.py` re-uses it and no longer defines a local one.
+* `core/order_engine.py` imports it from `brokers.base`, never from a concrete provider.
+* `test_engine_provider_integration.py` and `test_instrument_provider.py` exercise the contract end-to-end.

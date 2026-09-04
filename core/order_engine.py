@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
@@ -11,6 +12,14 @@ from models.trading_state import (
     TradingState,
     TradingStateUnavailable,
 )
+
+if TYPE_CHECKING:
+    from brokers.base import InstrumentProvider
+else:
+    from brokers.base import (
+        InstrumentLookupError,
+        InstrumentProvider,
+    )
 
 
 @dataclass
@@ -31,6 +40,131 @@ class OrderEngine:
 
     def __init__(self):
         self.validator = OrderValidator()
+
+    def execute_by_ins_code(
+        self,
+        broker,
+        provider: "InstrumentProvider",
+        ins_code: str,
+        order: Order,
+        account: Account,
+        live: bool = False,
+    ) -> OrderExecutionResult:
+        """
+        اجرای سفارش با دریافت `ins_code` به‌جای BrokerInstrument.
+
+        Pipeline:
+
+            ins_code
+                -> InstrumentProvider.get_instrument(ins_code)
+                -> (Instrument, BrokerInstrument)
+                -> بررسی nsc_id (بدون overwrite)
+                -> OrderEngine.execute(...)
+
+        اگر provider نتواند Instrument را resolve کند
+        (InstrumentLookupError)، نتیجه BLOCKED با پیام
+        ``Instrument lookup failed: {detail}`` برگردانده
+        می‌شود و هیچ سفارشی ارسال نمی‌شود.
+
+        اگر order.nsc_id با provider-resolved nsc_id
+        یکسان نباشد، نتیجه BLOCKED می‌شود و مقدار
+        order.nsc_id تغییر نمی‌کند (overwrite مجاز نیست).
+
+        این متد هیچ وابستگی Agah-specific ندارد و فقط
+        با abstraction `InstrumentProvider` کار می‌کند.
+        """
+
+        if broker is None:
+            raise ValueError(
+                "کارگزاری مشخص نشده است."
+            )
+
+        if provider is None:
+            raise ValueError(
+                "InstrumentProvider مشخص نشده است."
+            )
+
+        if not isinstance(order, Order):
+            raise TypeError(
+                "order باید از نوع Order باشد."
+            )
+
+        if not isinstance(account, Account):
+            raise TypeError(
+                "account باید از نوع Account باشد."
+            )
+
+        # ---------------------------------------------
+        # Step 1: Resolve instrument via provider
+        # ---------------------------------------------
+
+        try:
+            _, broker_instrument = (
+                provider.get_instrument(ins_code)
+            )
+        except InstrumentLookupError as exc:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=getattr(
+                    broker, "name", None
+                ),
+                message=(
+                    f"Instrument lookup failed: {exc}"
+                ),
+            )
+
+        if not isinstance(
+            broker_instrument,
+            BrokerInstrument,
+        ):
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=getattr(
+                    broker, "name", None
+                ),
+                message=(
+                    "InstrumentProvider خروجی نامعتبر "
+                    "برگرداند."
+                ),
+            )
+
+        # ---------------------------------------------
+        # Step 2: nsc_id consistency check (no overwrite)
+        # ---------------------------------------------
+
+        if order.nsc_id != broker_instrument.nsc_id:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=getattr(
+                    broker, "name", None
+                ),
+                message=(
+                    "nscId سفارش با nscId حل‌شده توسط "
+                    "InstrumentProvider یکسان نیست؛ "
+                    "overwrite مجاز نیست."
+                ),
+            )
+
+        # ---------------------------------------------
+        # Step 3: Delegate to existing execute()
+        # ---------------------------------------------
+
+        return self.execute(
+            broker=broker,
+            order=order,
+            instrument=broker_instrument,
+            account=account,
+            live=live,
+        )
 
     def prepare(
         self,

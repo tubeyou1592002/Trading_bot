@@ -6,6 +6,21 @@ from models.instrument import Instrument
 from models.trading_state import TradingState
 
 
+class InstrumentLookupError(Exception):
+    """
+    استثنای رسمی قرارداد InstrumentProvider.
+
+    زمانی پرتاب می‌شود که provider نتواند رابطه‌ی بین
+    TSETMC `ins_code` و شناسه‌ی کارگزاری را با اطمینان
+    تعیین کند.
+
+    این استثنا در لایه broker interface تعریف شده است
+    تا هم providerهای مختلف (آگاه، آینده، ...) و هم
+    OrderEngine بتوانند بدون وابستگی به یکدیگر به آن
+    ارجاع دهند.
+    """
+
+
 class Broker(ABC):
 
     @property

@@ -3,21 +3,10 @@ from typing import Dict, Optional, Tuple
 import requests
 
 from brokers.agaah.broker import AgaahBroker
-from brokers.base import InstrumentProvider
+from brokers.base import InstrumentLookupError, InstrumentProvider
 from market.tsetmc import TSETMC
 from models.broker_instrument import BrokerInstrument
 from models.instrument import Instrument
-
-
-class InstrumentLookupError(Exception):
-    """
-    زمانی پرتاب می‌شود که provider نتواند رابطه‌ی بین
-    TSETMC `ins_code` و Agah `nscId` را با اطمینان
-    تعیین کند.
-
-    این استثنا نشان می‌دهد که mapping تأیید نشده است و
-    نباید از آن برای ارسال سفارش استفاده شود.
-    """
 
 
 class AgaahInstrumentProvider(InstrumentProvider):
