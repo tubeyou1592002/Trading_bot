@@ -1,6 +1,9 @@
 from getpass import getpass
 
-from brokers.agaah import AgaahBroker
+from brokers.agaah import (
+    AgaahBroker,
+    AgaahInstrumentProvider,
+)
 from market.symbol_resolver import SymbolResolver
 
 
@@ -154,18 +157,18 @@ def main():
     print("LOGIN SUCCESS")
 
     # ---------------------------------------------
-    # Agaah Instrument
+    # Agaah Instrument (via InstrumentProvider)
     # ---------------------------------------------
+    # مسیر امن: ins_code (از TSETMC) -> Provider
+    # -> نماد آگاه با تأیید tseId.
+    # این اسکریپت sanity-check mapping است.
 
-    print()
-    print(
-        "در حال دریافت اطلاعات نماد از آگاه..."
-    )
+    provider = AgaahInstrumentProvider(broker)
 
     try:
-        broker_instrument = (
-            broker.get_instrument_by_instrument_id(
-                instrument.instrument_id
+        _, broker_instrument = (
+            provider.get_instrument(
+                instrument.ins_code
             )
         )
 

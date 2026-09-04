@@ -1,6 +1,9 @@
 from getpass import getpass
 
-from brokers.agaah import AgaahBroker
+from brokers.agaah import (
+    AgaahBroker,
+    AgaahInstrumentProvider,
+)
 from core.order_engine import OrderEngine
 from market.symbol_resolver import SymbolResolver
 from models.order import BUY, Order
@@ -101,14 +104,29 @@ def main():
     print("LOGIN SUCCESS")
 
     # =================================================
-    # Broker Instrument
+    # Instrument Provider
     # =================================================
+    # ins_code (از TSETMC) تنها ورودی مورد نیاز است.
+    # nsc_id توسط provider و از مسیر ایمن
+    # symbol + tseId verification حل می‌شود.
 
-    broker_instrument = (
-        broker.get_instrument_by_instrument_id(
-            instrument.instrument_id
+    provider = AgaahInstrumentProvider(broker)
+
+    try:
+        _, broker_instrument = (
+            provider.get_instrument(
+                instrument.ins_code
+            )
         )
-    )
+
+    except Exception as exc:
+        print(
+            "Instrument Lookup Error:",
+            type(exc).__name__,
+            ":",
+            exc,
+        )
+        return
 
     # =================================================
     # Account
@@ -145,10 +163,11 @@ def main():
 
     engine = OrderEngine()
 
-    result = engine.execute(
+    result = engine.execute_by_ins_code(
         broker=broker,
+        provider=provider,
+        ins_code=instrument.ins_code,
         order=order,
-        instrument=broker_instrument,
         account=account,
         live=False,
     )

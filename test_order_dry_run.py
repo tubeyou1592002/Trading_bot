@@ -1,6 +1,9 @@
 from getpass import getpass
 
-from brokers.agaah import AgaahBroker
+from brokers.agaah import (
+    AgaahBroker,
+    AgaahInstrumentProvider,
+)
 from market.symbol_resolver import SymbolResolver
 from models.order import BUY, SELL, Order
 from models.order_validator import (
@@ -166,11 +169,15 @@ def main():
     # =================================================
     # 4. Agaah instrument information
     # =================================================
+    # مسیر امن: ins_code (از TSETMC) -> Provider
+    # -> نماد آگاه با تأیید tseId
+
+    provider = AgaahInstrumentProvider(broker)
 
     try:
-        broker_instrument = (
-            broker.get_instrument_by_instrument_id(
-                instrument.instrument_id
+        _, broker_instrument = (
+            provider.get_instrument(
+                instrument.ins_code
             )
         )
     except Exception as exc:
