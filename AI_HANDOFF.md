@@ -1,842 +1,355 @@
-\# Trading Bot — AI Handoff
+# PROJECT STATE
 
+## 1. Project Goal
 
+هدف اصلی پروژه، ساخت یک ربات معاملاتی پایتونی برای بازار سرمایه ایران است که بتواند:
 
-\## Purpose
+- به چند کارگزاری (Broker) متصل شود.
+- اطلاعات نمادها را از TSETMC دریافت کند.
+- نگاشت صحیح بین شناسه‌های TSETMC و کارگزاری‌ها (به‌ویژه آگاه) را انجام دهد.
+- سفارش‌ها را با دقت بالا (زمان‌بندی دقیق) و به‌صورت ایمن (با تأکید بر `dry-run`) ثبت کند.
+- وضعیت معاملاتی نمادها را بررسی و از ثبت سفارش در شرایط نامطمئن جلوگیری کند.
 
+---
 
+## 2. Current Architecture
 
-This file is the current handoff document for any AI assistant or coding agent taking over the Trading Bot project.
-
-
-
-It must always describe the current project state, the last completed work, known issues, and the next intended step.
-
-
-
-\---
-
-
-
-\# 1. Current Project State
-
-
-
-The project is an actively developed Python trading bot for the Iranian stock market.
-
-
-
-The project is currently in the \*\*development and API-integration stage\*\*.
-
-
-
-It is \*\*NOT production-ready\*\*.
-
-
-
-Real trading must not be enabled casually.
-
-
-
-\---
-
-
-
-\# 2. Repository State
-
-
-
-Local Git repository has been initialized.
-
-
-
-Current branch:
-
-
+معماری فعلی بر اساس لایه‌های زیر طراحی شده است:
 
 ```text
+UI / Application (main.py)
+    ↓
+Symbol Resolver (market/symbol_resolver.py)
+    ↓
+Instrument (models/instrument.py)
+    ↓
+Order Engine (core/order_engine.py)
+    ↓
+Broker Interface (brokers/base.py)
+    ↓
+Broker Adapter (brokers/agaah/broker.py)
+    ↓
+Broker API (Agah API)
+اجزای اصلی
+brokers/: شامل پیاده‌سازی بروکرها. برای آگاه، یک پکیج جداگانه (agaah/) با فایل‌های broker.py (کلاس AgaahBroker) و instrument_provider.py (کلاس AgaahInstrumentProvider) ایجاد شده است.
 
-master
+core/: شامل منطق اصلی معاملات (order_engine.py).
 
-```
+market/: شامل ارتباط با TSETMC (tsetmc.py) و resolver نمادها (symbol_resolver.py).
 
+models/: مدل‌های داده‌ای (Instrument, BrokerInstrument, Order, ...).
 
+input/: مدیریت ورودی کیبورد فارسی.
 
-Baseline commit:
+3. Completed Work
+الف) زیرساخت و کنترل نسخه
+Git راه‌اندازی شد و baseline اولیه (f600a6c) ثبت شد.
 
+.gitignore برای排除 فایل‌های حساس و موقتی به‌روز شد.
 
+ب) مستندسازی
+تمام فایل‌های مستندات پروژه (AI_PROJECT_MEMORY.md, PROJECT_CONTEXT.md, ARCHITECTURE.md, DECISIONS.md, AGENT_RULES.md, AI_HANDOFF.md, BUG_HISTORY.md) ایجاد و تکمیل شدند.
 
-```text
+ج) پیاده‌سازی اولیه
+کلاس TSETMC برای جستجو و دریافت اطلاعات نمادها.
 
-f600a6c
+کلاس AgaahBroker برای ارتباط با API آگاه (احراز هویت، دریافت کپچا، موجودی، ثبت سفارش).
 
-Initial project baseline
+مدل‌های داده (Instrument, BrokerInstrument, Order و ...).
 
-```
+OrderEngine اولیه.
 
+د) حل مسئله‌ی نگاشت TSETMC insCode → Agah nscId
+چندین اسکریپت تشخیصی (investigate_mapping_v*.py) برای بررسی روش‌های مختلف نگاشت نوشته شد.
 
+روش‌های cIsin → nscId و symbol → nscId (بدون تأیید) رد شدند.
 
-The baseline contains the working project before the project documentation layer was added.
+روش نهایی تأیید شد: جستجوی symbol در آگاه و سپس تأیید با tseId.
 
+کلاس AgaahInstrumentProvider با منطق فوق پیاده‌سازی و تست شد.
 
+ساختار brokers/agaah.py به پکیج brokers/agaah/ تبدیل شد و فایل‌ها به‌درستی سازماندهی شدند.
 
-\---
+تمام تست‌های واحد و رگرسیون پاس شدند.
 
+Commit نهایی با شناسه 2020f92 انجام شد.
 
+4. Architecture Decisions
+Decision 001 — Use Git
+تصمیم: استفاده از Git برای کنترل نسخه.
 
-\# 3. Documentation Layer
+دلیل: قابلیت برگشت، ردیابی تغییرات و همکاری با AIهای مختلف.
 
+گزینه‌های ردشده: عدم استفاده از کنترل نسخه.
 
+پیامد: مخزن محلی با baseline مشخص.
 
-The project documentation system is currently being established.
+Decision 002 — Repository is the Source of Truth
+تصمیم: مخزن و مستندات آن منبع اصلی حقیقت هستند، نه مکالمات AI.
 
+دلیل: پروژه باید بین AIهای مختلف قابل انتقال باشد.
 
+گزینه‌های ردشده: وابستگی به تاریخچه‌ی چت.
 
-Files already created:
+پیامد: مستندات جامع در مخزن نگهداری می‌شوند.
 
+Decision 003 — Broker Independence
+تصمیم: هسته‌ی معاملات باید مستقل از بروکر باشد.
 
+دلیل: پشتیبانی از چند بروکر در آینده.
 
-```text
+گزینه‌های ردشده: وابستگی مستقیم به API آگاه در هسته.
 
-AI\\\_PROJECT\\\_MEMORY.md
+پیامد: لایه‌ی Broker Interface و Broker Adapter ایجاد شد.
 
-PROJECT\\\_CONTEXT.md
+Decision 004 — Explicit Instrument Mapping
+تصمیم: نگاشت بین TSETMC و بروکر باید صریح و قابل‌تأیید باشد.
 
-ARCHITECTURE.md
+دلیل: شناسه‌ها در سیستم‌های مختلف متفاوت هستند.
 
-```
+گزینه‌های ردشده: فرض یکسان بودن شناسه‌ها.
 
+پیامد: تحقیق گسترده برای پیدا کردن روش درست.
 
+Decision 005 — Dry Run Before Real Trading
+تصمیم: قبل از سفارش واقعی، dry-run انجام شود.
 
-Files still to create:
+دلیل: جلوگیری از اشتباهات مالی.
 
+گزینه‌های ردشده: تست مستقیم با سفارش واقعی.
 
+پیامد: قفل ایمنی در AgaahBroker (live_trading_enabled = False).
 
-```text
+Decision 006 — No Secrets in Git
+تصمیم: هیچ‌گونه رمز، توکن یا اطلاعات حساسی در Git ذخیره نشود.
 
-DECISIONS.md
+دلیل: امنیت.
 
-AGENT\\\_RULES.md
+گزینه‌های ردشده: ذخیره‌ی secrets در فایل‌های کد.
 
-BUG\\\_HISTORY.md
+پیامد: استفاده از .env و getpass برای اعتبارنامه‌ها.
 
-```
+Decision 007 — Do Not Guess Undocumented APIs
+تصمیم: هیچ رفتار API ناشناخته‌ای حدس زده نشود.
 
+دلیل: APIهای کارگزاری‌ها مستند نیستند و حدس زدن خطرناک است.
 
+گزینه‌های ردشده: فرض کردن ساختار پاسخ‌ها.
 
-After all documentation files are created and reviewed, they should be committed together.
+پیامد: استفاده از DevTools و بررسی ترافیک مرورگر برای کشف API.
 
+Decision 008 — Incremental Development
+تصمیم: توسعه‌ی تدریجی و گام‌به‌گام.
 
+دلیل: کاهش ریسک و افزایش قابلیت بازگشت.
 
-\---
+گزینه‌های ردشده: توسعه‌ی یکپارچه و بزرگ.
 
+پیامد: هر تغییر در یک commit جداگانه ثبت می‌شود.
 
+Decision 009 — Preserve Working Code
+تصمیم: کد کارکرده بدون دلیل فنی بازنویسی نشود.
 
-\# 4. Current Repository Structure
+دلیل: جلوگیری از ورود باگ‌های جدید.
 
+گزینه‌های ردشده: Refactor صرفاً برای زیبایی.
 
+پیامد: تغییرات فقط در صورت نیاز فنی انجام می‌شوند.
 
-```text
+Decision 010 — AI Agents Are Replaceable
+تصمیم: هیچ AI خاصی برای پروژه ضروری نیست.
 
-Trading\\\_bot/
+دلیل: پروژه باید با هر AI دیگری قابل ادامه باشد.
 
-│
+گزینه‌های ردشده: وابستگی به یک AI خاص.
 
-├── main.py
+پیامد: مستندات جامع برای انتقال آسان.
 
-│
+Decision 011 — Real Trading Is a Separate Risk Level
+تصمیم: سفارش واقعی با سطح ریسک مجزا و نیاز به تأیید اضافی.
 
-├── brokers/
+دلیل: عواقب مالی اشتباهات.
 
-│   ├── \\\_\\\_init\\\_\\\_.py
+گزینه‌های ردشده: فعال‌سازی خودکار سفارش واقعی.
 
-│   ├── agaah.py
+پیامد: dry-run پیش‌فرض است.
 
-│   ├── base.py
+Decision 012 — Documentation Is Part of the Project
+تصمیم: مستندات مهم در مخزن نگهداری شوند.
 
-│   ├── device\\\_info.py
+دلیل: بقای دانش فراتر از یک مکالمه.
 
-│   └── manager.py
+گزینه‌های ردشده: مستندات خارج از مخزن.
 
-│
+پیامد: فایل‌های *.md در مخزن.
 
-├── core/
+Decision 013 — Use TSETMC cIsin as Primary Key for TSETMC ↔ Agah Mapping (REJECTED)
+تصمیم: (رد شد) استفاده از cIsin به‌عنوان کلید اصلی نگاشت.
 
-│   └── order\\\_engine.py
+دلیل: آزمایش‌ها نشان داد که cIsin برای همه‌ی نمادها با nscId آگاه یکی نیست.
 
-│
+گزینه‌های ردشده: این روش برای اکثر نمادها شکست خورد.
 
-├── input/
+پیامد: روش جدید با symbol و tseId جایگزین شد.
 
-│   ├── \\\_\\\_init\\\_\\\_.py
+Decision 014 — Resolve Agah nscId by Symbol Search + tseId Verification
+تصمیم: از symbol (نام فارسی) برای جستجو در آگاه و سپس تأیید با tseId استفاده شود.
 
-│   └── keyboard\\\_layout.py
+دلیل: تنها روشی که برای همه‌ی ۷ نماد آزمایشی کار کرد.
 
-│
+گزینه‌های ردشده: روش cIsin، روش symbol → nscId بدون تأیید.
 
-├── market/
+پیامد: پیاده‌سازی AgaahInstrumentProvider با این منطق.
 
-│   ├── \\\_\\\_init\\\_\\\_.py
+5. Verified Facts
+TSETMC insCode با Agah tseId برابر است (برای نمادهای آزمایشی).
 
-│   ├── symbol\\\_resolver.py
+Agah nscId یک شناسه‌ی جداگانه است که برای ثبت سفارش استفاده می‌شود.
 
-│   └── tsetmc.py
+Agah tseId در پاسخ /instruments (با nscId) قابل دریافت است.
 
-│
+Agah /instruments/all?query=<symbol> لیستی از نمادهای مرتبط را برمی‌گرداند.
 
-├── models/
+تأیید tseId == insCode برای انتخاب nscId صحیح، ضروری است.
 
-│   ├── \\\_\\\_init\\\_\\\_.py
+cIsin از TSETMC همیشه با nscId آگاه یکی نیست.
 
-│   ├── account.py
+AgaahBroker با احراز هویت (Authorization: Bearer و UserIdentifier) کار می‌کند.
 
-│   ├── broker\\\_instrument.py
+base-data/csv در آگاه شامل tseId نیست و برای نگاشت مستقیم قابل‌استفاده نیست.
 
-│   ├── instrument.py
+6. Current Implementation
+فایل‌های مهم و مسئولیت‌ها
+فایل	مسئولیت
+brokers/base.py	کلاس‌های انتزاعی Broker و InstrumentProvider
+brokers/agaah/__init__.py	صادرات AgaahBroker, AgaahInstrumentProvider, InstrumentLookupError
+brokers/agaah/broker.py	کلاس AgaahBroker برای ارتباط با API آگاه
+brokers/agaah/instrument_provider.py	کلاس AgaahInstrumentProvider برای نگاشت insCode → nscId
+market/tsetmc.py	کلاس TSETMC برای دریافت اطلاعات نمادها
+market/symbol_resolver.py	حل‌کننده‌ی نماد با نرمال‌سازی فارسی
+models/instrument.py	مدل Instrument
+models/broker_instrument.py	مدل BrokerInstrument
+core/order_engine.py	هسته‌ی ثبت سفارش
+test_instrument_provider.py	تست‌های واحد AgaahInstrumentProvider
+منطق AgaahInstrumentProvider.get_nsc_id(ins_code)
+اگر ins_code در _nsc_cache موجود است، برگردان.
 
-│   ├── order.py
+instrument = TSETMC.get_info(ins_code).
 
-│   └── order\\\_validator.py
+اگر instrument وجود نداشت، InstrumentLookupError پرتاب کن.
 
-│
+symbol = instrument.symbol.
 
-└── test\\\_\\\*.py
+جستجو در آگاه: GET /instruments/all?query={symbol}&count=50.
 
-```
+برای هر نتیجه، broker.get_instrument(nscId) را صدا بزن تا tseId دریافت شود.
 
+نتیجه‌ای که tseId == ins_code دارد را انتخاب کن.
 
+اگر پیدا شد، در _nsc_cache ذخیره کن و nscId را برگردان.
 
-\---
+اگر پیدا نشد، InstrumentLookupError پرتاب کن.
 
+7. Tests & Verification
+تست	نتیجه
+test_instrument_provider.py	۱۱/۱۱ پاس
+test_engine_interface.py	۱۷/۱۷ پاس
+test_order_build.py	پاس
+test_broker_dry_run.py	پاس
+Smoke test (main.py import)	پاس
+موارد تأییدشده
+منطق tseId == insCode به‌درستی کار می‌کند.
 
+AgaahInstrumentProvider اولین نتیجه را انتخاب نمی‌کند (تأیید tseId اجباری است).
 
-\# 5. Existing Functionality
+از cIsin یا پسوندهای 0001/0003 به‌عنوان کلید استفاده نمی‌شود.
 
+insCode هرگز مستقیماً به broker.get_instrument() داده نمی‌شود.
 
+کش در حافظه به‌درستی کار می‌کند.
 
-The project currently contains initial implementations for:
+خطاهای شبکه به InstrumentLookupError تبدیل می‌شوند.
 
+8. Known Issues / Risks
+get_trading_state(): فعلاً برای آگاه UNVERIFIED برمی‌گرداند (طبق Decision 017). نیاز به پیاده‌سازی واقعی دارد.
 
+OrderEngine: هنوز با AgaahInstrumentProvider یکپارچه نشده است.
 
-\* TSETMC symbol search.
+سفارش واقعی: فعلاً live_trading_enabled = False است و باید با تأیید شما فعال شود.
 
-\* Instrument resolution.
+پشتیبانی از بروکرهای دیگر: فقط آگاه پیاده‌سازی شده است.
 
-\* Persian/Arabic symbol normalization.
+زمان‌بندی دقیق: هنوز پیاده‌سازی نشده است.
 
-\* Windows Persian keyboard-layout handling.
+خطاهای API آگاه: ممکن است در سناریوهای خاص (مثل نمادهای جدید) خطاهای پیش‌بینی‌نشده رخ دهد.
 
-\* Broker abstraction.
+وابستگی به احراز هویت: اسکریپت‌های تشخیصی و تست‌ها نیاز به لاگین دستی دارند.
 
-\* Agah broker integration.
+9. Do Not Change
+موارد زیر بدون دلیل فنی و تأیید شما نباید تغییر کنند:
 
-\* Device information handling.
+معماری لایه‌ها: هسته (core/) نباید به بروکر خاصی وابسته شود.
 
-\* Account model.
+منطق AgaahInstrumentProvider: استفاده از symbol و تأیید tseId برای نگاشت insCode → nscId نباید تغییر کند، مگر اینکه روش بهتری با شواهد قطعی پیدا شود.
 
-\* Instrument model.
+قفل ایمنی live_trading_enabled: نباید به‌طور پیش‌فرض فعال شود.
 
-\* Broker instrument model.
+عدم استفاده از cIsin: cIsin نباید به‌عنوان کلید اصلی برای نگاشت استفاده شود.
 
-\* Order model.
+ساختار brokers/agaah/: فایل‌ها و ایمپورت‌های این پکیج نباید بدون دلیل تغییر کنند.
 
-\* Order validation.
+Decision 018 در DECISIONS.md: این تصمیم نباید بدون شواهد جدید حذف یا تغییر کند.
 
-\* Order engine.
+10. Current Task / Milestone
+ما در انتهای فاز ۴ (نگاشت شناسه‌ها) قرار داریم و در آستانه‌ی فاز ۵ (یکپارچه‌سازی Order Engine) هستیم.
 
-\* Agah API tests.
+Milestone فعلی: تکمیل AgaahInstrumentProvider و تأیید نگاشت.
 
-\* TSETMC-to-Agah mapping tests.
+وضعیت: ✅ کامل و commit شده (2020f92).
 
-\* Order-building tests.
+11. Next Step
+گام منطقی بعدی، یکپارچه‌سازی AgaahInstrumentProvider با OrderEngine است تا:
 
-\* Dry-run tests.
+OrderEngine بتواند nscId را از insCode دریافت کند.
 
+سفارش‌ها (ابتدا در حالت dry-run) ثبت شوند.
 
+سپس get_trading_state برای آگاه پیاده‌سازی شود تا وضعیت معاملاتی واقعی بررسی شود.
 
-\---
+پیشنهاد من: ابتدا OrderEngine را اصلاح کنیم تا از InstrumentProvider استفاده کند و سپس get_trading_state را تکمیل کنیم.
 
+12. Important Context for Future AI
+تاریخچه‌ی تصمیمات حیاتی
+رد cIsin: در investigate_mapping_v3.py مشخص شد که cIsin از TSETMC برای اکثر نمادها با nscId آگاه یکی نیست.
 
+تأیید symbol + tseId: در investigate_mapping_v6.py برای ۷ نماد تأیید شد که این روش کار می‌کند.
 
-\# 6. Agah API Investigation
+ساختار پکیج agaah: فایل brokers/agaah.py به پکیج brokers/agaah/ تبدیل شد تا امکان افزودن instrument_provider.py فراهم شود.
 
+روش‌های کشف API آگاه
+از DevTools مرورگر (online.agah.com) برای مشاهده‌ی درخواست‌ها استفاده شد.
 
+endpointهای کلیدی:
 
-Agah is the current primary broker being integrated.
+/api/v1/instruments/all?query=<symbol>&count=50
 
+/api/v1/instruments?nscIds=<nscId>
 
+/api/v1/instruments/base-data/csv (فاقد tseId)
 
-Known API base:
+احراز هویت با Authorization: Bearer و UserIdentifier انجام می‌شود.
 
+فایل‌های تشخیصی
+فایل‌های investigate_mapping_v*.py و mapping_v*_results.json برای آزمایش و تأیید روش‌های مختلف استفاده شدند و اکنون حذف شده‌اند (به .gitignore اضافه شده‌اند).
 
+13. Checkpoint Metadata
+Date: 1405/06/20 (2026-09-04)
 
-```text
+Project State: آماده برای فاز بعدی (یکپارچه‌سازی Order Engine)
 
-https://tseonlineapi.agah.com/api/v1
+Last Completed Milestone: پیاده‌سازی و تأیید AgaahInstrumentProvider (commit 2020f92)
 
-```
+Current Milestone: یکپارچه‌سازی OrderEngine و get_trading_state
 
-
-
-Known areas investigated:
-
-
-
-```text
-
-Authentication
-
-Captcha
-
-Financial accounts / balances
-
-Instrument information
-
-Live segmentation
-
-Market indexes
-
-Order submission
-
-Live order decisions
-
-```
-
-
-
-Important unresolved areas:
-
-
-
-```text
-
-TSETMC insCode → Agah nscId mapping
-
-categoryId
-
-clientKey
-
-deviceInfo generation
-
-exact tradability/order-entry state
-
-production-safe order status handling
-
-```
-
-
-
-These must be investigated and verified.
-
-
-
-Do not invent missing API behavior.
-
-
-
-\---
-
-
-
-\# 7. TSETMC
-
-
-
-TSETMC is used for market and instrument discovery.
-
-
-
-Known search endpoint:
-
-
-
-```text
-
-https://cdn.tsetmc.com/api/Instrument/GetInstrumentSearch/{query}
-
-```
-
-
-
-Previously tested symbol:
-
-
-
-```text
-
-آکو
-
-آكو
-
-```
-
-
-
-Example instrument:
-
-
-
-```text
-
-Symbol: آكو
-
-Name: آكو باتري ايرانيان
-
-ISIN: IRO1ACCO0001
-
-TSETMC insCode: 60235881999727383
-
-```
-
-
-
-\---
-
-
-
-\# 8. Current Architectural Direction
-
-
-
-The core architecture should remain:
-
-
-
-```text
-
-UI
-
-\&#x20;↓
-
-Application / Core
-
-\&#x20;↓
-
-Broker Interface
-
-\&#x20;↓
-
-Broker Adapter
-
-\&#x20;↓
-
-Broker API
-
-```
-
-
-
-Market data:
-
-
-
-```text
-
-UI
-
-\&#x20;↓
-
-Symbol Resolver
-
-\&#x20;↓
-
-TSETMC
-
-\&#x20;↓
-
-Instrument
-
-\&#x20;↓
-
-Broker Mapping
-
-```
-
-
-
-The core must remain broker-independent.
-
-
-
-\---
-
-
-
-\# 9. Important Development Rules
-
-
-
-Any coding agent taking over this project must:
-
-
-
-1\. Inspect the repository before modifying code.
-
-2\. Read all project documentation before architectural changes.
-
-3\. Check whether functionality already exists.
-
-4\. Avoid unnecessary refactoring.
-
-5\. Preserve working behavior.
-
-6\. Keep broker-specific code inside broker adapters.
-
-7\. Never hardcode secrets.
-
-8\. Never submit real orders during ordinary testing.
-
-9\. Prefer dry-run tests.
-
-10\. Run relevant tests after changes.
-
-11\. Fix root causes rather than hiding errors.
-
-12\. Document significant architectural decisions.
-
-13\. Report changed files and test results.
-
-14\. Do not assume undocumented broker API behavior.
-
-
-
-\---
-
-
-
-\# 10. Security
-
-
-
-Never commit:
-
-
-
-\* username/password
-
-\* access token
-
-\* refresh token
-
-\* cookies
-
-\* captcha information
-
-\* private API keys
-
-\* authentication headers containing secrets
-
-
-
-The repository `.gitignore` already excludes:
-
-
-
-```text
-
-captcha.png
-
-client\\\_id.txt
-
-.env
-
-.env.\\\*
-
-```
-
-
-
-\---
-
-
-
-\# 11. User's Development Model
-
-
-
-The intended workflow is:
-
-
-
-```text
-
-User
-
-\&#x20; ↓
-
-Product decisions / real-world testing
-
-\&#x20; ↓
-
-AI Architect / Technical Advisor
-
-\&#x20; ↓
-
-Coding Agent
-
-\&#x20; ↓
-
-Local repository
-
-\&#x20; ↓
-
-Git
-
-```
-
-
-
-The AI coding agent is an implementation worker, not the owner of the architecture.
-
-
-
-The project must remain understandable even if the current AI assistant or coding agent is replaced.
-
-
-
-\---
-
-
-
-\# 12. Agent Replacement Strategy
-
-
-
-This project must support switching between AI tools.
-
-
-
-Possible agents include:
-
-
-
-```text
-
-ChatGPT
-
-Genspark
-
-Claude
-
-Codex
-
-Cline
-
-Roo Code
-
-Other coding agents
-
-```
-
-
-
-A new agent should be able to start from the repository itself.
-
-
-
-Required first-read files:
-
-
-
-```text
-
-AI\\\_PROJECT\\\_MEMORY.md
-
-PROJECT\\\_CONTEXT.md
-
-ARCHITECTURE.md
-
-DECISIONS.md
-
-AGENT\\\_RULES.md
-
-AI\\\_HANDOFF.md
-
-BUG\\\_HISTORY.md
-
-```
-
-
-
-\---
-
-
-
-\# 13. Last Completed Work
-
-
-
-The following work has just been completed:
-
-
-
-1\. Git for Windows was installed.
-
-2\. Git repository was initialized.
-
-3\. `.gitignore` was created.
-
-4\. Initial project baseline was committed.
-
-5\. Baseline commit:
-
-
-
-```text
-
-f600a6c
-
-Initial project baseline
-
-```
-
-
-
-6\. Project memory documentation was started.
-
-7\. `AI\\\_PROJECT\\\_MEMORY.md` was created.
-
-8\. `PROJECT\\\_CONTEXT.md` was created.
-
-9\. `ARCHITECTURE.md` was created.
-
-
-
-\---
-
-
-
-\# 14. Current Immediate Task
-
-
-
-Complete the project documentation layer.
-
-
-
-Next files:
-
-
-
-```text
-
-DECISIONS.md
-
-AGENT\\\_RULES.md
-
-BUG\\\_HISTORY.md
-
-```
-
-
-
-Then:
-
-
-
-1\. Review documentation.
-
-2\. Stage documentation files.
-
-3\. Create a documentation commit.
-
-4\. Verify Git status.
-
-5\. Prepare a private GitHub repository.
-
-6\. Push the local repository to GitHub.
-
-7\. Configure the selected AI coding agent.
-
-8\. Continue development from the repository.
-
-
-
-\---
-
-
-
-\# 15. Important Handoff Instruction
-
-
-
-The next AI agent must not immediately start rewriting code.
-
-
-
-First:
-
-
-
-```text
-
-Read documentation
-
-\&#x20;    ↓
-
-Inspect repository
-
-\&#x20;    ↓
-
-Check Git status
-
-\&#x20;    ↓
-
-Understand current architecture
-
-\&#x20;    ↓
-
-Understand current task
-
-\&#x20;    ↓
-
-Only then modify code
-
-```
-
-
-
-If the requested task conflicts with an architectural decision, stop and explain the conflict before making a major architectural change.
-
-
-
-\---
-
-
-
-\# 16. Current Next Step
-
-
-
-Create:
-
-
-
-```text
-
-DECISIONS.md
-
-```
-
-
-
-Then create:
-
-
-
-```text
-
-AGENT\\\_RULES.md
-
-BUG\\\_HISTORY.md
-
-```
-
-
-
-After that, commit the complete documentation layer.
-
-
-
-The repository should then be ready for GitHub backup and AI-agent handoff.
+Next Action: اصلاح OrderEngine برای استفاده از InstrumentProvider و سپس پیاده‌سازی get_trading_state برای آگاه
 
