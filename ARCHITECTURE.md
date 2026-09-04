@@ -388,6 +388,48 @@ The broker layer is responsible for:
 
 
 
+### 4.3.1 BrokerManager wiring (M4-A)
+
+M4-A adds a single method, `BrokerManager.get_instrument_provider(name)`, that returns a per-broker cached `InstrumentProvider`. The wiring is intentionally minimal: no factory map, no plugin registry, no generic broker/provider abstraction layer.
+
+```text
+
+BrokerManager
+
+├── brokers["آگاه"]
+
+│      └── AgaahBroker
+
+│
+
+└── providers["آگاه"]
+
+       └── AgaahInstrumentProvider
+
+              └── same AgaahBroker instance (from self.brokers["آگاه"])
+
+```
+
+Properties of the wiring:
+
+\* The provider is created **lazily** on the first call to `get_instrument_provider(name)`. It is not constructed in `__init__`.
+
+\* The provider is **per-broker cached** in `self.providers[name]`. A second call for the same name returns the exact same instance.
+
+\* The provider wraps the **same broker instance** stored in `self.brokers[name]`. The manager does not construct a fresh `AgaahBroker()` for the provider. This is required so that the provider's session, auth state, and in-memory cache share the broker's lifecycle.
+
+\* If the broker name is unknown, `get_instrument_provider` raises `ValueError` with the same style as `BrokerManager.get`.
+
+\* `BrokerManager` remains structurally Agah-specific in M4-A, exactly as it was before. The hard-coded `brokers["آگاه"] = AgaahBroker()` is unchanged.
+
+\* No factory map, no plugin architecture, no registry, no DI framework was added.
+
+\* This change is wiring only. It does not modify mapping logic, `InstrumentLookupError`, or `OrderEngine.execute_by_ins_code`.
+
+\* `main.py` is **not** a consumer of the provider yet. M4-B (or a later milestone) is the place where the provider is actually used in the order workflow.
+
+
+
 \---
 
 

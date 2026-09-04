@@ -256,10 +256,11 @@ symbol = instrument.symbol.
 test_instrument_provider.py	۱۱/۱۱ پاس
 test_engine_interface.py	۱۷/۱۷ پاس
 test_engine_provider_integration.py	۴/۴ پاس
+test_broker_manager.py	۶/۶ پاس
 test_order_build.py	پاس
 test_broker_dry_run.py	پاس
 Smoke test (main.py import)	پاس
-جمع تست‌های واحد آفلاین	۳۲/۳۲ پاس
+جمع تست‌های واحد آفلاین	۳۸/۳۸ پاس (M1–M4-A)
 موارد تأییدشده
 منطق tseId == insCode به‌درستی کار می‌کند.
 
@@ -280,6 +281,14 @@ OrderEngine.execute_by_ins_code می‌تواند insCode را از طریق Aga
 خطای InstrumentLookupError در provider، به‌صورت BLOCKED با پیام «Instrument lookup failed: ...» منتشر می‌شود.
 
 مسیر legacy broker.get_instrument_by_instrument_id(...) در flow جدید فراخوانی نمی‌شود.
+
+BrokerManager.get_instrument_provider نمونه‌ی صحیح AgaahInstrumentProvider برمی‌گرداند.
+
+provider در BrokerManager به‌صورت lazy ساخته و cache می‌شود (فراخوانی دوم همان instance را برمی‌گرداند).
+
+provider دقیقاً همان AgaahBroker instance مدیریت‌شده توسط BrokerManager را استفاده می‌کند (broker جدید ساخته نمی‌شود).
+
+get_instrument_provider برای broker ناشناس ValueError پرتاب می‌کند.
 
 8. Known Issues / Risks
 get_trading_state(): فعلاً برای آگاه UNVERIFIED برمی‌گرداند (طبق Decision 017). نیاز به پیاده‌سازی واقعی دارد.
@@ -318,16 +327,25 @@ Milestone 3 completed — integration of OrderEngine with InstrumentProvider and
 * Milestone 1: پیاده‌سازی و تأیید AgaahInstrumentProvider (commit 2020f92).
 * Milestone 2: افزودن OrderEngine.execute_by_ins_code و رسمی‌سازی InstrumentLookupError (Decision 019، commit 91bd2b4).
 * Milestone 3: مهاجرت اسکریپت‌های تعاملی (test_order_engine.py، test_order_dry_run.py، test_tsetmc_to_agah.py) به مسیر InstrumentProvider (commit 1a0d2d4).
+* Documentation checkpoint: هم‌ترازی مستندات با Milestoneهای 2 و 3 (commit fb33d94).
 
-وضعیت فعلی: ✅ کامل و commit شده.
+Milestone 4 وضعیت:
+* M4-A (BrokerManager → InstrumentProvider): IMPLEMENTED / PENDING REVIEW & COMMIT. متد `BrokerManager.get_instrument_provider(name)` اضافه شد؛ provider به‌صورت lazy ساخته و per-broker cache می‌شود؛ provider از همان `AgaahBroker` instance موجود در `self.brokers[name]` استفاده می‌کند (broker جدید ساخته نمی‌شود). تست واحد جدید `test_broker_manager.py` 6/6 PASS. regression: 38/38 PASS (32 قبلی + 6 جدید). هیچ commit برای M4-A ثبت نشده. `main.py`، `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/` در این مرحله تغییر نکرده‌اند.
+* M4-B (main.py / order workflow): NOT STARTED. اتصال واقعی OrderEngine به main پس از تأیید و commit شدن M4-A بررسی خواهد شد.
 
 11. Next Step
-Milestone 4 — اتصال BrokerManager و main.py به InstrumentProvider.
+پس از تأیید و commit شدن M4-A، milestone بعدی تصمیم‌گیری خواهد شد.
 
-گام منطقی بعدی:
-* ثبت یک InstrumentProvider متناظر با هر broker در BrokerManager.
-* به‌روزرسانی main.py (یا لایه‌ی UI) برای استفاده از مسیر ins_code → AgaahInstrumentProvider → OrderEngine.execute_by_ins_code.
-* در ادامه: پیاده‌سازی واقعی get_trading_state برای آگاه (طبق Decision 017) پس از شناسایی منبع معتبر.
+M4-A در حال حاضر در وضعیت IMPLEMENTED / PENDING REVIEW & COMMIT است. اقدامات زیر در انتظار review شما:
+* review کد `brokers/manager.py` (متد `get_instrument_provider`).
+* review تست `test_broker_manager.py` (6 تست).
+* تأیید یا اصلاح پیام commit.
+* اجرای commit برای M4-A.
+
+پس از commit شدن M4-A، milestone بعدی (M4-B یا مرحله‌ی متفاوت) با دستور مستقل تعریف خواهد شد. حداقل‌های ممکن برای M4-B:
+* اتصال `current_provider` در `main.py` (parallel با `current_broker`).
+* یا ایجاد workflow واقعی سفارش در main (در صورت نیاز).
+* در ادامه: پیاده‌سازی واقعی `get_trading_state` برای آگاه (طبق Decision 017) پس از شناسایی منبع معتبر.
 
 12. Important Context for Future AI
 تاریخچه‌ی تصمیمات حیاتی
@@ -356,9 +374,11 @@ endpointهای کلیدی:
 13. Checkpoint Metadata
 Date: 1405/06/13 (2026-09-04)
 
-Project State: آماده برای Milestone 4 (اتصال BrokerManager و main.py).
+Project State: Documentation checkpoint برای M4-A. M4-A پیاده‌سازی شده ولی commit نشده. M4-B هنوز شروع نشده.
 
-Last Completed Milestone: Milestone 3 — integration of OrderEngine with InstrumentProvider و مهاجرت اسکریپت‌های تعاملی (commits 91bd2b4 و 1a0d2d4).
+Last Completed Milestone: Milestone 3 — integration of OrderEngine with InstrumentProvider و مهاجرت اسکریپت‌های تعاملی (commits 91bd2b4 و 1a0d2d4). Documentation checkpoint: fb33d94.
 
-Next Action: اتصال BrokerManager و main.py به InstrumentProvider در Milestone 4.
+Last Documented Implementation (pending review/commit): M4-A — `BrokerManager.get_instrument_provider`، 6/6 تست جدید، 38/38 regression. بدون commit.
+
+Next Action: review کد M4-A توسط شما، سپس commit، سپس تعریف M4-B با دستور مستقل.
 

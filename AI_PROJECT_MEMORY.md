@@ -1460,9 +1460,183 @@ Controlled development
 
 
 
-\## 20. Critical Rule for Future Agents
+## 19b. Milestone 4-A — BrokerManager → InstrumentProvider (Implemented, Pending Review & Commit)
 
 
+
+### Completed (M1–M3, documentation checkpoint)
+
+
+
+```text
+
+M1 — Completed
+
+M2 — Completed
+
+M3 — Completed
+
+Documentation checkpoint — fb33d94
+
+```
+
+
+
+### Current (M4-A)
+
+
+
+```text
+
+M4-A — BrokerManager → InstrumentProvider
+
+Status: IMPLEMENTED / PENDING REVIEW & COMMIT
+
+Tests: 6/6 (test_broker_manager.py)
+
+Regression: 38/38 PASS (32 pre-existing + 6 new)
+
+```
+
+
+
+Implementation summary:
+
+
+
+\* `BrokerManager.get_instrument_provider(name: str) -> InstrumentProvider` was added in `brokers/manager.py`.
+
+
+
+\* The provider is constructed lazily on the first call and cached per broker in `self.providers[name]`.
+
+
+
+\* The provider wraps the **same** `AgaahBroker` instance stored in `self.brokers[name]`. The manager does not construct a fresh broker for the provider.
+
+
+
+\* `BrokerManager` remains structurally Agah-specific. No factory map, no plugin architecture, no registry, no DI framework was introduced.
+
+
+
+\* `main.py` is **not** a consumer of the provider in M4-A.
+
+
+
+### Contract of `BrokerManager.get_instrument_provider(name)`
+
+
+
+```text
+
+get_instrument_provider(name)
+
+    ↓
+
+validate broker exists                  (else ValueError)
+
+    ↓
+
+return cached provider if available
+
+    ↓
+
+otherwise use existing broker instance  (from self.brokers[name])
+
+    ↓
+
+create provider lazily                  (AgaahInstrumentProvider(broker))
+
+    ↓
+
+cache provider                          (self.providers[name] = provider)
+
+    ↓
+
+return provider
+
+```
+
+
+
+### Important boundaries (M4-A)
+
+
+
+\* `main.py` unchanged.
+
+
+
+\* `OrderEngine` unchanged.
+
+
+
+\* `OrderEngine.execute_by_ins_code` unchanged.
+
+
+
+\* `AgaahInstrumentProvider` unchanged.
+
+
+
+\* Mapping logic unchanged.
+
+
+
+\* `InstrumentLookupError` unchanged.
+
+
+
+\* `live_trading_enabled` lock unchanged.
+
+
+
+\* No real order was submitted.
+
+
+
+\* No network-based test was added.
+
+
+
+\* No login / captcha was performed.
+
+
+
+\* No generic factory / plugin architecture was added.
+
+
+
+\* No legacy lookup was removed.
+
+
+
+### Next decision point
+
+
+
+M4-A must be reviewed first, then committed.
+
+
+
+Only after the M4-A commit is finalized, M4-B (or a different next milestone) will be defined by a separate user instruction. M4-B candidates, none of which are started yet:
+
+
+
+\* attach `current_provider` parallel to `current_broker` in `main.py`'s `on_broker_changed`;
+
+
+
+\* or design the actual order workflow in the UI (out of scope for M4-A).
+
+
+
+\---
+
+
+
+## 20. Critical Rule for Future Agents
 
 \*\*Do not modify the architecture, broker API implementation, authentication mechanism, or real-order behavior based on assumptions.\*\*
 

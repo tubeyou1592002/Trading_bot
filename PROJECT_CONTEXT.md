@@ -76,6 +76,12 @@ The project currently has:
 
 \* Interactive scripts (`test_order_engine.py`, `test_order_dry_run.py`, `test_tsetmc_to_agah.py`) migrated to the new `InstrumentProvider` path; legacy `get_instrument_by_instrument_id(...)` no longer used in these scripts (commit 1a0d2d4).
 
+\* `BrokerManager.get_instrument_provider(name)` — lazy, per-broker cached provider wiring (M4-A). The `AgaahInstrumentProvider` instance reuses the existing `AgaahBroker` instance from `self.brokers[name]`. New unit tests `test_broker_manager.py` 6/6 PASS. IMPLEMENTED, PENDING REVIEW & COMMIT (no commit yet).
+
+\* Total unit-test regression (M1–M4-A): 38/38 PASS (32 pre-existing + 6 new).
+
+\* `main.py` unchanged in M4-A. M4-B (Order workflow / UI integration) NOT STARTED.
+
 
 
 \---
