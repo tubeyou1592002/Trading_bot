@@ -19,6 +19,12 @@ logs/
 captcha.png
 client_id.txt
 
+# Diagnostic / probe scripts (one-off, not part of the project)
+investigate_mapping*.py
+debug_csv.py
+mapping*_results.json
+mapping_report.json
+
 .vscode/
 .idea/
 

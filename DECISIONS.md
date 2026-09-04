@@ -693,3 +693,54 @@ A trading state is considered `UNVERIFIED` until it is confirmed by a verified, 
 A wrongly-allowed order has direct financial consequences, while a wrongly-blocked order only delays execution. The safe default is therefore to refuse to send until the tradability of a symbol is explicitly verified.
 
 Centralizing this rule in a single decision prevents future agents from "helpfully" weakening the default to `VERIFIED_TRADABLE` or from inventing an undocumented Agah endpoint to bypass the `UNVERIFIED` return.
+
+---
+
+## Decision 018 — Resolve Agah nscId by Symbol Search + tseId Verification
+
+**Status:** Accepted
+
+**Decision:**
+
+`TSETMC ins_code` is resolved to an Agah `nscId` through the TSETMC symbol, followed by an Agah instrument search and exact `tseId` verification.
+
+**Mapping:**
+
+```text
+TSETMC ins_code
+    -> TSETMC.get_info(ins_code)
+    -> Instrument.symbol
+    -> Agah GET /instruments/all?query=<symbol>&count=50
+    -> for each candidate nscId:
+           broker.get_instrument(nscId)
+           compare tse_id with ins_code
+    -> matched nscId
+```
+
+**Reason:**
+
+The earlier hypothesis that `TSETMC.cIsin == Agah.nscId` is not reliable as a general mapping.
+
+Agah symbol search provides relevant instrument candidates, while `tse_id == TSETMC ins_code` provides the exact identity verification.
+
+The v6 probe (`investigate_mapping_v6.py`) confirmed 7 of 7 symbols under this mapping.
+
+**Fallback:**
+
+There is no fuzzy or heuristic fallback.
+
+If no Agah result has `tse_id == ins_code`, resolution fails with `InstrumentLookupError`.
+
+Suffix-based heuristics on `nscId` (such as preferring `0001` or `0003`) are probe-side concerns only; the implementation does not encode them.
+
+**Safety:**
+
+`TSETMC ins_code` must never be passed directly as Agah `nscId`.
+
+`cIsin` must not be used as the primary mapping key.
+
+The first search result is never blindly selected.
+
+**Evidence:**
+
+`mapping_v6_results.json` (7/7 symbols matched).

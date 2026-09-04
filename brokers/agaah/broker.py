@@ -7,8 +7,8 @@ from models.broker_instrument import BrokerInstrument
 from models.order import Order
 from models.trading_state import UNVERIFIED, TradingState
 
-from .base import Broker
-from .device_info import ExternalDeviceInfoProvider
+from ..base import Broker
+from ..device_info import ExternalDeviceInfoProvider
 
 
 BASE_URL = "https://tseonlineapi.agah.com/api/v1"
