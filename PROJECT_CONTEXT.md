@@ -80,7 +80,7 @@ The project currently has:
 
 \* Total unit-test regression (M1\u2013M4-B): 45/45 PASS (38 pre-existing + 7 new).
 
-\* `main.py` order workflow (M4-B) \u2014 `current_provider` wired parallel to `current_broker` in `on_broker_changed`; `OrderEngine` instance added; `selected_instrument` stored in `select_symbol`; `send_order()` method added using `OrderEngine.execute_by_ins_code(live=False)`. New unit tests `test_main_order_workflow.py` 7/7 PASS. IMPLEMENTED, PENDING REVIEW & COMMIT.
+\* `main.py` order workflow (M4-B) \u2014 `current_provider` wired parallel to `current_broker` in `on_broker_changed`; `OrderEngine` instance added; `selected_instrument` stored in `select_symbol`; `send_order()` method added using `OrderEngine.execute_by_ins_code(live=False)`. New unit tests `test_main_order_workflow.py` 7/7 PASS. COMMITTED as `9713360`.
 
 
 

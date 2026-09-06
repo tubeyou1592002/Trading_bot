@@ -331,16 +331,10 @@ Milestone 3 completed — integration of OrderEngine with InstrumentProvider and
 
 Milestone 4 وضعیت:
 * M4-A (BrokerManager → InstrumentProvider): IMPLEMENTED — committed as `bdd5a1d`. متد `BrokerManager.get_instrument_provider(name)` اضافه شد؛ provider به‌صورت lazy ساخته و per-broker cache می‌شود؛ provider از همان `AgaahBroker` instance موجود در `self.brokers[name]` استفاده می‌کند (broker جدید ساخته نمی‌شود). تست واحد جدید `test_broker_manager.py` 6/6 PASS. regression: 38/38 PASS (32 قبلی + 6 جدید). `main.py`، `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/` در M4-A تغییر نکرده‌اند.
-* M4-B (main.py / Order Workflow): IMPLEMENTED — در حالت PENDING REVIEW & COMMIT. `current_provider` در `on_broker_changed` parallel به `current_broker` وصل شد؛ `OrderEngine` instance ساخته شد؛ `selected_instrument` در `select_symbol` ذخیره می‌شود؛ متد `send_order()` اضافه شد که از طریق `OrderEngine.execute_by_ins_code(live=False)` سفارش dry-run را اجرا می‌کند. تست واحد جدید `test_main_order_workflow.py` 7/7 PASS. regression: 45/45 PASS (38 قبلی + 7 جدید). فقط `main.py` تغییر کرده است؛ `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/`، `input/` تغییر نکرده‌اند. هیچ real order ارسال نشده.
+* M4-B (main.py / Order Workflow): IMPLEMENTED — COMMITTED as `9713360`. `current_provider` در `on_broker_changed` parallel به `current_broker` وصل شد؛ `OrderEngine` instance ساخته شد؛ `selected_instrument` در `select_symbol` ذخیره می‌شود؛ متد `send_order()` اضافه شد که از طریق `OrderEngine.execute_by_ins_code(live=False)` سفارش dry-run را اجرا می‌کند. تست واحد جدید `test_main_order_workflow.py` 7/7 PASS. regression: 45/45 PASS (38 قبلی + 7 جدید). فقط `main.py` تغییر کرده است؛ `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/`، `input/` تغییر نکرده‌اند. هیچ real order ارسال نشده.
 
 11. Next Step
-M4-B در حال حاضر در وضعیت IMPLEMENTED / PENDING REVIEW & COMMIT است. اقدامات زیر در انتظار review شما:
-* review کد `main.py` (متد `send_order` و wiring `current_provider` در `on_broker_changed`).
-* review تست `test_main_order_workflow.py` (7 تست).
-* تأیید یا اصلاح پیام commit.
-* اجرای commit برای M4-B + Documentation Checkpoint.
-
-پس از commit شدن M4-B، milestones بعدی با دستور مستقل تعریف خواهند شد:
+M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone بعدی با دستور مستقل تعریف می‌شود:
 * پیاده‌سازی واقعی `get_trading_state` برای آگاه (Decision 017) پس از شناسایی منبع معتبر.
 * افزودن scheduling/timer برای ارسال زمان‌بندی‌شده سفارش.
 * مدیریت چندحسابی و session lifecycle.
@@ -372,11 +366,9 @@ endpointهای کلیدی:
 13. Checkpoint Metadata
 Date: 1405/06/14 (2026-09-06)
 
-Project State: Documentation checkpoint برای M4-B. M4-A committed as bdd5a1d. M4-B پیاده‌سازی شده؛ در انتظار review & commit.
+Project State: M4-B committed (9713360) + Documentation checkpoint.
 
-Last Completed Milestone: M4-A — `BrokerManager.get_instrument_provider` (commit bdd5a1d). Documentation checkpoint: bdd5a1d.
+Last Completed Milestone: M4-B — `main.py` order workflow wiring (commit 9713360). Documentation checkpoint: 9713360.
 
-Last Documented Implementation (pending review/commit): M4-B — `main.py` order workflow wiring (`current_provider` parallel به `current_broker` در `on_broker_changed`، `OrderEngine` instance، `send_order` متد). 7/7 new tests (`test_main_order_workflow.py`)، 45/45 regression. Pending commit. فقط `main.py` و `test_main_order_workflow.py` تغییر کرده‌اند؛ هیچ production code دیگری تحت تأثیر قرار نگرفته.
-
-Next Action: review کد M4-B توسط شما، سپس commit M4-B + Documentation Checkpoint، سپس تعریف milestone بعدی با دستور مستقل.
+Next Action: Milestone بعدی با دستور مستقل تعریف می‌شود.
 

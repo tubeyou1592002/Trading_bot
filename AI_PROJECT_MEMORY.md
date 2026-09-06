@@ -34,8 +34,7 @@
 
 \*\*Current Git baseline:\*\*
 
-`bdd5a1d — M4-A: wire BrokerManager to InstrumentProvider`
-M4-B implementation is staged in the working tree, pending review & commit.
+`9713360 — M4-B: main.py order workflow (dry-run)`
 
 
 
@@ -1493,7 +1492,7 @@ Documentation checkpoint — bdd5a1d
 
 M4-B — main.py / Order Workflow
 
-Status: IMPLEMENTED / PENDING REVIEW & COMMIT
+Status: COMMITTED as 9713360
 
 Tests: 7/7 (test_main_order_workflow.py)
 
@@ -1631,15 +1630,7 @@ M4-B changes ONLY `main.py` (and adds `test_main_order_workflow.py`). The follow
 
 ### Next decision point
 
-M4-B must be reviewed first, then committed with the documentation checkpoint.
-
-The M4-B implementation is complete and all 45/45 tests pass. After the M4-B commit, the next milestones (TradingState verification, scheduling/timer, multi-account management) will be defined by a separate user instruction.
-
-
-
-M4-B must be reviewed first, then committed with the documentation checkpoint.
-
-After the M4-B commit, the following candidate milestones will be defined by a separate user instruction:
+M4-B is committed (9713360), all 45/45 tests pass. The next milestones will be defined by a separate user instruction:
 
 \* implement real `get_trading_state` for Agah (Decision 017) after identifying a verified source;
 
