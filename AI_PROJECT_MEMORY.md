@@ -34,7 +34,8 @@
 
 \*\*Current Git baseline:\*\*
 
-`f600a6c — Initial project baseline`
+`bdd5a1d — M4-A: wire BrokerManager to InstrumentProvider`
+M4-B implementation is staged in the working tree, pending review & commit.
 
 
 
@@ -1460,11 +1461,11 @@ Controlled development
 
 
 
-## 19b. Milestone 4-A — BrokerManager → InstrumentProvider (Implemented, Pending Review & Commit)
+## 19b. Milestone 4-A — BrokerManager → InstrumentProvider (Implemented, Committed as bdd5a1d)
 
 
 
-### Completed (M1–M3, documentation checkpoint)
+### Completed (M1–M3, M4-A, documentation checkpoint)
 
 
 
@@ -1475,26 +1476,28 @@ M1 — Completed
 M2 — Completed
 
 M3 — Completed
+M4-A — Committed as bdd5a1d
 
-Documentation checkpoint — fb33d94
+M4-A — Implemented, Committed as bdd5a1d
+Documentation checkpoint — bdd5a1d
 
 ```
 
 
 
-### Current (M4-A)
+### Current (M4-B)
 
 
 
 ```text
 
-M4-A — BrokerManager → InstrumentProvider
+M4-B — main.py / Order Workflow
 
 Status: IMPLEMENTED / PENDING REVIEW & COMMIT
 
-Tests: 6/6 (test_broker_manager.py)
+Tests: 7/7 (test_main_order_workflow.py)
 
-Regression: 38/38 PASS (32 pre-existing + 6 new)
+Regression: 45/45 PASS (38 pre-existing + 7 new)
 
 ```
 
@@ -1610,25 +1613,39 @@ return provider
 
 \* No legacy lookup was removed.
 
+### Important boundaries (M4-B)
 
+M4-B changes ONLY `main.py` (and adds `test_main_order_workflow.py`). The following remain unchanged:
+
+\* `OrderEngine`, `OrderEngine.execute_by_ins_code`, `AgaahInstrumentProvider`, mapping logic, `InstrumentLookupError`, `live_trading_enabled` lock — all unchanged.
+
+\* No new business logic in `main.py`; `send_order()` is pure orchestration (guard checks, UI→domain conversion, delegation to `OrderEngine.execute_by_ins_code`).
+
+\* `Account` is obtained from `broker.get_account()` (real Broker API) — no placeholder or mock.
+
+\* `live=False` is hard-coded; no live order path is reachable.
+
+\* No scheduling/timer, no login automation, no multi-account management added.
+
+\* `core/`, `brokers/base.py`, `brokers/agaah/`, `models/`, `market/`, `input/` — all unchanged.
 
 ### Next decision point
 
+M4-B must be reviewed first, then committed with the documentation checkpoint.
 
-
-M4-A must be reviewed first, then committed.
-
-
-
-Only after the M4-A commit is finalized, M4-B (or a different next milestone) will be defined by a separate user instruction. M4-B candidates, none of which are started yet:
+The M4-B implementation is complete and all 45/45 tests pass. After the M4-B commit, the next milestones (TradingState verification, scheduling/timer, multi-account management) will be defined by a separate user instruction.
 
 
 
-\* attach `current_provider` parallel to `current_broker` in `main.py`'s `on_broker_changed`;
+M4-B must be reviewed first, then committed with the documentation checkpoint.
 
+After the M4-B commit, the following candidate milestones will be defined by a separate user instruction:
 
+\* implement real `get_trading_state` for Agah (Decision 017) after identifying a verified source;
 
-\* or design the actual order workflow in the UI (out of scope for M4-A).
+\* add scheduling/timer for time-based order submission;
+
+\* add multi-account / session lifecycle management.
 
 
 

@@ -236,6 +236,34 @@ Responsibilities should include:
 
 The UI should not directly implement broker-specific HTTP requests.
 
+#### 4.1.1 Order Workflow Integration (M4-B)
+
+`main.py` (`SymbolSearchWindow`) integrates the existing broker/provider/engine abstractions via a dry-run-only order workflow:
+
+```text
+on_broker_changed(broker_name)
+    ├── current_broker = BrokerManager.get(broker_name)
+    └── current_provider = BrokerManager.get_instrument_provider(broker_name)
+
+select_symbol(item)
+    └── selected_instrument = Instrument (stored for order use)
+
+send_order()
+    ├── resolve nsc_id via current_provider.get_nsc_id(ins_code)
+    ├── build Order from UI inputs (side, price, quantity)
+    ├── obtain Account via current_broker.get_account()
+    └── OrderEngine.execute_by_ins_code(broker, provider, ins_code, order, account, live=False)
+```
+
+Properties of the integration:
+
+\* `send_order()` is pure orchestration — no business logic is duplicated in the UI layer.
+\* `live=False` is hard-coded; no live order path is reachable.
+\* `Account` is obtained from `broker.get_account()` (real Broker API) — no placeholder.
+\* `main.py` does not bypass any abstraction layer: the flow goes through `BrokerManager` → `InstrumentProvider` → `OrderEngine` → `Broker`.
+\* `core/`, `brokers/base.py`, `brokers/agaah/`, `models/`, `market/`, `input/` are unchanged.
+\* For the real `AgaahBroker`, orders are blocked at `prepare()` because `get_trading_state` returns `UNVERIFIED` (Decision 017). This is the expected safety behavior.
+
 
 
 \---
@@ -426,7 +454,7 @@ Properties of the wiring:
 
 \* This change is wiring only. It does not modify mapping logic, `InstrumentLookupError`, or `OrderEngine.execute_by_ins_code`.
 
-\* `main.py` is **not** a consumer of the provider yet. M4-B (or a later milestone) is the place where the provider is actually used in the order workflow.
+\* `main.py` is now a consumer of the provider (M4-B): `on_broker_changed` calls `get_instrument_provider` and `send_order` calls `OrderEngine.execute_by_ins_code`.
 
 
 
