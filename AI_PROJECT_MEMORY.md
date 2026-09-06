@@ -1638,6 +1638,22 @@ M4-B is committed (9713360), all 45/45 tests pass. The next milestones will be d
 
 \* add multi-account / session lifecycle management.
 
+### M5 — TSETMC Trading State Integration (Discovery Recorded)
+
+Discovery انجام شده و در DECISIONS.md (Decision 020) ثبت شده است:
+
+\* منبع وضعیت معاملاتی: TSETMC (`InstrumentState`)
+
+\* فیلد اصلی: `cEtaval` (عنوان `cEtavalTitle` برای نمایش/Debug منفرد است)
+
+\* Mapping کشف‌شده از JavaScript رسمی Frontend TSETMC
+
+\* وضعیت‌های مجاز برای ارسال سفارش: `A → مجاز`، `AR → مجاز-محفوظ`
+
+\* سایر وضعیت‌ها و هر وضعیت ناشناخته: Blocker
+
+\* این Discovery به معنی فعال شدن Live Trading نیست و هیچ سفارش واقعی‌ای ثبت نمی‌شود
+
 
 
 \---

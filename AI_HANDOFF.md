@@ -339,6 +339,16 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 * افزودن scheduling/timer برای ارسال زمان‌بندی‌شده سفارش.
 * مدیریت چندحسابی و session lifecycle.
 
+**M5 — TSETMC Trading State Integration**
+
+Discovery انجام شده و در DECISIONS.md (Decision 020) ثبت شده است:
+* منبع وضعیت معاملاتی: TSETMC (`InstrumentState`)
+* فیلد اصلی: `cEtaval` (عنوان `cEtavalTitle` برای نمایش/Debug منفرد است)
+* Mapping کشف‌شده از JavaScript رسمی Frontend TSETMC
+* وضعیت‌های مجاز برای ارسال سفارش: `A → مجاز`، `AR → مجاز-محفوظ`
+* سایر وضعیت‌ها و هر وضعیت ناشناخته: Blocker
+* این Discovery به معنی فعال شدن Live Trading نیست و هیچ سفارش واقعی‌ای ثبت نمی‌شود
+
 12. Important Context for Future AI
 تاریخچه‌ی تصمیمات حیاتی
 رد cIsin: در investigate_mapping_v3.py مشخص شد که cIsin از TSETMC برای اکثر نمادها با nscId آگاه یکی نیست.

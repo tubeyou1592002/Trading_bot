@@ -777,3 +777,82 @@ A concrete provider must not define its own local `InstrumentLookupError` class.
 * `brokers/agaah/instrument_provider.py` re-uses it and no longer defines a local one.
 * `core/order_engine.py` imports it from `brokers.base`, never from a concrete provider.
 * `test_engine_provider_integration.py` and `test_instrument_provider.py` exercise the contract end-to-end.
+
+---
+
+## Decision 020 — TSETMC Trading State as Source for Order Permission
+
+**Status:** Accepted (Discovery recorded during M5 exploration)
+
+### Discovery
+
+The authoritative source for **market trading state** is **TSETMC**, discovered via the official TSETMC frontend JavaScript mapping.
+
+Endpoint(s) considered:
+* `https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{InsCode}/{DEven}`
+* `instrumentState` field embedded in some Market Data responses
+
+Primary field used for mapping:
+* `cEtaval` — drives the machine-readable mapping
+* `cEtavalTitle` — human-readable title; used only for display/debug, not for mapping
+
+### Discovered cEtaval Mapping (from official TSETMC frontend JS)
+
+```text
+"I " → ممنوع (Forbidden)
+"A " → مجاز (Permitted)
+"AG" → مجاز-مسدود (Permitted-Blocked)
+"AS" → مجاز-متوقف (Permitted-Stopped)
+"AR" → مجاز-محفوظ (Permitted-Reserved)
+"IG" → ممنوع-مسدود (Forbidden-Blocked)
+"IS" → ممنوع-متوقف (Forbidden-Stopped)
+"IR" → ممنوع-محفوظ (Forbidden-Reserved)
+```
+
+### Verified Observations
+
+Two real responses were observed confirming the mapping:
+* `A  → مجاز`
+* `IS → ممنوع-متوقف`
+
+### Architectural Principle
+
+* `cEtaval` is the basis for the mapping; `cEtavalTitle` is not the source of truth for mapping logic.
+* Trading State is a **Market Data** concept. It must be sourced from TSETMC and must **not** depend on a Broker-specific API for its discovery.
+* The **Broker** remains responsible for **order submission** via its own API. Market trading state and order permission are distinct concepts: a state of `AR / مجاز-محفوظ` does not mean immediate trade execution; it only means that, per the current architectural decision, order submission is permitted in this state.
+
+### Order Permission Policy (M5)
+
+A **separate concept** from market trading state — this is the **order permission gate** applied by the OrderEngine before submitting an order:
+
+Permitted for order submission:
+* `A  → مجاز`
+* `AR → مجاز-محفوظ`
+
+All other listed states **block** order submission:
+* `AG, AS, I, IG, IS, IR`
+
+Any unknown, missing, invalid, or error state **must** be treated as:
+* `UNKNOWN / BLOCK`
+
+### Architecture Principles Recorded
+
+1. TSETMC is the source of Market Trading State.
+2. Trading State is a Market Data concept; it must not require a Broker-specific API to discover.
+3. The Broker remains responsible for order submission through its own API.
+4. `cEtaval` is the primary mapping key; `cEtavalTitle` is informational only.
+5. Unknown, missing, invalid, or error states must never permit order submission.
+6. Instrument identity must be valid before assigning a Trading State to an Instrument.
+7. This discovery does **not** enable Live Trading.
+8. M5 does **not** result in real order submission.
+
+### Reason
+
+A wrongly-allowed order has direct financial consequences. By recording the exact TSETMC `cEtaval` mapping and a conservative order-permission gate (only `A` and `AR` allow submission; everything else blocks), the project prevents future agents from inventing undocumented tradeability rules or weakening the gate. This keeps the discovery tied to an explicit, authoritative source (TSETMC frontend JS) rather than to a third-party or guessed interpretation.
+
+### Constraints
+
+* Mapping is based on `cEtaval` only.
+* Unknown or unrecoverable states default to `BLOCK`.
+* Order permission (`A` / `AR` = allowed) is decoupled from market trading state semantics (`AR` does not imply immediate execution).
+* No live order submission is enabled by this decision.
