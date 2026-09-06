@@ -1638,21 +1638,17 @@ M4-B is committed (9713360), all 45/45 tests pass. The next milestones will be d
 
 \* add multi-account / session lifecycle management.
 
-### M5 — TSETMC Trading State Integration (Discovery Recorded)
+### M5 — TSETMC Trading State Integration (IMPLEMENTED)
 
-Discovery انجام شده و در DECISIONS.md (Decision 020) ثبت شده است:
+پیاده‌سازی شده و تست شده است:
 
-\* منبع وضعیت معاملاتی: TSETMC (`InstrumentState`)
-
-\* فیلد اصلی: `cEtaval` (عنوان `cEtavalTitle` برای نمایش/Debug منفرد است)
-
-\* Mapping کشف‌شده از JavaScript رسمی Frontend TSETMC
-
-\* وضعیت‌های مجاز برای ارسال سفارش: `A → مجاز`، `AR → مجاز-محفوظ`
-
-\* سایر وضعیت‌ها و هر وضعیت ناشناخته: Blocker
-
-\* این Discovery به معنی فعال شدن Live Trading نیست و هیچ سفارش واقعی‌ای ثبت نمی‌شود
+\* `market/tsetmc.py`: متد `get_trading_state(ins_code)` از endpoint `https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{ins_code}/{DEven}`
+\* `brokers/agaah/broker.py`: `get_trading_state(nsc_id)` از TSETMC دریافت می‌کند، `cEtaval` را مطابق Decision 020 می‌نگاشت
+\* `test_trading_state.py`: 12 تست جدید؛ 12/12 PASS
+\* سایر وضعیت‌ها (I, AG, AS, IG, IS, IR) و unknown/error/timeout → BLOCKED / UNVERIFIED
+\* `A ` و `AR` → Order submission ALLOWED
+\* Regression: 59/59 PASS (45 + 12 جدید + 2 به‌روزرسانی شده)
+\* هیچ real order ارسال نشده است
 
 
 

@@ -339,15 +339,27 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 * افزودن scheduling/timer برای ارسال زمان‌بندی‌شده سفارش.
 * مدیریت چندحسابی و session lifecycle.
 
-**M5 — TSETMC Trading State Integration**
+**M5 — IMPLEMENTED: TSETMC Trading State Integration**
 
-Discovery انجام شده و در DECISIONS.md (Decision 020) ثبت شده است:
-* منبع وضعیت معاملاتی: TSETMC (`InstrumentState`)
-* فیلد اصلی: `cEtaval` (عنوان `cEtavalTitle` برای نمایش/Debug منفرد است)
-* Mapping کشف‌شده از JavaScript رسمی Frontend TSETMC
-* وضعیت‌های مجاز برای ارسال سفارش: `A → مجاز`، `AR → مجاز-محفوظ`
-* سایر وضعیت‌ها و هر وضعیت ناشناخته: Blocker
-* این Discovery به معنی فعال شدن Live Trading نیست و هیچ سفارش واقعی‌ای ثبت نمی‌شود
+تغییرات:
+* `market/tsetmc.py`: متد `get_trading_state(ins_code)` اضافه شد — از endpoint `https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{ins_code}/{DEven}` استفاده می‌کند.
+* `brokers/agaah/broker.py`: `get_trading_state(nsc_id)` از TSETMC دریافت می‌کند، `cEtaval` را مطابق Decision 020 می‌نگاشت، و `TradingState` مناسب برمی‌گرداند.
+* `test_trading_state.py`: 12 تست جدید برای تمامی وضعیت‌ها (A, AR → allow؛ I, AG, AS, IG, IS, IR → block؛ unknown/missing/error → block). 12/12 PASS.
+
+سیاست اجازه:
+* `A ` و `AR` → Order submission ALLOWED
+* تمام وضعیت‌های دیگر → BLOCKED
+* unknown/missing/error/timeout/network → BLOCKED / UNVERIFIED
+
+تست واحد جدید `test_trading_state.py` 12/12 PASS. Regression: 59/59 PASS (45 قبلی + 12 جدید + 2 به‌روزرسانی test_engine_interface.py).
+
+فایل‌های تغییر یافته:
+* `market/tsetmc.py` — افزودن `get_trading_state`
+* `brokers/agaah/broker.py` — به‌روزرسانی `get_trading_state` برای استفاده از TSETMC
+* `test_trading_state.py` — تست جدید
+* `test_engine_interface.py` — بروزرسانی test برای network failure mocking
+
+هیچ real order ارسال نشده است.
 
 12. Important Context for Future AI
 تاریخچه‌ی تصمیمات حیاتی

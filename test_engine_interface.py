@@ -163,11 +163,28 @@ def test_agaah_live_trading_disabled_by_default():
     assert broker.live_trading_enabled is False
 
 
-def test_agaah_get_trading_state_returns_unverified():
-    """تا زمان تأیید منبع، وضعیت باید UNVERIFIED باشد."""
+def test_agaah_get_trading_state_returns_unverified_on_network_failure():
+    """
+    وقتی TSETMC در دسترس نیست، وضعیت UNVERIFIED برگردانده می‌شود.
+
+    بر اساس Decision 020، در صورت خطای شبکه یا عدم دریافت
+    پاسخ معتبر، نتیجه UNVERIFIED است تا سفارش بلاک شود.
+    """
+
+    from unittest.mock import patch
 
     broker = AgaahBroker()
-    state = broker.get_trading_state("IRO1TEST0001")
+
+    with patch(
+        "brokers.agaah.broker.TSETMC",
+    ) as mock_tsetmc_class:
+        mock_tsetmc = mock_tsetmc_class.return_value
+        mock_tsetmc.get_trading_state.side_effect = (
+            ConnectionError("network unavailable")
+        )
+
+        state = broker.get_trading_state("IRO1TEST0001")
+
     assert isinstance(state, TradingState)
     assert state.is_verified is False
     assert state.is_order_entry_allowed is False
@@ -475,7 +492,7 @@ def main():
         test_abstract_broker_defines_interface,
         test_agaah_broker_is_broker,
         test_agaah_live_trading_disabled_by_default,
-        test_agaah_get_trading_state_returns_unverified,
+        test_agaah_get_trading_state_returns_unverified_on_network_failure,
         test_agaah_get_trading_state_requires_nsc_id,
         test_engine_blocks_unverified_state,
         test_engine_blocks_verified_blocked_state,

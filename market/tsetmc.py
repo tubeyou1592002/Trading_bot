@@ -62,3 +62,33 @@ class TSETMC:
             market=info.get("flowTitle"),
             flow=info.get("flow"),
         )
+
+    def get_trading_state(self, ins_code: str):
+        """دریافت وضعیت معاملاتی نماد از TSETMC.
+
+        Endpoint:
+            https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{ins_code}/{DEven}
+
+        Returns the raw instrument state dict from TSETMC, including
+        the `cEtaval` field which is the primary source for trading
+        state mapping (see Decision 020).
+        """
+
+        deven = "0"
+
+        url = (
+            f"{BASE_URL}/MarketData/"
+            f"GetInstrumentState/{ins_code}/{deven}"
+        )
+
+        response = self.session.get(url, timeout=10)
+        response.raise_for_status()
+
+        data = response.json()
+
+        state = data.get("instrumentState")
+
+        if state is None:
+            state = data
+
+        return state

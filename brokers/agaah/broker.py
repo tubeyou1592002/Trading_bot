@@ -6,9 +6,23 @@ from models.account import Account
 from models.broker_instrument import BrokerInstrument
 from models.order import Order
 from models.trading_state import UNVERIFIED, TradingState
+from market.tsetmc import TSETMC
 
 from ..base import Broker
 from ..device_info import ExternalDeviceInfoProvider
+
+
+CETAVAL_ALLOWED = {"A ", "A", "AR"}
+
+CETAVAL_BLOCKED = {
+    "I ",
+    "I",
+    "AG",
+    "AS",
+    "IG",
+    "IS",
+    "IR",
+}
 
 
 BASE_URL = "https://tseonlineapi.agah.com/api/v1"
@@ -62,17 +76,14 @@ class AgaahBroker(Broker):
         nsc_id: str,
     ) -> TradingState:
         """
-        پیاده‌سازی صریح برای آگاه.
+        وضعیت معاملاتی نماد از TSETMC.
 
-        منبع رسمی وضعیت معاملاتی نماد در API آگاه هنوز
-        به‌صورت کامل شناسایی و تأیید نشده است (طبق
-        AI_PROJECT_MEMORY و DECISIONS 009). به‌جای
-        حدس زدن یا فراخوانی endpoint نامشخص، صریحاً
-        `UNVERIFIED` برگردانده می‌شود تا موتور سفارش
-        به‌صورت ایمن سفارش را بلاک کند.
+        بر اساس Decision 020، منبع وضعیت معاملاتی
+        TSETMC است و فیلد `cEtaval` مبنای Mapping است.
 
-        این یک تصمیم آگاهانه است، نه یک پیش‌فرض
-        پنهان از لایه Broker پایه.
+        وضعیت‌های `A ` و `AR` اجازه ارسال سفارش دارند.
+        سایر وضعیت‌ها و هر وضعیت ناشناخته/خطا باعث
+        Block شدن می‌شوند.
         """
 
         if not nsc_id:
@@ -80,7 +91,48 @@ class AgaahBroker(Broker):
                 "nsc_id نمی‌تواند خالی باشد."
             )
 
-        return UNVERIFIED
+        tsetmc = TSETMC()
+
+        try:
+            state = tsetmc.get_trading_state(nsc_id)
+        except Exception:
+            return UNVERIFIED
+
+        c_etaval = state.get("cEtaval") if isinstance(
+            state, dict
+        ) else None
+
+        c_etaval = (
+            c_etaval.strip()
+            if isinstance(c_etaval, str)
+            else c_etaval
+        )
+
+        if c_etaval in CETAVAL_ALLOWED:
+            return TradingState(
+                is_order_entry_allowed=True,
+                is_verified=True,
+                source="tsetmc:cEtaval",
+                reason=f"cEtaval={c_etaval}",
+            )
+
+        if c_etaval in CETAVAL_BLOCKED:
+            return TradingState(
+                is_order_entry_allowed=False,
+                is_verified=True,
+                source="tsetmc:cEtaval",
+                reason=f"cEtaval={c_etaval}",
+            )
+
+        return TradingState(
+            is_order_entry_allowed=False,
+            is_verified=False,
+            source="tsetmc:cEtaval",
+            reason=(
+                f"cEtaval ناشناخته: "
+                f"({c_etaval!r})"
+            ),
+        )
 
     # =================================================
     # Helpers
