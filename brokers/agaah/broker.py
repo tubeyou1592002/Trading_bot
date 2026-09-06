@@ -81,6 +81,17 @@ class AgaahBroker(Broker):
         بر اساس Decision 020، منبع وضعیت معاملاتی
         TSETMC است و فیلد `cEtaval` مبنای Mapping است.
 
+        نحوه کار:
+        1. nsc_id از طریق broker.get_instrument(nsc_id)
+           به BrokerInstrument تبدیل می‌شود.
+        2. tse_id آن (که برابر TSETMC ins_code است)
+           برای درخواست به TSETMC استفاده می‌شود.
+        3. لیست وضعیت‌ها از TSETMC دریافت می‌شود؛
+           آخرین وضعیت (بیشترین dEven و hEven) انتخاب می‌شود.
+        4. identity بررسی می‌شود: insCode پاسخ باید با
+           ins_code درخواستی تطبیق داشته باشد.
+        5. cEtaval مطابق Decision 020 نگاشت می‌شود.
+
         وضعیت‌های `A ` و `AR` اجازه ارسال سفارش دارند.
         سایر وضعیت‌ها و هر وضعیت ناشناخته/خطا باعث
         Block شدن می‌شوند.
@@ -91,15 +102,47 @@ class AgaahBroker(Broker):
                 "nsc_id نمی‌تواند خالی باشد."
             )
 
-        tsetmc = TSETMC()
-
         try:
-            state = tsetmc.get_trading_state(nsc_id)
+            broker_instrument = self.get_instrument(nsc_id)
         except Exception:
             return UNVERIFIED
 
-        c_etaval = state.get("cEtaval") if isinstance(
-            state, dict
+        ins_code = getattr(broker_instrument, "tse_id", None)
+
+        if not ins_code:
+            return UNVERIFIED
+
+        tsetmc = TSETMC()
+
+        try:
+            states = tsetmc.get_trading_state(ins_code)
+        except Exception:
+            return UNVERIFIED
+
+        if not isinstance(states, list) or not states:
+            return UNVERIFIED
+
+        # Filter to states matching our ins_code (identity verification)
+        matching = [
+            s for s in states
+            if isinstance(s, dict)
+            and str(s.get("insCode")) == str(ins_code)
+        ]
+
+        if not matching:
+            return UNVERIFIED
+
+        # Select latest state (highest dEven, then hEven)
+        latest = max(
+            matching,
+            key=lambda s: (
+                s.get("dEven", 0),
+                s.get("hEven", 0),
+            ),
+        )
+
+        c_etaval = latest.get("cEtaval") if isinstance(
+            latest, dict
         ) else None
 
         c_etaval = (

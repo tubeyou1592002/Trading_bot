@@ -291,9 +291,7 @@ provider دقیقاً همان AgaahBroker instance مدیریت‌شده توس
 get_instrument_provider برای broker ناشناس ValueError پرتاب می‌کند.
 
 8. Known Issues / Risks
-get_trading_state(): فعلاً برای آگاه UNVERIFIED برمی‌گرداند (طبق Decision 017). نیاز به پیاده‌سازی واقعی دارد.
-
-OrderEngine: یکپارچه‌سازی با AgaahInstrumentProvider انجام شده (execute_by_ins_code). get_trading_state برای آگاه همچنان UNVERIFIED است.
+get_trading_state(): از TSETMC دریافت می‌شود — M5 پیاده‌سازی شده است.
 
 سفارش واقعی: فعلاً live_trading_enabled = False است و باید با تأیید شما فعال شود.
 
@@ -342,20 +340,27 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 **M5 — IMPLEMENTED: TSETMC Trading State Integration**
 
 تغییرات:
-* `market/tsetmc.py`: متد `get_trading_state(ins_code)` اضافه شد — از endpoint `https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{ins_code}/{DEven}` استفاده می‌کند.
-* `brokers/agaah/broker.py`: `get_trading_state(nsc_id)` از TSETMC دریافت می‌کند، `cEtaval` را مطابق Decision 020 می‌نگاشت، و `TradingState` مناسب برمی‌گرداند.
-* `test_trading_state.py`: 12 تست جدید برای تمامی وضعیت‌ها (A, AR → allow؛ I, AG, AS, IG, IS, IR → block؛ unknown/missing/error → block). 12/12 PASS.
+* `market/tsetmc.py`: متد `get_trading_state(ins_code)` اضافه شد — از endpoint `https://cdn.tsetmc.com/api/MarketData/GetInstrumentStateAll/{ins_code}` استفاده می‌کند.
+* `brokers/agaah/broker.py`: `get_trading_state(nsc_id)` از TSETMC دریافت می‌کند؛ ابتدا `nsc_id` از طریق `broker.get_instrument(nsc_id)` به `tse_id` (که برابر TSETMC `insCode` است) تبدیل می‌شود؛ سپس identity بررسی می‌شود؛ و آخرین وضعیت (بیشترین `dEven`/`hEven`) انتخاب می‌شود؛ `cEtaval` را مطابق Decision 020 می‌نگاشت و `TradingState` مناسب برمی‌گرداند.
+* `test_trading_state.py`: 16 تست جدید برای تمامی وضعیت‌ها (A, AR → allow؛ I, AG, AS, IG, IS, IR → block؛ unknown/missing/error → block؛ identity mismatch → block؛ نبود tse_id → UNVERIFIED). 16/16 PASS.
+* `test_engine_interface.py`: 1 تست به‌روزرسانی‌شده برای mocking TSETMC در حالت network failure.
 
 سیاست اجازه:
 * `A ` و `AR` → Order submission ALLOWED
 * تمام وضعیت‌های دیگر → BLOCKED
 * unknown/missing/error/timeout/network → BLOCKED / UNVERIFIED
+* identity mismatch (insCode در پاسخ با درخواست یکسان نیست) → UNVERIFIED / BLOCK
 
-تست واحد جدید `test_trading_state.py` 12/12 PASS. Regression: 59/59 PASS (45 قبلی + 12 جدید + 2 به‌روزرسانی test_engine_interface.py).
+تست واحد جدید `test_trading_state.py` 16/16 PASS. Regression: 60/60 PASS (45 قبلی + 16 جدید + 1 به‌روزرسانی test_engine_interface.py).
+
+Real CLI Verification:
+* نماد آکو (insCode: 60235881999727383) — cEtaval='A ' (مجاز) → Order entry ALLOWED
+* همین نماد در تاریخ 20260906 hEven=104633 — cEtaval='I ' (ممنوع) → Order entry BLOCKED
+* هویت (insCode) در هر دو مورد تطبیق یافت: requested == returned
 
 فایل‌های تغییر یافته:
-* `market/tsetmc.py` — افزودن `get_trading_state`
-* `brokers/agaah/broker.py` — به‌روزرسانی `get_trading_state` برای استفاده از TSETMC
+* `market/tsetmc.py` — افزودن `get_trading_state` با استفاده از `GetInstrumentStateAll`
+* `brokers/agaah/broker.py` — به‌روزرسانی `get_trading_state` برای nsc_id→tse_id resolution + TSETMC lookup + identity verification
 * `test_trading_state.py` — تست جدید
 * `test_engine_interface.py` — بروزرسانی test برای network failure mocking
 

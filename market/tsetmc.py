@@ -67,18 +67,22 @@ class TSETMC:
         """دریافت وضعیت معاملاتی نماد از TSETMC.
 
         Endpoint:
-            https://cdn.tsetmc.com/api/MarketData/GetInstrumentState/{ins_code}/{DEven}
+            https://cdn.tsetmc.com/api/MarketData/GetInstrumentStateAll/{ins_code}
 
-        Returns the raw instrument state dict from TSETMC, including
-        the `cEtaval` field which is the primary source for trading
-        state mapping (see Decision 020).
+        Returns a list of instrument state records from TSETMC,
+        each containing `cEtaval` and `cEtavalTitle`.
+
+        The caller is responsible for selecting the latest state
+        (highest dEven/hEven) and verifying that the returned
+        `insCode` matches the requested `ins_code`.
+
+        `cEtaval` is the primary field for trading state mapping
+        (see Decision 020). `cEtavalTitle` is informational only.
         """
-
-        deven = "0"
 
         url = (
             f"{BASE_URL}/MarketData/"
-            f"GetInstrumentState/{ins_code}/{deven}"
+            f"GetInstrumentStateAll/{ins_code}"
         )
 
         response = self.session.get(url, timeout=10)
@@ -86,9 +90,9 @@ class TSETMC:
 
         data = response.json()
 
-        state = data.get("instrumentState")
+        states = data.get("instrumentState")
 
-        if state is None:
-            state = data
+        if not isinstance(states, list):
+            return []
 
-        return state
+        return states

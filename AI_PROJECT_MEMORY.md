@@ -34,7 +34,7 @@
 
 \*\*Current Git baseline:\*\*
 
-`9713360 — M4-B: main.py order workflow (dry-run)`
+`876f259 — M5: TSETMC trading state integration`
 
 
 

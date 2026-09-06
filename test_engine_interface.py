@@ -171,11 +171,18 @@ def test_agaah_get_trading_state_returns_unverified_on_network_failure():
     پاسخ معتبر، نتیجه UNVERIFIED است تا سفارش بلاک شود.
     """
 
-    from unittest.mock import patch
+    from unittest.mock import patch, MagicMock
 
     broker = AgaahBroker()
 
-    with patch(
+    mock_instrument = MagicMock()
+    mock_instrument.tse_id = "TEST123"
+
+    with patch.object(
+        broker,
+        "get_instrument",
+        return_value=mock_instrument,
+    ), patch(
         "brokers.agaah.broker.TSETMC",
     ) as mock_tsetmc_class:
         mock_tsetmc = mock_tsetmc_class.return_value
