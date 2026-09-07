@@ -166,16 +166,35 @@ class OrderValidator:
 
         if order.side == BUY:
 
-            if account.tradable_balance_t1 is None:
+            tradable_balance_t1 = (
+                account.tradable_balance_t1
+            )
+
+            if tradable_balance_t1 is None:
                 raise OrderValidationError(
                     "موجودی قابل معامله T1 مشخص نیست."
+                )
+
+            if (
+                isinstance(tradable_balance_t1, bool)
+                or not isinstance(
+                    tradable_balance_t1, (int, float)
+                )
+            ):
+                raise OrderValidationError(
+                    "موجودی قابل معامله T1 معتبر نیست."
+                )
+
+            if tradable_balance_t1 < 0:
+                raise OrderValidationError(
+                    "موجودی قابل معامله T1 منفی است."
                 )
 
             required_cash = (
                 order.price * order.quantity
             )
 
-            if required_cash > account.tradable_balance_t1:
+            if required_cash > tradable_balance_t1:
                 raise OrderValidationError(
                     "موجودی قابل معامله برای این "
                     "سفارش کافی نیست."
