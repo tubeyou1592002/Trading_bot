@@ -51,12 +51,31 @@ class OrderValidator:
 
         minimum_quantity = instrument.minimum_order_quantity
 
-        if (
-            minimum_quantity is not None
-            and order.quantity < minimum_quantity
-        ):
+        if minimum_quantity is None:
+            raise OrderValidationError(
+                "حداقل حجم سفارش مشخص نیست."
+            )
+
+        if order.quantity < minimum_quantity:
             raise OrderValidationError(
                 f"حداقل حجم سفارش {minimum_quantity} است."
+            )
+
+        lot_size = instrument.lot_size
+
+        if lot_size is None:
+            raise OrderValidationError(
+                "lot size سفارش مشخص نیست."
+            )
+
+        if lot_size <= 0:
+            raise OrderValidationError(
+                "lot size سفارش معتبر نیست."
+            )
+
+        if order.quantity % lot_size != 0:
+            raise OrderValidationError(
+                f"تعداد سفارش باید مضرب {lot_size} باشد."
             )
 
         # =================================================
@@ -72,10 +91,12 @@ class OrderValidator:
                 instrument.maximum_order_quantity_for_sell
             )
 
-        if (
-            maximum_quantity is not None
-            and order.quantity > maximum_quantity
-        ):
+        if maximum_quantity is None:
+            raise OrderValidationError(
+                "حداکثر حجم سفارش مشخص نیست."
+            )
+
+        if order.quantity > maximum_quantity:
             raise OrderValidationError(
                 f"حداکثر حجم سفارش {maximum_quantity} است."
             )
@@ -91,40 +112,49 @@ class OrderValidator:
 
         fixed_price_tick = instrument.fixed_price_tick
 
-        if fixed_price_tick:
-            tick = int(fixed_price_tick)
+        if fixed_price_tick is None:
+            raise OrderValidationError(
+                "Tick قیمت نماد مشخص نیست."
+            )
 
-            if tick <= 0:
-                raise OrderValidationError(
-                    "Tick قیمت نماد معتبر نیست."
-                )
+        if fixed_price_tick <= 0:
+            raise OrderValidationError(
+                "Tick قیمت نماد معتبر نیست."
+            )
 
-            if order.price % tick != 0:
-                raise OrderValidationError(
-                    "قیمت سفارش با Tick قیمت نماد "
-                    "مطابقت ندارد."
-                )
+        tick = int(fixed_price_tick)
+
+        if order.price % tick != 0:
+            raise OrderValidationError(
+                "قیمت سفارش با Tick قیمت نماد "
+                "مطابقت ندارد."
+            )
 
         # =================================================
         # Price Limits
         # =================================================
 
         lower_limit = instrument.lower_price_threshold
+
+        if lower_limit is None:
+            raise OrderValidationError(
+                "حد پایین قیمت مشخص نیست."
+            )
+
         upper_limit = instrument.upper_price_threshold
 
-        if (
-            lower_limit is not None
-            and order.price < lower_limit
-        ):
+        if upper_limit is None:
+            raise OrderValidationError(
+                "حد بالای قیمت مشخص نیست."
+            )
+
+        if order.price < lower_limit:
             raise OrderValidationError(
                 f"قیمت کمتر از حد پایین مجاز است: "
                 f"{lower_limit}"
             )
 
-        if (
-            upper_limit is not None
-            and order.price > upper_limit
-        ):
+        if order.price > upper_limit:
             raise OrderValidationError(
                 f"قیمت بیشتر از حد بالای مجاز است: "
                 f"{upper_limit}"

@@ -299,7 +299,7 @@ class OrderEngine:
             return OrderExecutionResult(
                 success=False,
                 sent=False,
-                mode="INVALID",
+                mode="BLOCKED",
                 order=order,
                 broker_name=broker.name,
                 message=str(exc),

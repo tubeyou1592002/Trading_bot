@@ -342,7 +342,7 @@ def test_engine_rejects_non_trading_state():
 
 
 def test_engine_validates_invalid_order_even_when_tradable():
-    """اگر نماد tradable باشد ولی سفارش نامعتبر باشد، INVALID برگردد."""
+    """اگر نماد tradable باشد ولی سفارش نامعتبر باشد، BLOCKED برگردد."""
 
     engine = OrderEngine()
     broker = FakeBroker(state=VERIFIED_TRADABLE)
@@ -358,7 +358,7 @@ def test_engine_validates_invalid_order_even_when_tradable():
     )
 
     assert result.success is False
-    assert result.mode == "INVALID"
+    assert result.mode == "BLOCKED"
     assert broker.placed_calls == []
 
 

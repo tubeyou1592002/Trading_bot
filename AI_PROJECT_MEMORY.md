@@ -1699,23 +1699,90 @@ The following are explicitly **not** part of M6-A and remain for M6-B or later:
 
 ---
 
-### M6-B — Remaining Preflight Layers (NOT STARTED)
+### M6-B — Instrument Price / Quantity Preflight Constraints (COMPLETED / Architect Approved)
+
+#### Implementation Summary
+- **Files modified:**
+  - `models/order_validator.py` — Added fail-closed checks for required price/quantity constraints:
+    - `lower_price_threshold`, `upper_price_threshold`, `fixed_price_tick`, `minimum_order_quantity`, `lot_size`, `maximum_order_quantity_for_buy`, `maximum_order_quantity_for_sell` — all now BLOCK if `None`/missing.
+    - Added `lotSize` validation: `order.quantity % lot_size == 0`.
+  - `core/order_engine.py` — `OrderValidationError` now maps to `mode="BLOCKED"` (fail-closed).
+- **Tests added:** `test_m6b_preflight.py` — 21 tests covering:
+  - price below/above thresholds → BLOCKED
+  - valid price → READY
+  - invalid tick → BLOCKED
+  - zero/negative quantity → BLOCKED
+  - below minimum quantity → BLOCKED
+  - invalid lot size → BLOCKED
+  - BUY above max buy → BLOCKED
+  - SELL above max sell → BLOCKED
+  - valid BUY/SELL quantity → READY
+  - missing/None constraints → BLOCKED (7 tests)
+- **Tests updated:** `test_engine_interface.py` (1 test) — expectation updated for `BLOCKED` behavior.
+- **M5/M6-A contract:** Unchanged.
+
+#### Test Results (M6-B)
+- `test_m6b_preflight.py`: 21/21 PASS
+- `test_engine_interface.py`: 17/17 PASS
+- `test_m6a_preflight.py`: 8/8 PASS
+- `test_trading_state.py` (M5 regression): 16/16 PASS
+- `test_engine_provider_integration.py`: 4/4 PASS
+- `test_broker_manager.py`: 6/6 PASS
+- `test_instrument_provider.py`: 11/11 PASS
+- `test_main_order_workflow.py`: 7/7 PASS
+- **Total related regression: 91/91 PASS**
+
+#### Behavioral Contract (M6-B)
+```
+Missing/Unknown required constraint (lower/upper threshold, tick, min qty, lot size, max buy/sell)
+    └─> OrderValidator raises OrderValidationError
+            └─> OrderEngine.prepare()
+                    └─> RETURN BLOCKED (mode="BLOCKED")
+
+Invalid value (price out of range, bad tick, qty below min, above max, not multiple of lot)
+    └─> OrderValidator raises OrderValidationError
+            └─> OrderEngine.prepare()
+                    └─> RETURN BLOCKED (mode="BLOCKED")
+
+Valid + Known constraints
+    └─> OrderValidator passes
+            └─> OrderEngine.prepare()
+                    └─> RETURN READY (after trading-state gate)
+```
+
+#### Out-of-Scope for M6-B
+The following are explicitly **not** part of M6-B and remain for M6-C or later:
+- Account Cash Availability (`tradableBalanceT1`)
+- Buy Capacity via Agah (`calculatedquantity`)
+- Portfolio Quantity for Sell (`numberOfShares`)
+- Order Splitting
+- Scheduler / Retry / Recovery
+
+#### Note on `baseQuantity`
+- `baseQuantity` does not exist in the repository (`BrokerInstrument`, API mappings, or documentation).
+- Only `lot_size` exists and was validated in M6-B.
+- No new field or API was added for `baseQuantity`.
+
+---
+
+### M6-C — Remaining Preflight Layers (NOT STARTED)
 
 Pending Architect approval and separate task instruction for:
 1. Account Cash Availability
 2. Buy Capacity via Agah
 3. Portfolio Quantity for Sell
-4. Instrument Constraints integration
-5. Unified BUY/SELL Preflight
-6. Planned Order Splitting
+4. Unified BUY/SELL Preflight
+5. Planned Order Splitting
 
 ---
 
 ### M6 Overall Status
 - M6 Discovery: **COMPLETE**
 - M6 Architectural Scope: **DEFINED**
-- M6-A Implementation: **COMPLETED** (Architect approved)
-- M6-B Implementation: **NOT STARTED**
+- M6-A Implementation: **COMPLETED** (Architect approved, pushed as `7ce09e3`)
+- M6-B Implementation: **COMPLETED** (Architect approved)
+- M6-C Implementation: **NOT STARTED**
+- **M6 is NOT fully complete yet.**
 
 
 
