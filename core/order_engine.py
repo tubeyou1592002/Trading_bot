@@ -201,6 +201,26 @@ class OrderEngine:
             )
 
         # ---------------------------------------------
+        # Instrument Identity (M6-A)
+        # ---------------------------------------------
+        # order.nsc_id باید با nsc_id BrokerInstrument
+        # تطبیق داشته باشد. عدم تطابق باعث Block سفارش
+        # می‌شود و overwrite مجاز نیست.
+
+        if order.nsc_id != instrument.nsc_id:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=broker.name,
+                message=(
+                    "nscId سفارش با nscId BrokerInstrument "
+                    "یکسان نیست."
+                ),
+            )
+
+        # ---------------------------------------------
         # Trading State
         # ---------------------------------------------
         # فقط خطای واقعی «منبع در دسترس نیست» بلاک
@@ -242,7 +262,7 @@ class OrderEngine:
             return OrderExecutionResult(
                 success=False,
                 sent=False,
-                mode="UNVERIFIED",
+                mode="BLOCKED",
                 order=order,
                 broker_name=broker.name,
                 message=(

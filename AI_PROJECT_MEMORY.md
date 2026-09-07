@@ -1652,133 +1652,70 @@ M4-B is committed (9713360), all 45/45 tests pass. The next milestones will be d
 \* هیچ real order ارسال نشده است
 \* Committed as `ca3e2cbf` — pushed to origin/master
 
-### M6 — Order Preflight & Constraints (DEFINED)
+### M6-A — Instrument Identity + Trading-State Gate (COMPLETED / Architect Approved)
 
-M6 Discovery: **COMPLETE**
-M6 Architectural Scope: **DEFINED**
-M6 Implementation: **NOT STARTED**
+#### Implementation Summary
+- **File modified:** `core/order_engine.py`
+  - Added explicit identity check in `prepare()`: if `order.nsc_id != instrument.nsc_id` → `BLOCKED` (no overwrite).
+  - Enforced fail-closed policy: `UNVERIFIED` (Unknown / Missing / Error / Unverified) → `BLOCKED` in `OrderEngine.prepare()`.
+- **Tests added:** `test_m6a_preflight.py` — 8 tests covering:
+  - valid identity + allowed state → READY
+  - identity mismatch → BLOCKED
+  - `A ` / `AR` → ALLOWED (via VERIFIED_TRADABLE)
+  - unsupported state → BLOCKED
+  - missing/unknown/error state → BLOCKED
+- **Tests updated:** `test_engine_interface.py` (2 tests), `test_main_order_workflow.py` (1 test) — expectations updated for new `BLOCKED` behavior.
+- **M5 contract:** Unchanged. `brokers/agaah/broker.py`, `market/tsetmc.py`, `models/trading_state.py` were not modified.
 
-#### Goal
-Before an order is prepared for submission, all necessary conditions for order validity must be available and verifiable from the correct sources: market trading state, instrument, account, asset, and order constraints.
+#### Test Results (M6-A)
+- `test_m6a_preflight.py`: 8/8 PASS
+- `test_engine_interface.py`: 17/17 PASS
+- `test_main_order_workflow.py`: 7/7 PASS
+- `test_trading_state.py` (M5 regression): 16/16 PASS
+- `test_engine_provider_integration.py`: 4/4 PASS
+- `test_broker_manager.py`: 6/6 PASS
+- `test_instrument_provider.py`: 11/11 PASS
+- **Total related regression: 69/69 PASS**
 
-Core principle (Fail Closed):
-- **Valid + Known → continue**
-- **Invalid → BLOCK**
-- **Unknown / Missing / Error → BLOCK**
+#### Behavioral Contract (M6-A)
+```
+Broker returns UNVERIFIED
+    └─> OrderEngine.prepare()
+            └─> RETURN BLOCKED (mode="BLOCKED")
 
-#### 1. Common BUY and SELL Conditions (before order submission)
+Broker returns valid TradingState (verified + order_entry_allowed)
+    └─> OrderEngine.prepare()
+            └─> RETURN READY (after OrderValidator)
+```
 
-##### Instrument / Identity
-- Instrument must be valid.
-- Instrument identifiers must be correct.
-- Trading state must relate to the same Instrument.
-- If Identity cannot be verified → **BLOCK**
+#### Out-of-Scope for M6-A
+The following are explicitly **not** part of M6-A and remain for M6-B or later:
+- Account Cash Availability (`tradableBalanceT1`)
+- Buy Capacity via Agah (`calculatedquantity`)
+- Portfolio Quantity for Sell (`numberOfShares`)
+- Instrument Constraints (price thresholds, tick, min/max qty)
+- Order Splitting
+- Scheduler / Retry / Recovery
 
-##### Account / Broker
-- Required account and session information must be valid and usable.
-- If access is denied or required information is invalid/missing → **BLOCK**
+---
 
-##### Market Trading State
-- Source: TSETMC
-- Field: `cEtaval` (mapping per Decision 020)
-- Current order submission policy:
-  - `"A "` and `"AR"` → **ALLOWED**
-  - All other states → **BLOCK**
-  - Unknown / Missing / Error / Invalid → **BLOCK**
+### M6-B — Remaining Preflight Layers (NOT STARTED)
 
-##### Price
-- Must be within `lowerPriceThreshold` and `upperPriceThreshold`.
-- Must be compatible with `fixedPriceTick`.
-- If not → **BLOCK**
+Pending Architect approval and separate task instruction for:
+1. Account Cash Availability
+2. Buy Capacity via Agah
+3. Portfolio Quantity for Sell
+4. Instrument Constraints integration
+5. Unified BUY/SELL Preflight
+6. Planned Order Splitting
 
-##### Quantity
-- Must be greater than zero.
-- Must respect `minimumOrderQuantity`.
-- Must respect `baseQuantity` / `lotSize`.
-- If not → **BLOCK**
+---
 
-#### 2. BUY-specific Conditions
-- `quantity <= maximumOrderQuantityForBuy`
-- Sufficient tradable cash balance must exist.
-- Actual buy capacity must be supported by Agah's calculated quantity.
-- Source of balance: `GET /api/v1/financialaccounts/balances`
-- Main field: `tradableBalanceT1`
-- Source of buy capacity: `GET /api/v1/trades/calculatedquantity`
-- Observed parameters: `nscId`, `sideCode`, `fund`, `price`
-- **Important architectural decision:** Commission and buy costs are NOT to be hard-coded in the bot. Use Agah's own `calculatedquantity` to determine real buy capacity so that Agah's current rules and possible user discounts are applied by the broker itself.
-- Decision: **Requested Quantity <= Agah Calculated Quantity**
-- If Agah calculated quantity is unknown or errors → **BLOCK**
-
-#### 3. SELL-specific Conditions
-- `quantity <= maximumOrderQuantityForSell`
-- User must hold the asset for the given Instrument.
-- Currently `portfolio.numberOfShares` is the basis for sell quantity control.
-- Source: `GET /api/v1/portfolio`
-- Main field: `numberOfShares`
-- Current decision: In this milestone, **Requested Quantity <= numberOfShares** → allow; **Requested Quantity > numberOfShares** → **BLOCK**
-- Note: At this stage, `numberOfShares` is not claimed to be an independent "sellable quantity" field; it is the current project's sell-quantity control basis.
-
-#### 4. Instrument Constraints (discovered Agah API fields)
-The following fields were discovered from the Agah API and must be used for order validation. If already implemented in the Repository, they must NOT be redefined or redesigned.
-
-- `upperPriceThreshold`
-- `lowerPriceThreshold`
-- `fixedPriceTick`
-- `minimumOrderQuantity`
-- `maximumOrderQuantityForBuy`
-- `maximumOrderQuantityForSell`
-- `baseQuantity`
-- `lotSize`
-
-#### 5. Order Splitting — PLANNED (not implemented)
-This is recorded as part of the M6 plan but **not yet implemented**.
-
-Agah reports via `GET /api/v1/app/config`:
-- `canBeDivideBuyOrder = true`
-- `canBeDivideSellOrder = true`
-
-Planned behavior (for the future):
-- If requested quantity exceeds the maximum allowed per order, it should be split into the minimum number of valid lots.
-- Example 1: Maximum = 2000, Requested = 3000 → 2000 + 1000
-- Example 2: Maximum = 2000, Requested = 5300 → 2000 + 2000 + 1300
-- Each slice must ultimately comply with order rules.
-
-**Not yet implemented:**
-- Delay between slices
-- Scheduler
-- Retry
-- Result management per slice
-- Cancel/Modify between slices
-- Full multi-order orchestration
-
-#### 6. M6 Scope (official record)
-M6 — Order Preflight & Constraints
-1. Market Trading State
-2. Instrument Constraints
-3. Account Cash Availability
-4. Buy Capacity via Agah
-5. Portfolio Quantity for Sell
-6. Unified BUY/SELL Preflight
-7. Planned Order Splitting
-
-#### 7. Out-of-Scope for M6
-The following are explicitly **not** part of M6:
-- Scheduler
-- Precise Timing
-- Multi-account
-- Full session lifecycle
-- Live Trading
-- Retry / Recovery
-- Advanced Open Order Management
-- Independent "sellable quantity" separate from `numberOfShares`
-- Manual commission calculation
-- General architecture refactor
-
-#### 8. Relation to M5
-- M5 established TSETMC as the source of Market Trading State with verified `cEtaval` mapping and identity verification.
-- M6 consumes M5's TradingState as one input among several preflight checks.
-- M6 does **not** alter M5's trading-state logic.
-- M6 adds the remaining preflight layers (price, quantity, account, buy capacity, sell quantity) around the M5 trading-state gate.
+### M6 Overall Status
+- M6 Discovery: **COMPLETE**
+- M6 Architectural Scope: **DEFINED**
+- M6-A Implementation: **COMPLETED** (Architect approved)
+- M6-B Implementation: **NOT STARTED**
 
 
 

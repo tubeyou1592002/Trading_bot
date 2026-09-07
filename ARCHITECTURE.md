@@ -262,7 +262,7 @@ Properties of the integration:
 \* `Account` is obtained from `broker.get_account()` (real Broker API) — no placeholder.
 \* `main.py` does not bypass any abstraction layer: the flow goes through `BrokerManager` → `InstrumentProvider` → `OrderEngine` → `Broker`.
 \* `core/`, `brokers/base.py`, `brokers/agaah/`, `models/`, `market/`, `input/` are unchanged.
-\* For the real `AgaahBroker`, orders are blocked at `prepare()` because `get_trading_state` returns `UNVERIFIED` (Decision 017). This is the expected safety behavior.
+\* For the real `AgaahBroker`, orders are blocked at `prepare()` because `get_trading_state` returns `UNVERIFIED` (Decision 017). Per M6-A, `OrderEngine.prepare()` now enforces fail-closed behavior: `UNVERIFIED` (Unknown / Missing / Error / Unverified) is interpreted as `BLOCKED`. This is the expected safety behavior.
 
 
 

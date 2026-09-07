@@ -350,13 +350,9 @@ def test_send_order_dry_run_success():
 
 def test_send_order_blocked_when_unverified():
     """
-    Test 7: With a real AgaahBroker (UNVERIFIED state),
-    send_order must block the order. No real order is
-    sent, no crash occurs.
-
-    Uses stub provider to avoid network, but stub broker
-    returns UNVERIFIED — matching AgaahBroker's real
-    behavior per Decision 017.
+    Test 7: With a stub broker that returns UNVERIFIED,
+    send_order must block the order per M6-A fail-closed
+    policy. No real order is sent, no crash occurs.
     """
     ins_code = "35366681030756042"
     nsc_id = "IRO1PNBA0001"
@@ -385,8 +381,8 @@ def test_send_order_blocked_when_unverified():
 
     window.send_order()
 
-    assert "UNVERIFIED" in window.status_label.text(), (
-        f"expected UNVERIFIED in status, got: "
+    assert "BLOCKED" in window.status_label.text(), (
+        f"expected BLOCKED in status, got: "
         f"{window.status_label.text()!r}"
     )
     assert len(stub_broker.placed_calls) == 0, (

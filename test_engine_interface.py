@@ -228,7 +228,7 @@ def test_engine_blocks_unverified_state():
 
     assert result.success is False
     assert result.sent is False
-    assert result.mode == "UNVERIFIED"
+    assert result.mode == "BLOCKED"
     assert broker.placed_calls == []
 
 
@@ -475,7 +475,7 @@ def test_engine_execute_does_not_call_broker_when_blocked():
     )
 
     assert result.success is False
-    assert result.mode == "UNVERIFIED"
+    assert result.mode == "BLOCKED"
     assert broker.placed_calls == []
 
 
