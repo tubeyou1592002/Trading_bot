@@ -393,11 +393,11 @@ endpointهای کلیدی:
 13. Checkpoint Metadata
 Date: 1405/06/14 (2026-09-07)
 
-Project State: M5 completed (ca3e2cbf, pushed) + M6-A completed (Architect approved, pushed as 7ce09e3) + M6-B completed (Architect approved) + Pending Documentation Checkpoint commit.
+Project State: M5 completed (ca3e2cbf, pushed) + M6-A completed (Architect approved, pushed as 7ce09e3) + M6-B completed (Architect approved, pushed as 84f9130) + M6-C Account Cash validation completed (Architect approved, pushed as 62144da) + Pending Documentation Checkpoint commit.
 
-Last Completed Milestone: M6-B — Instrument Price / Quantity Preflight Constraints (implemented, Architect approved, not yet committed/pushed).
+Last Completed Milestone: M6-C — Account Cash Validation (Account Cash fail-closed validation implemented and committed; BUY Capacity via Agah calculatedquantity BLOCKED/not implemented).
 
-Next Action: Documentation Checkpoint for M6-B (update AI_HANDOFF.md and AI_PROJECT_MEMORY.md to reflect M6-B completion; commit/push after Architect approval).
+Next Action: Discovery/verification of Agah GET /api/v1/trades/calculatedquantity response contract via Chrome DevTools; no implementation yet.
 
 ---
 
@@ -516,14 +516,74 @@ The following are explicitly **not** part of M6-B and remain for M6-C or later:
 
 ---
 
-### M6-C — Remaining Preflight Layers (NOT STARTED)
+### M6-C — Account Cash Validation (PARTIALLY COMPLETED / Architect Approved)
+
+#### Implementation Summary (Account Cash Only)
+- **File modified:** `models/order_validator.py`
+  - Added fail-closed checks for Account Cash in BUY path:
+    - `tradable_balance_t1` must be numeric (`int`/`float`), not `bool`, not `None`, not negative.
+    - `required_cash = order.price * order.quantity` must be `<= tradable_balance_t1`.
+- **Tests added:** `test_m6c_preflight.py` — 7 tests covering:
+  - valid sufficient cash → READY
+  - insufficient cash → BLOCKED
+  - missing `tradableBalanceT1` → BLOCKED
+  - malformed/string balance → BLOCKED
+  - negative balance → BLOCKED
+  - `bool` balance → BLOCKED
+  - BUY Capacity ambiguity documentation (NOT IMPLEMENTED)
+- **BUY Capacity via Agah (`calculatedquantity`):** NOT IMPLEMENTED / BLOCKED
+  - endpoint: `GET /api/v1/trades/calculatedquantity`
+  - Known params: `nscId`, `sideCode`, `fund`, `price`
+  - **Blocker:** Response field name for maximum buy quantity is unknown in repository/API evidence. Cannot implement without Architect-provided response structure.
+
+#### Test Results (M6-C Account Cash)
+- `test_m6c_preflight.py`: 7/7 PASS
+- `test_m6b_preflight.py`: 21/21 PASS
+- `test_m6a_preflight.py`: 8/8 PASS
+- `test_trading_state.py` (M5 regression): 16/16 PASS
+- `test_engine_interface.py`: 17/17 PASS
+- `test_engine_provider_integration.py`: 4/4 PASS
+- `test_broker_manager.py`: 6/6 PASS
+- `test_instrument_provider.py`: 11/11 PASS
+- `test_main_order_workflow.py`: 7/7 PASS
+- **Total related regression: 97/97 PASS**
+
+#### Behavioral Contract (M6-C Account Cash)
+```
+BUY path:
+    tradable_balance_t1 is None/missing
+        └─> BLOCKED
+
+    tradable_balance_t1 is bool or non-numeric
+        └─> BLOCKED
+
+    tradable_balance_t1 is negative
+        └─> BLOCKED
+
+    required_cash > tradable_balance_t1
+        └─> BLOCKED
+
+    required_cash <= tradable_balance_t1
+        └─> continue to next gate
+```
+
+#### Out-of-Scope for M6-C (Account Cash Only)
+The following are explicitly **not** part of M6-C Account Cash and remain blocked/pending:
+- BUY Capacity via Agah (`calculatedquantity`) — NOT IMPLEMENTED, awaiting response structure
+- Portfolio Quantity for Sell (`numberOfShares`)
+- Unified BUY/SELL Preflight
+- Order Splitting
+- Scheduler / Retry / Recovery
+
+---
+
+### M6-D — Remaining Preflight Layers (NOT STARTED)
 
 Pending Architect approval and separate task instruction for:
-1. Account Cash Availability
-2. Buy Capacity via Agah
-3. Portfolio Quantity for Sell
-4. Unified BUY/SELL Preflight
-5. Planned Order Splitting
+1. BUY Capacity via Agah (`calculatedquantity`) — blocked pending response structure
+2. Portfolio Quantity for Sell (`numberOfShares`)
+3. Unified BUY/SELL Preflight
+4. Planned Order Splitting
 
 ---
 
@@ -531,7 +591,9 @@ Pending Architect approval and separate task instruction for:
 - M6 Discovery: **COMPLETE**
 - M6 Architectural Scope: **DEFINED**
 - M6-A Implementation: **COMPLETED** (Architect approved, pushed as `7ce09e3`)
-- M6-B Implementation: **COMPLETED** (Architect approved)
-- M6-C Implementation: **NOT STARTED**
+- M6-B Implementation: **COMPLETED** (Architect approved, pushed as `84f9130`)
+- M6-C Account Cash Validation: **COMPLETED** (Architect approved, pushed as `62144da`)
+- M6-C BUY Capacity via Agah: **NOT IMPLEMENTED / BLOCKED** (awaiting response structure)
+- M6-D Implementation: **NOT STARTED**
 - **M6 is NOT fully complete yet.**
 
