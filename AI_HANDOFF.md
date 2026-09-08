@@ -693,6 +693,71 @@ The following are explicitly **not** part of M6-D and remain blocked/pending:
 
 ---
 
+### M6-E — Unified BUY/SELL Capacity Preflight (COMPLETED / Architect Approved)
+
+#### Implementation Summary
+- **Files modified:**
+  - `core/order_engine.py` — Refactored the two separate `if order.side == BUY` / `if order.side == SELL` capacity blocks in `prepare()` into a single unified capacity gate:
+    - Both BUY and SELL capacity calls now route through a shared `_check_capacity()` static method.
+    - `_check_capacity()` encapsulates the common exception handling (`Exception → BLOCKED`, fail-closed) and quantity comparison (`order.quantity > capacity → BLOCKED`).
+    - BUY path: pre-validates `fund = account.tradable_balance_t1` (None/bool/non-numeric/negative checks), then calls `broker.get_buy_capacity(nsc_id, side_code, fund, price)`.
+    - SELL path: calls `broker.get_sell_capacity(nsc_id, side_code, fund=None, price)` directly.
+    - Side selection uses `capacity_label` ("خرید" / "فروش") to preserve exact error messages.
+- **Tests added:** None (refactor only — no new behavior).
+- **Tests updated:** None (all 123 existing tests continue to pass without modification).
+- **No architectural decisions added.**
+
+#### Unified Structure
+```
+OrderEngine.prepare() capacity gate:
+    if order.side == BUY:
+        fund = account.tradable_balance_t1
+        validate fund (None / bool / negative / non-numeric → BLOCKED)
+        capacity_fn = lambda: broker.get_buy_capacity(nsc_id, side, fund, price)
+        capacity_label = "خرید"
+    else:  # SELL (guaranteed by OrderValidator: side ∈ {BUY, SELL})
+        capacity_fn = lambda: broker.get_sell_capacity(nsc_id, side, fund=None, price)
+        capacity_label = "فروش"
+
+    → _check_capacity(order, broker_name, capacity_fn, capacity_label)
+        ├─ capacity_fn() raises Exception → BLOCKED (fail-closed)
+        ├─ order.quantity > capacity → BLOCKED
+        └─ order.quantity <= capacity → fall through to Ready
+```
+
+#### Behavior Preserved
+- **Gate ordering:** Identity (M6-A) → Trading State (M5/M6-A) → OrderValidator (M6-B) → Capacity (M6-C/M6-D unified) → Ready.
+- **Fail-closed policy:** Any exception from `get_buy_capacity` or `get_sell_capacity` → `BLOCKED`.
+- **Fund parameter:** BUY passes `fund = account.tradable_balance_t1`; SELL passes `fund = None`.
+- **Error messages:** Identical to pre-refactor (verified string-for-string).
+- **BUY/SELL separation:** BUY orders never call `get_sell_capacity`; SELL orders never call `get_buy_capacity`.
+- **Validation-before-capacity:** All `OrderValidator` checks (including `maximum_order_quantity_for_buy`/`maximum_order_quantity_for_sell`) fire BEFORE the capacity API call.
+
+#### Test Results (M6-E)
+- `test_m6a_preflight.py`: 8/8 PASS
+- `test_m6b_preflight.py`: 21/21 PASS
+- `test_m6c_preflight.py`: 16/16 PASS
+- `test_m6d_preflight.py`: 15/15 PASS
+- `test_engine_interface.py`: 17/17 PASS
+- `test_trading_state.py` (M5 regression): 16/16 PASS
+- `test_engine_provider_integration.py`: 4/4 PASS
+- `test_broker_manager.py`: 6/6 PASS
+- `test_instrument_provider.py`: 11/11 PASS
+- `test_main_order_workflow.py`: 7/7 PASS
+- `test_order_build.py`: PASS
+- `test_broker_dry_run.py`: PASS
+- `test_smoke_import`: PASS
+- **Total regression: 123/123 PASS** (all tests, no new tests added, no existing tests modified)
+
+#### Out-of-Scope for M6-E
+The following are explicitly **not** part of M6-E:
+- `Broker.get_capacity()` unified method on `Broker` ABC — not implemented (Phase 2 optional, not part of this commit)
+- Changes to `brokers/base.py` — unchanged
+- Changes to `brokers/agaah/broker.py` — unchanged
+- Changes to `OrderValidator` (`models/order_validator.py`) — unchanged
+- M6-F / Order Splitting — still pending
+- Any new endpoint or contract changes — none introduced
+
 ### M6 Overall Status
 - M6 Discovery: **COMPLETE**
 - M6 Architectural Scope: **DEFINED**
@@ -700,5 +765,7 @@ The following are explicitly **not** part of M6-D and remain blocked/pending:
 - M6-B Implementation: **COMPLETED** (Architect approved, pushed as `84f9130`)
 - M6-C Account Cash + BUY Capacity Validation: **COMPLETED** (Architect approved, pushed as `03ede4e`)
 - M6-D Portfolio Quantity / SELL Gate: **COMPLETED** (Architect approved, pushed as `f3bdf1d`)
-- **M6 preflight complete: M6-A, M6-B, M6-C, M6-D all implemented.** Remaining M6 items (Unified BUY/SELL Preflight, Order Splitting) are pending separate task instructions.
+- M6-E Unified BUY/SELL Capacity Preflight: **COMPLETED** (Architect approved, pushed as `be0d0b7`)
+- **M6 preflight core complete: M6-A through M6-E all implemented.**
+- **M6-F / Order Splitting still pending** — next stage pending Architect instruction.
 
