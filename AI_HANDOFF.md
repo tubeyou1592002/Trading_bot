@@ -393,11 +393,11 @@ endpointهای کلیدی:
 13. Checkpoint Metadata
 Date: 1405/06/14 (2026-09-07)
 
-Project State: M5 completed (ca3e2cbf, pushed) + M6-A completed (Architect approved, pushed as 7ce09e3) + M6-B completed (Architect approved, pushed as 84f9130) + M6-C Account Cash + BUY Capacity completed (Architect approved, pushed as 03ede4e) + Documentation Checkpoint commit.
+Project State: M5 completed (ca3e2cbf, pushed) + M6-A completed (Architect approved, pushed as 7ce09e3) + M6-B completed (Architect approved, pushed as 84f9130) + M6-C Account Cash + BUY Capacity completed (Architect approved, pushed as 03ede4e) + M6-D Portfolio Quantity / SELL Gate completed (Architect approved, pushed as f3bdf1d) + Documentation Checkpoint.
 
-Last Completed Milestone: M6-C — Account Cash + BUY Capacity Validation (all gates implemented, tested, and committed).
+Last Completed Milestone: M6-D — Portfolio Quantity / SELL Gate (all gates implemented, tested, and committed).
 
-Next Action: M6-D.
+Next Action: None (awaiting architect definition of next milestone).
 
 ---
 
@@ -618,12 +618,78 @@ The following are explicitly **not** part of M6-C and remain blocked/pending:
 
 ---
 
-### M6-D — Remaining Preflight Layers (NOT STARTED)
+### M6-D — Portfolio Quantity / SELL Gate (COMPLETED / Architect Approved)
 
-Pending Architect approval and separate task instruction for:
-1. Portfolio Quantity for Sell (`numberOfShares`)
-2. Unified BUY/SELL Preflight
-3. Planned Order Splitting
+#### Implementation Summary
+- **Files modified:**
+  - `brokers/base.py` — Added `get_sell_capacity()` to `Broker` ABC (default: `NotImplementedError` → fail-closed).
+  - `brokers/agaah/broker.py` — Implemented `get_sell_capacity()` calling `GET /api/v1/portfolio`, parsing `portfolio.numberOfShares`, with full validation (isSuccess, portfolio presence, numeric, non-negative) and fail-closed behavior on any API/HTTP/network failure.
+  - `core/order_engine.py` — Added `SELL` import and SELL capacity gate in `prepare()` after the BUY gate: calls `broker.get_sell_capacity()`, `BLOCKED` on any exception or insufficient capacity (`order.quantity > capacity`).
+- **Tests added:** `test_m6d_preflight.py` — 15 tests covering:
+  - sufficient capacity → READY
+  - exact quantity → READY
+  - insufficient capacity → BLOCKED
+  - zero quantity → BLOCKED (by existing OrderValidator)
+  - API failure → BLOCKED
+  - missing numberOfShares → BLOCKED
+  - missing portfolio → BLOCKED
+  - non-numeric → BLOCKED
+  - timeout → BLOCKED
+  - connection error → BLOCKED
+  - negative → BLOCKED
+  - BUY order skips SELL capacity gate → READY
+  - SELL gate does not break BUY path → READY
+  - correct arguments verification
+  - M6-B max_sell check fires before SELL capacity gate → BLOCKED
+- **Tests updated:** `test_engine_interface.py`, `test_m6a_preflight.py`, `test_m6b_preflight.py`, `test_m6c_preflight.py`, `test_engine_provider_integration.py`, `test_main_order_workflow.py` — added `get_sell_capacity` to FakeBroker implementations.
+
+#### Test Results (M6-D)
+- `test_m6d_preflight.py`: 15/15 PASS
+- `test_m6c_preflight.py`: 16/16 PASS
+- `test_m6b_preflight.py`: 21/21 PASS
+- `test_m6a_preflight.py`: 8/8 PASS
+- `test_trading_state.py` (M5 regression): 16/16 PASS
+- `test_engine_interface.py`: 17/17 PASS
+- `test_engine_provider_integration.py`: 4/4 PASS
+- `test_broker_manager.py`: 6/6 PASS
+- `test_instrument_provider.py`: 11/11 PASS
+- `test_main_order_workflow.py`: 7/7 PASS
+- **Total related regression: 123/123 PASS** (106 previous + 15 new M6-D + 2 updated interface tests)
+
+#### Behavioral Contract (M6-D)
+```
+SELL path (after M6-A identity/trading-state gate, after M6-B price/quantity constraints):
+    order.quantity > 0 and side == SELL
+        └─> OrderEngine.prepare()
+                └─> SELL Capacity gate:
+                    broker.get_sell_capacity(nsc_id, side_code, fund=None, price)
+                        ├─ any API/HTTP/network error → BLOCKED
+                        ├─ isSuccess != true → BLOCKED
+                        ├─ portfolio missing → BLOCKED
+                        ├─ portfolio.numberOfShares missing/None → BLOCKED
+                        ├─ portfolio.numberOfShares non-numeric → BLOCKED
+                        ├─ portfolio.numberOfShares < 0 → BLOCKED
+                        └─ capacity >= 0 → compare quantity:
+                            order.quantity > capacity → BLOCKED
+                            order.quantity <= capacity → continue
+                                └─> RETURN READY
+
+BUY path:
+    get_sell_capacity is NEVER called (BUY gate uses get_buy_capacity only)
+```
+
+#### M6-D Contract Details
+- **Endpoint:** `GET /api/v1/portfolio` (Architect-verified)
+- **Quantity field:** `portfolio.numberOfShares`
+- **Rule:** SELL allowed when `quantity <= numberOfShares`
+- **Missing/invalid/API failure → BLOCKED** (fail-closed)
+- `numberOfShares` is used only as the SELL gate bound; it is NOT an independent sellable quantity claim.
+
+#### Out-of-Scope for M6-D
+The following are explicitly **not** part of M6-D and remain blocked/pending:
+- Unified BUY/SELL Preflight
+- Order Splitting
+- Scheduler / Retry / Recovery
 
 ---
 
@@ -633,6 +699,6 @@ Pending Architect approval and separate task instruction for:
 - M6-A Implementation: **COMPLETED** (Architect approved, pushed as `7ce09e3`)
 - M6-B Implementation: **COMPLETED** (Architect approved, pushed as `84f9130`)
 - M6-C Account Cash + BUY Capacity Validation: **COMPLETED** (Architect approved, pushed as `03ede4e`)
-- M6-D Implementation: **NOT STARTED**
-- **M6 is NOT fully complete yet.**
+- M6-D Portfolio Quantity / SELL Gate: **COMPLETED** (Architect approved, pushed as `f3bdf1d`)
+- **M6 preflight complete: M6-A, M6-B, M6-C, M6-D all implemented.** Remaining M6 items (Unified BUY/SELL Preflight, Order Splitting) are pending separate task instructions.
 
