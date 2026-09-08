@@ -769,3 +769,269 @@ The following are explicitly **not** part of M6-E:
 - **M6 preflight core complete: M6-A through M6-E all implemented.**
 - **M6-F / Order Splitting: Deferred / Future Development** — out of scope per Architect decision; no implementation planned at this stage.
 
+---
+
+## 3. Dispatch Engine Execution Roadmap
+
+This roadmap defines the future execution of the project as a sequence of **independent, contract-based blocks**. Each block is a deliverable with defined inputs, outputs, dependencies, and acceptance criteria. Blocks are executed one at a time, each requiring Architect review and approval.
+
+### Governing Rules
+
+1. **The primary project goal is fixed:** Low-Latency, Configurable Order Dispatch.
+2. **No block may bypass M6-A through M6-E.** Validation/preflight gates must always be preserved.
+3. Every block must define: **Status → Goal → Dependencies → Contract → Acceptance Criteria → Tests → Architect Approval → Commit**.
+4. Every block must be independent and deliverable on its own.
+5. A new Architect must not change the contracts of prior blocks without explicit Architect approval and a recorded decision in `DECISIONS.md`.
+6. No milestone outside this roadmap may be added without Architect decision.
+7. **M6-F — Order Splitting** remains **Deferred / Future Development** and is not part of this execution roadmap.
+8. **Real Trading remains disabled** until the final block and explicit human approval.
+
+### Block 0 — Dispatch Architecture Foundation
+
+**Goal:** Establish the boundaries and base contracts of the Dispatch Engine.
+
+**Scope:**
+- Define the Dispatch Engine boundary.
+- Define the end-to-end order flow from Trigger to Dispatch.
+- Define time-based and event-based triggers.
+- Define the Account / Broker / Core boundaries.
+- Define the base contracts that all later blocks depend on.
+
+**Output:** Base architectural contract for the Dispatch Engine.
+
+**Status:** NOT STARTED
+
+---
+
+### Block 1 — Execution Planner
+
+**Goal:** Convert a logical order instruction into an explicit execution plan.
+
+**Scope:**
+- Determine which orders.
+- For which Accounts.
+- Through which Brokers.
+- With what execution order and conditions.
+
+**Output:** Execution Plan, independent of Broker implementation.
+
+**Dependencies:** Block 0
+
+**Status:** NOT STARTED
+
+---
+
+### Block 2 — Dispatch Core / Low-Latency Engine
+
+**Goal:** Build the shared execution core of the Dispatch Engine.
+
+**Scope:**
+- Receive the Execution Plan.
+- Manage the dispatch routing path.
+- Perform minimal final preparation.
+- Low-latency dispatch.
+- Manage internal timing required by the core.
+- Record base timestamps for latency measurement.
+- No dependency on Timed/Burst or Event-Driven as a specific feature.
+
+This block is the common base for Blocks 3 and 4.
+
+**Output:** Shared low-latency dispatch core.
+
+**Dependencies:** Block 1
+
+**Status:** NOT STARTED
+
+---
+
+### Block 3 — Timed / Burst Dispatch
+
+**Goal:** Implement dispatch within a configurable time window.
+
+**Scope:**
+- Configurable Start Time.
+- Configurable End Time.
+- Configurable interval / gap between orders.
+
+Note: Example values such as `50ms` and `10 seconds` are illustrative only and must not be hard-coded.
+
+**Output:** Configurable dispatch within a time window.
+
+**Dependencies:** Block 2
+
+**Status:** NOT STARTED
+
+---
+
+### Block 4 — Event-Driven Dispatch
+
+**Goal:** Enable dispatch triggered by confirmed events.
+
+**Scope:**
+- `Permitted`
+- `Permitted-Reserved`
+- Other verified triggers accepted in the future.
+
+This block must use the Dispatch Core and must not depend on Timed/Burst.
+
+**Output:** Event-driven dispatch, independent of fixed time scheduling.
+
+**Dependencies:** Block 2
+
+**Status:** NOT STARTED
+
+---
+
+### Block 5 — Execution Tracking
+
+**Goal:** Track the full execution cycle.
+
+**Scope:**
+- Dispatch request.
+- Broker response.
+- Order status.
+- Registration confirmation in the trading core, only if a reliable contract exists.
+
+This block must be usable through both Timed/Burst and Event-Driven paths.
+
+**Dependencies:** Block 2, Block 3, Block 4
+
+**Status:** NOT STARTED
+
+---
+
+### Block 6 — Multi-Account Execution
+
+**Goal:** Execute one Execution Plan across multiple Accounts.
+
+**Scope:**
+- Multiple Accounts from one Broker.
+- Coordinated yet independent execution per Account.
+- Preserve Account isolation and Account contracts.
+
+**Output:** Execution of one order plan across multiple accounts.
+
+**Dependencies:** Block 5
+
+**Status:** NOT STARTED
+
+---
+
+### Block 7 — Multi-Broker Execution
+
+**Goal:** Extend execution to multiple Brokers.
+
+**Scope:**
+- Multiple Brokers.
+- Multiple Accounts across multiple Brokers.
+- Preserve Broker abstraction.
+- Dispatch Core must not depend on any single Broker implementation.
+
+**Output:** Multi-Account / Multi-Broker Dispatch.
+
+**Dependencies:** Block 6
+
+**Status:** NOT STARTED
+
+---
+
+### Block 8 — Latency Measurement & Optimization
+
+**Goal:** Analyze recorded timestamps and optimize based on real data.
+
+**Scope:**
+- This block does **not** start instrumentation from scratch; base instrumentation must already exist in Block 2.
+- Analyze recorded timestamps.
+- Measure end-to-end latency.
+- Identify bottlenecks.
+- Investigate VPS / hosting location, network, connection method, and other factors affecting latency.
+- Data-driven optimization, not guessing.
+
+**Dependencies:** Block 7
+
+**Status:** NOT STARTED
+
+---
+
+### Block 9 — Stress / Simulation
+
+**Goal:** Test the system under heavy load.
+
+**Scope:**
+- High order volume
+- Severe bursts
+- Multiple Accounts
+- Multiple Brokers
+- Network / Broker response disruption
+- Correct preservation of M6-A through M6-E
+
+Real Trading must remain disabled during this block.
+
+**Output:** Proof of stability and correct behavior under load.
+
+**Dependencies:** Block 8
+
+**Status:** NOT STARTED
+
+---
+
+### Block 10 — Controlled Live Execution
+
+**Goal:** Controlled entry into Live Trading, only after:
+- Completion of required blocks
+- Successful tests
+- Architect review
+- Explicit human approval
+
+**Output:** Controlled entry into Live Trading.
+
+**Dependencies:** Block 9
+
+**Status:** NOT STARTED
+
+---
+
+### Dependency Graph
+
+```
+Block 0 → Block 1 → Block 2
+                        ↓
+            Block 3      Block 4
+              ↓            ↓
+              Block 5 (depends on Block 2, Block 3, Block 4)
+                        ↓
+                    Block 6
+                        ↓
+                    Block 7
+                        ↓
+                    Block 8
+                        ↓
+                    Block 9
+                        ↓
+                   Block 10
+```
+
+**Key architectural points:**
+
+- **Block 3 and Block 4 are siblings**, not dependent on each other. Both depend on Block 2 (Dispatch Core).
+- **Block 5 depends on Block 2, Block 3, and Block 4** so it can track both dispatch paths.
+- **Latency instrumentation starts in Block 2**, not Block 8. Block 8 analyzes and optimizes existing data.
+
+### Roadmap Summary
+
+| Block | Name | Dependencies | Status |
+|-------|------|--------------|--------|
+| 0 | Dispatch Architecture Foundation | — | NOT STARTED |
+| 1 | Execution Planner | Block 0 | NOT STARTED |
+| 2 | Dispatch Core / Low-Latency Engine | Block 1 | NOT STARTED |
+| 3 | Timed / Burst Dispatch | Block 2 | NOT STARTED |
+| 4 | Event-Driven Dispatch | Block 2 | NOT STARTED |
+| 5 | Execution Tracking | Block 2, Block 3, Block 4 | NOT STARTED |
+| 6 | Multi-Account Execution | Block 5 | NOT STARTED |
+| 7 | Multi-Broker Execution | Block 6 | NOT STARTED |
+| 8 | Latency Measurement & Optimization | Block 7 | NOT STARTED |
+| 9 | Stress / Simulation | Block 8 | NOT STARTED |
+| 10 | Controlled Live Execution | Block 9 | NOT STARTED |
+
+**M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
+
