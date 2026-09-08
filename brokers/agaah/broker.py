@@ -480,6 +480,106 @@ class AgaahBroker(Broker):
         return int(capacity)
 
     # =================================================
+    # SELL Capacity (Portfolio Quantity)
+    # =================================================
+    # GET /api/v1/portfolio
+    #
+    # M6-D contract (Architect-approved):
+    #   endpoint: GET /api/v1/portfolio
+    #   quantity field: portfolio.numberOfShares
+    #   SELL rule: requested quantity <= numberOfShares
+    #   missing/invalid/API failure -> raise (fail-closed)
+    #
+    # NOTE: numberOfShares is used only as the
+    # sellable quantity bound. It is NOT claimed to be
+    # an independent "sellable quantity".
+
+    def get_sell_capacity(
+        self,
+        nsc_id: str,
+        side_code: int,
+        fund,
+        price: int,
+    ) -> int:
+        """
+        دریافت حداکثر تعداد قابل‌فروش (ظرفیت) از API
+        آگاه.
+
+        Endpoint: GET /api/v1/portfolio
+        Response: portfolio.numberOfShares
+
+        هر خطای HTTP / شبکه / پاسخ نامعتبر باعث
+        پرتاب استثنا می‌شود تا موتور سفارش سفارش را
+        بلاک کند.
+        """
+
+        if not nsc_id:
+            raise ValueError(
+                "nsc_id نمی‌تواند خالی باشد."
+            )
+
+        response = self.session.get(
+            self._url("portfolio"),
+            params={
+                "nscId": nsc_id,
+                "sideCode": side_code,
+                "fund": fund,
+                "price": price,
+            },
+            headers=self._auth_headers(),
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("isSuccess", True):
+            raise RuntimeError(
+                data.get(
+                    "message",
+                    "دریافت ظرفیت فروش ناموفق بود."
+                )
+            )
+
+        portfolio = data.get("portfolio")
+
+        if portfolio is None:
+            raise RuntimeError(
+                "پاسخ ظرفیت فروش فاقد portfolio است."
+            )
+
+        if not isinstance(portfolio, dict):
+            raise RuntimeError(
+                "portfolio پاسخ ظرفیت فروش یک "
+                "object نیست."
+            )
+
+        number_of_shares = portfolio.get(
+            "numberOfShares"
+        )
+
+        if number_of_shares is None:
+            raise RuntimeError(
+                "portfolio فاقد numberOfShares است."
+            )
+
+        if isinstance(number_of_shares, bool) or not (
+            isinstance(number_of_shares, (int, float))
+        ):
+            raise RuntimeError(
+                "numberOfShares پاسخ ظرفیت فروش "
+                "عددی نیست."
+            )
+
+        if number_of_shares < 0:
+            raise RuntimeError(
+                "ظرفیت فروش منفی است."
+            )
+
+        return int(number_of_shares)
+
+    # =================================================
     # Account / Balance
     # =================================================
 

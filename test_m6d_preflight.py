@@ -1,25 +1,16 @@
 """
-M6-C — Account Cash + BUY Capacity Preflight tests.
+M6-D — Portfolio Quantity / SELL Gate tests.
 
-Account Cash tests (unchanged):
-- valid sufficient cash + valid capacity → pass
-- insufficient cash → BLOCKED
-- missing tradableBalanceT1 → BLOCKED
-- invalid/malformed balance → BLOCKED
-- negative balance → BLOCKED
-- bool balance → BLOCKED
+M6-D contract (Architect-approved):
+- Endpoint: GET /api/v1/portfolio
+- Quantity field: portfolio.numberOfShares
+- SELL rule: requested quantity <= numberOfShares -> allowed
+- missing/invalid/portfolio API failure -> BLOCKED (fail-closed)
+- BUY orders must NOT call get_sell_capacity; BUY gate must
+  not be affected by SELL gate.
 
-BUY Capacity tests (M6-C BUY Capacity gate):
-- valid sufficient capacity → order can continue
-- capacity smaller than requested quantity → BLOCKED
-- data == None → BLOCKED
-- missing data → BLOCKED
-- isSuccess == false → BLOCKED
-- malformed/non-numeric data → BLOCKED
-- API/HTTP failure → BLOCKED
-- timeout/network failure → BLOCKED
-
-No real orders. All collaborators are fakes/mocks.
+Scope: SELL capacity gate only.
+Out-of-scope: Unified BUY/SELL Preflight, Order Splitting.
 """
 
 import sys
@@ -36,7 +27,7 @@ from brokers.base import Broker
 from core.order_engine import OrderEngine
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
-from models.order import BUY, Order
+from models.order import BUY, SELL, Order
 from models.trading_state import VERIFIED_TRADABLE
 
 
@@ -76,7 +67,12 @@ def make_account(balance=10_000_000):
     return Account(tradable_balance_t1=balance)
 
 
-def make_order(nsc_id="IRO1TEST0001", side=BUY, price=150, quantity=10):
+def make_order(
+    nsc_id="IRO1TEST0001",
+    side=SELL,
+    price=150,
+    quantity=10,
+):
     return Order(
         nsc_id=nsc_id,
         side=side,
@@ -90,13 +86,14 @@ class FakeBroker(Broker):
     def __init__(
         self,
         state=VERIFIED_TRADABLE,
-        buy_capacity=1_000_000_000,
+        sell_capacity=1_000_000_000,
         capacity_exception=None,
     ):
         self._state = state
-        self._buy_capacity = buy_capacity
+        self._sell_capacity = sell_capacity
         self._capacity_exception = capacity_exception
         self.placed_calls = []
+        self.sell_capacity_calls = []
         self.buy_capacity_calls = []
         self.live_trading_enabled = False
 
@@ -141,9 +138,7 @@ class FakeBroker(Broker):
                 "price": price,
             }
         )
-        if self._capacity_exception is not None:
-            raise self._capacity_exception
-        return self._buy_capacity
+        return 1_000_000_000
 
     def get_sell_capacity(
         self,
@@ -152,7 +147,17 @@ class FakeBroker(Broker):
         fund,
         price,
     ):
-        return 1_000_000_000
+        self.sell_capacity_calls.append(
+            {
+                "nsc_id": nsc_id,
+                "side_code": side_code,
+                "fund": fund,
+                "price": price,
+            }
+        )
+        if self._capacity_exception is not None:
+            raise self._capacity_exception
+        return self._sell_capacity
 
 
 def _prepare(broker, order, instrument, account):
@@ -166,111 +171,16 @@ def _prepare(broker, order, instrument, account):
 
 
 # =================================================
-# Account Cash checks (M6-C)
+# SELL Capacity tests (M6-D)
 # =================================================
 
 
-def test_valid_sufficient_cash_continues():
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = make_account(balance=1_000_000)
-    order = make_order(price=100, quantity=100)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is True
-    assert result.sent is False
-    assert result.mode == "READY"
-    assert broker.placed_calls == []
-
-
-def test_insufficient_cash_blocks():
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = make_account(balance=500)
-    order = make_order(price=100, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert "کافی نیست" in result.message
-    assert broker.placed_calls == []
-
-
-def test_missing_tradable_balance_t1_blocks():
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = Account(tradable_balance_t1=None)
-    order = make_order(price=100, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert "موجودی قابل معامله T1 مشخص نیست" in result.message
-    assert broker.placed_calls == []
-
-
-def test_invalid_malformed_balance_blocks():
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = Account(tradable_balance_t1="invalid")
-    order = make_order(price=100, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert "معتبر نیست" in result.message
-    assert broker.placed_calls == []
-
-
-def test_negative_balance_blocks():
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = Account(tradable_balance_t1=-1000)
-    order = make_order(price=100, quantity=1)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert "منفی است" in result.message
-    assert broker.placed_calls == []
-
-
-def test_bool_balance_blocks():
-    """bool must not be accepted as a valid numeric balance."""
-    broker = FakeBroker()
-    instrument = make_instrument()
-    account = Account(tradable_balance_t1=True)
-    order = make_order(price=100, quantity=1)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert "معتبر نیست" in result.message
-    assert broker.placed_calls == []
-
-
-# =================================================
-# BUY Capacity via Agah calculatedquantity
-# =================================================
-
-
-def test_buy_capacity_sufficient_continues():
+def test_sell_capacity_sufficient_continues():
     """
-    Agah returns valid data (45789) >= requested quantity
+    portfolio.numberOfShares (45789) >= requested quantity
     (10) -> order can continue (READY).
     """
-    broker = FakeBroker(buy_capacity=45789)
+    broker = FakeBroker(sell_capacity=45789)
     instrument = make_instrument()
     account = make_account(balance=1_000_000)
     order = make_order(price=150, quantity=10)
@@ -281,27 +191,42 @@ def test_buy_capacity_sufficient_continues():
     assert result.sent is False
     assert result.mode == "READY"
     assert broker.placed_calls == []
-    assert len(broker.buy_capacity_calls) == 1
-    assert broker.buy_capacity_calls[0]["nsc_id"] == (
+    assert len(broker.sell_capacity_calls) == 1
+    assert broker.sell_capacity_calls[0]["nsc_id"] == (
         order.nsc_id
     )
-    assert broker.buy_capacity_calls[0]["side_code"] == (
+    assert broker.sell_capacity_calls[0]["side_code"] == (
         order.side
     )
-    assert broker.buy_capacity_calls[0]["fund"] == (
-        account.tradable_balance_t1
-    )
-    assert broker.buy_capacity_calls[0]["price"] == (
+    assert broker.sell_capacity_calls[0]["price"] == (
         order.price
     )
 
 
-def test_buy_capacity_insufficient_blocks():
+def test_sell_capacity_exact_quantity_continues():
     """
-    Agah returns data (5) smaller than requested quantity
+    portfolio.numberOfShares == requested quantity
+    -> order can continue (READY).
+    """
+    broker = FakeBroker(sell_capacity=10)
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=10)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is True
+    assert result.mode == "READY"
+    assert broker.placed_calls == []
+    assert len(broker.sell_capacity_calls) == 1
+
+
+def test_sell_capacity_insufficient_blocks():
+    """
+    portfolio.numberOfShares (5) < requested quantity
     (100) -> BLOCKED.
     """
-    broker = FakeBroker(buy_capacity=5)
+    broker = FakeBroker(sell_capacity=5)
     instrument = make_instrument()
     account = make_account(balance=1_000_000)
     order = make_order(price=150, quantity=100)
@@ -311,95 +236,29 @@ def test_buy_capacity_insufficient_blocks():
     assert result.success is False
     assert result.sent is False
     assert result.mode == "BLOCKED"
-    assert "ظرفیت" in result.message
+    assert "ظرفیت فروش" in result.message
     assert broker.placed_calls == []
 
 
-def test_buy_capacity_none_data_blocks():
+def test_sell_capacity_zero_quantity_blocks():
     """
-    Agah returns data == None -> BLOCKED.
+    order.quantity == 0 -> BLOCKED by existing
+    OrderValidator (zero quantity check).
     """
-    broker = FakeBroker(
-        capacity_exception=RuntimeError(
-            "پاسخ ظرفیت خرید فاقد data است."
-        )
-    )
+    broker = FakeBroker(sell_capacity=45789)
     instrument = make_instrument()
     account = make_account(balance=1_000_000)
-    order = make_order(price=150, quantity=10)
+    order = make_order(price=150, quantity=0)
 
     result = _prepare(broker, order, instrument, account)
 
     assert result.success is False
     assert result.sent is False
     assert result.mode == "BLOCKED"
-    assert broker.placed_calls == []
+    assert broker.sell_capacity_calls == []
 
 
-def test_buy_capacity_missing_data_blocks():
-    """
-    Agah response missing 'data' key -> BLOCKED.
-    """
-    broker = FakeBroker(
-        capacity_exception=RuntimeError(
-            "پاسخ ظرفیت خرید فاقد data است."
-        )
-    )
-    instrument = make_instrument()
-    account = make_account(balance=1_000_000)
-    order = make_order(price=150, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert broker.placed_calls == []
-
-
-def test_buy_capacity_isSuccess_false_blocks():
-    """
-    Agah returns isSuccess == false -> BLOCKED.
-    """
-    broker = FakeBroker(
-        capacity_exception=RuntimeError(
-            "درخواست ظرفیت خرید ناموفق بود."
-        )
-    )
-    instrument = make_instrument()
-    account = make_account(balance=1_000_000)
-    order = make_order(price=150, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert broker.placed_calls == []
-
-
-def test_buy_capacity_non_numeric_blocks():
-    """
-    Agah returns non-numeric data -> BLOCKED.
-    """
-    broker = FakeBroker(
-        capacity_exception=RuntimeError(
-            "data پاسخ ظرفیت خرید عددی نیست."
-        )
-    )
-    instrument = make_instrument()
-    account = make_account(balance=1_000_000)
-    order = make_order(price=150, quantity=10)
-
-    result = _prepare(broker, order, instrument, account)
-
-    assert result.success is False
-    assert result.sent is False
-    assert result.mode == "BLOCKED"
-    assert broker.placed_calls == []
-
-
-def test_buy_capacity_api_failure_blocks():
+def test_sell_capacity_api_failure_blocks():
     """
     HTTP/API error -> BLOCKED.
     """
@@ -420,7 +279,72 @@ def test_buy_capacity_api_failure_blocks():
     assert broker.placed_calls == []
 
 
-def test_buy_capacity_timeout_network_blocks():
+def test_sell_capacity_none_data_blocks():
+    """
+    portfolio.numberOfShares is None (missing in
+    response) -> BLOCKED.
+    """
+    broker = FakeBroker(
+        capacity_exception=RuntimeError(
+            "portfolio فاقد numberOfShares است."
+        )
+    )
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=10)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is False
+    assert result.sent is False
+    assert result.mode == "BLOCKED"
+    assert broker.placed_calls == []
+
+
+def test_sell_capacity_missing_portfolio_blocks():
+    """
+    portfolio itself is None/missing -> BLOCKED.
+    """
+    broker = FakeBroker(
+        capacity_exception=RuntimeError(
+            "پاسخ ظرفیت فروش فاقد portfolio است."
+        )
+    )
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=10)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is False
+    assert result.sent is False
+    assert result.mode == "BLOCKED"
+    assert broker.placed_calls == []
+
+
+def test_sell_capacity_non_numeric_blocks():
+    """
+    portfolio.numberOfShares is non-numeric -> BLOCKED.
+    """
+    broker = FakeBroker(
+        capacity_exception=RuntimeError(
+            "numberOfShares پاسخ ظرفیت فروش "
+            "عددی نیست."
+        )
+    )
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=10)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is False
+    assert result.sent is False
+    assert result.mode == "BLOCKED"
+    assert broker.placed_calls == []
+
+
+def test_sell_capacity_timeout_blocks():
     """
     Timeout / network error -> BLOCKED.
     """
@@ -441,7 +365,7 @@ def test_buy_capacity_timeout_network_blocks():
     assert broker.placed_calls == []
 
 
-def test_buy_capacity_connection_error_blocks():
+def test_sell_capacity_connection_error_blocks():
     """
     Network connection error -> BLOCKED.
     """
@@ -462,24 +386,108 @@ def test_buy_capacity_connection_error_blocks():
     assert broker.placed_calls == []
 
 
-def test_sell_order_skips_buy_capacity():
+def test_sell_capacity_negative_blocks():
     """
-    SELL orders must NOT call get_buy_capacity; the gate
-    is BUY-only. (Scope: M6-C BUY Capacity only.)
+    portfolio.numberOfShares is negative -> BLOCKED.
     """
-    from models.order import SELL
-
-    broker = FakeBroker(buy_capacity=0)
+    broker = FakeBroker(
+        capacity_exception=RuntimeError(
+            "ظرفیت فروش منفی است."
+        )
+    )
     instrument = make_instrument()
     account = make_account(balance=1_000_000)
-    order = make_order(side=SELL, price=150, quantity=10)
+    order = make_order(price=150, quantity=10)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is False
+    assert result.sent is False
+    assert result.mode == "BLOCKED"
+    assert broker.placed_calls == []
+
+
+def test_buy_skips_sell_capacity():
+    """
+    BUY orders must NOT call get_sell_capacity.
+    BUY gate (get_buy_capacity) is unaffected by SELL gate.
+    """
+    broker = FakeBroker(sell_capacity=0)
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(
+        side=BUY, price=150, quantity=10
+    )
 
     result = _prepare(broker, order, instrument, account)
 
     assert result.success is True
     assert result.mode == "READY"
-    assert len(broker.buy_capacity_calls) == 0
+    assert len(broker.sell_capacity_calls) == 0
+    assert len(broker.buy_capacity_calls) == 1
     assert broker.placed_calls == []
+
+
+def test_sell_does_not_break_buy_gate():
+    """
+    SELL gate must not break BUY path: a BUY order
+    with valid cash+capacity -> READY, even when
+    sell_capacity is 0.
+    """
+    broker = FakeBroker(sell_capacity=0)
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(
+        side=BUY, price=150, quantity=10
+    )
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.mode == "READY"
+    assert result.success is True
+    assert broker.sell_capacity_calls == []
+
+
+def test_sell_capacity_is_called_with_correct_args():
+    """
+    Verify get_sell_capacity receives correct args:
+    nsc_id = order.nsc_id, side_code = SELL (2),
+    price = order.price. fund is not relevant for
+    SELL but is passed as None per signature.
+    """
+    broker = FakeBroker(sell_capacity=1000)
+    instrument = make_instrument()
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=10)
+
+    _prepare(broker, order, instrument, account)
+
+    assert len(broker.sell_capacity_calls) == 1
+    call = broker.sell_capacity_calls[0]
+    assert call["nsc_id"] == order.nsc_id
+    assert call["side_code"] == SELL
+    assert call["price"] == order.price
+
+
+def test_sell_quantity_above_max_sell_blocks():
+    """
+    The existing M6-B maximum_order_quantity_for_sell
+    check must still fire BEFORE the SELL capacity gate.
+    If quantity > max_sell, BLOCKED with the
+    OrderValidator message (not the SELL capacity
+    message).
+    """
+    broker = FakeBroker(sell_capacity=1_000_000)
+    instrument = make_instrument(max_sell=100)
+    account = make_account(balance=1_000_000)
+    order = make_order(price=150, quantity=150)
+
+    result = _prepare(broker, order, instrument, account)
+
+    assert result.success is False
+    assert result.mode == "BLOCKED"
+    assert "حداکثر حجم" in result.message
+    assert len(broker.sell_capacity_calls) == 0
 
 
 # =================================================
@@ -489,24 +497,21 @@ def test_sell_order_skips_buy_capacity():
 
 def main():
     tests = [
-        # M6-C Account Cash (unchanged)
-        test_valid_sufficient_cash_continues,
-        test_insufficient_cash_blocks,
-        test_missing_tradable_balance_t1_blocks,
-        test_invalid_malformed_balance_blocks,
-        test_negative_balance_blocks,
-        test_bool_balance_blocks,
-        # M6-C BUY Capacity (new)
-        test_buy_capacity_sufficient_continues,
-        test_buy_capacity_insufficient_blocks,
-        test_buy_capacity_none_data_blocks,
-        test_buy_capacity_missing_data_blocks,
-        test_buy_capacity_isSuccess_false_blocks,
-        test_buy_capacity_non_numeric_blocks,
-        test_buy_capacity_api_failure_blocks,
-        test_buy_capacity_timeout_network_blocks,
-        test_buy_capacity_connection_error_blocks,
-        test_sell_order_skips_buy_capacity,
+        test_sell_capacity_sufficient_continues,
+        test_sell_capacity_exact_quantity_continues,
+        test_sell_capacity_insufficient_blocks,
+        test_sell_capacity_zero_quantity_blocks,
+        test_sell_capacity_api_failure_blocks,
+        test_sell_capacity_none_data_blocks,
+        test_sell_capacity_missing_portfolio_blocks,
+        test_sell_capacity_non_numeric_blocks,
+        test_sell_capacity_timeout_blocks,
+        test_sell_capacity_connection_error_blocks,
+        test_sell_capacity_negative_blocks,
+        test_buy_skips_sell_capacity,
+        test_sell_does_not_break_buy_gate,
+        test_sell_capacity_is_called_with_correct_args,
+        test_sell_quantity_above_max_sell_blocks,
     ]
     passed = 0
     failed = 0
@@ -538,8 +543,8 @@ def main():
         sys.exit(1)
 
     print(
-        f"\nM6-C Account Cash + BUY Capacity tests "
-        f"passed. ({len(tests)} tests)"
+        f"\nAll M6-D preflight tests passed. "
+        f"({len(tests)} tests)"
     )
 
 

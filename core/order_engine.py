@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
-from models.order import BUY, Order
+from models.order import BUY, SELL, Order
 from models.order_validator import (
     OrderValidationError,
     OrderValidator,
@@ -390,6 +390,58 @@ class OrderEngine:
                     broker_name=broker.name,
                     message=(
                         "ظرفیت خرید آگاه کافی نیست "
+                        f"(حداکثر {capacity}، "
+                        f"درخواستی {order.quantity})."
+                    ),
+                )
+
+        # ---------------------------------------------
+        # SELL Capacity (M6-D)
+        # ---------------------------------------------
+        # برای سفارش فروش، تعداد قابل‌فروش موجودی
+        # پرتفوی (numberOfShares) از API آگاه بررسی
+        # می‌شود.
+        #
+        # Gate این‌جا قرار می‌گیرد؛ نه در Validator،
+        # زیرا یک فراخوان API است.
+        #
+        # هر خطای API / شبکه / داده‌ نامعتبر باعث
+        # BLOCKED می‌شود (fail-closed).
+        #
+        # SELL rule: requested quantity <= numberOfShares
+        #
+        # NOTE: numberOfShares صرفاً حداکثر مقدار
+        # قابل‌فروش است؛ ادعای "ظرفیت مستقل فروش
+        # قابل‌فروش" نمی‌شود.
+
+        if order.side == SELL:
+
+            try:
+                capacity = broker.get_sell_capacity(
+                    nsc_id=order.nsc_id,
+                    side_code=order.side,
+                    fund=None,
+                    price=order.price,
+                )
+            except Exception as exc:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=str(exc),
+                )
+
+            if order.quantity > capacity:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "ظرفیت فروش آگاه کافی نیست "
                         f"(حداکثر {capacity}، "
                         f"درخواستی {order.quantity})."
                     ),

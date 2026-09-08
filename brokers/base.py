@@ -81,6 +81,28 @@ class Broker(ABC):
             "(get_buy_capacity) را پیاده‌سازی نکرده است."
         )
 
+    def get_sell_capacity(
+        self,
+        nsc_id: str,
+        side_code: int,
+        fund,
+        price: int,
+    ) -> int:
+        """
+        حداکثر تعداد قابل‌فروش (ظرفیت) برای یک سفارش
+        فروش از سمت broker.
+
+        پیش‌فرض: ``NotImplementedError`` پرتاب می‌شود؛
+        یعنی هر brokerی که این متد را override نکند،
+        فروش آن‌را به‌صورت fail-closed بلاک می‌کند.
+        فقط brokerهای دارای دسترسی به API ظرفیت
+        (مثلاً آگاه) باید آن را پیاده‌سازی کنند.
+        """
+        raise NotImplementedError(
+            "این Broker قابلیت دریافت ظرفیت فروش "
+            "(get_sell_capacity) را پیاده‌سازی نکرده است."
+        )
+
 
 class InstrumentProvider(ABC):
 

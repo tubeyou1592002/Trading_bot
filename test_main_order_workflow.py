@@ -141,6 +141,15 @@ class _StubBroker(Broker):
     ):
         return 1_000_000_000
 
+    def get_sell_capacity(
+        self,
+        nsc_id,
+        side_code,
+        fund,
+        price,
+    ):
+        return 1_000_000_000
+
 
 class _StubProvider(InstrumentProvider):
     """

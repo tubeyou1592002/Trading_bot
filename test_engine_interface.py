@@ -136,6 +136,15 @@ class FakeBroker(Broker):
     ):
         return 1_000_000_000
 
+    def get_sell_capacity(
+        self,
+        nsc_id,
+        side_code,
+        fund,
+        price,
+    ):
+        return 1_000_000_000
+
 
 # --------------------------------------------------------------------
 # Test cases
@@ -153,6 +162,7 @@ def test_abstract_broker_defines_interface():
         "cancel_order",
         "get_trading_state",
         "get_buy_capacity",
+        "get_sell_capacity",
     }
     for attr in expected:
         assert hasattr(Broker, attr), (
