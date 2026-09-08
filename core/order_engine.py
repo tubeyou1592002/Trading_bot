@@ -306,12 +306,16 @@ class OrderEngine:
             )
 
         # ---------------------------------------------
-        # BUY Capacity (M6-C)
+        # Capacity (M6-C BUY / M6-D SELL)
         # ---------------------------------------------
-        # برای سفارش خرید، ظرفیت محاسبه‌شده توسط
-        # API آگاه باید بررسی شود.
-        # fund = tradable_balance_t1 (همان‌طور که توسط
-        # Architect تأیید شده است).
+        # Unified capacity gate for both BUY and SELL sides.
+        #
+        # For BUY: fund = account.tradable_balance_t1
+        #   (with pre-validation: None / non-numeric / negative)
+        # For SELL: fund = None (not relevant per M6-D contract)
+        #
+        # Both paths share the same exception handling and
+        # quantity comparison logic (fail-closed).
         #
         # Gate این‌جا قرار می‌گیرد؛ نه در Validator،
         # زیرا یک فراخوان API است.
@@ -364,88 +368,33 @@ class OrderEngine:
                     ),
                 )
 
-            try:
-                capacity = broker.get_buy_capacity(
-                    nsc_id=order.nsc_id,
-                    side_code=order.side,
-                    fund=fund,
-                    price=order.price,
-                )
-            except Exception as exc:
-                return OrderExecutionResult(
-                    success=False,
-                    sent=False,
-                    mode="BLOCKED",
-                    order=order,
-                    broker_name=broker.name,
-                    message=str(exc),
-                )
+            capacity_fn = lambda: broker.get_buy_capacity(
+                nsc_id=order.nsc_id,
+                side_code=order.side,
+                fund=fund,
+                price=order.price,
+            )
+            capacity_label = "خرید"
 
-            if order.quantity > capacity:
-                return OrderExecutionResult(
-                    success=False,
-                    sent=False,
-                    mode="BLOCKED",
-                    order=order,
-                    broker_name=broker.name,
-                    message=(
-                        "ظرفیت خرید آگاه کافی نیست "
-                        f"(حداکثر {capacity}، "
-                        f"درخواستی {order.quantity})."
-                    ),
-                )
+        else:
 
-        # ---------------------------------------------
-        # SELL Capacity (M6-D)
-        # ---------------------------------------------
-        # برای سفارش فروش، تعداد قابل‌فروش موجودی
-        # پرتفوی (numberOfShares) از API آگاه بررسی
-        # می‌شود.
-        #
-        # Gate این‌جا قرار می‌گیرد؛ نه در Validator،
-        # زیرا یک فراخوان API است.
-        #
-        # هر خطای API / شبکه / داده‌ نامعتبر باعث
-        # BLOCKED می‌شود (fail-closed).
-        #
-        # SELL rule: requested quantity <= numberOfShares
-        #
-        # NOTE: numberOfShares صرفاً حداکثر مقدار
-        # قابل‌فروش است؛ ادعای "ظرفیت مستقل فروش
-        # قابل‌فروش" نمی‌شود.
+            capacity_fn = lambda: broker.get_sell_capacity(
+                nsc_id=order.nsc_id,
+                side_code=order.side,
+                fund=None,
+                price=order.price,
+            )
+            capacity_label = "فروش"
 
-        if order.side == SELL:
+        result = self._check_capacity(
+            order=order,
+            broker_name=broker.name,
+            capacity_fn=capacity_fn,
+            capacity_label=capacity_label,
+        )
 
-            try:
-                capacity = broker.get_sell_capacity(
-                    nsc_id=order.nsc_id,
-                    side_code=order.side,
-                    fund=None,
-                    price=order.price,
-                )
-            except Exception as exc:
-                return OrderExecutionResult(
-                    success=False,
-                    sent=False,
-                    mode="BLOCKED",
-                    order=order,
-                    broker_name=broker.name,
-                    message=str(exc),
-                )
-
-            if order.quantity > capacity:
-                return OrderExecutionResult(
-                    success=False,
-                    sent=False,
-                    mode="BLOCKED",
-                    order=order,
-                    broker_name=broker.name,
-                    message=(
-                        "ظرفیت فروش آگاه کافی نیست "
-                        f"(حداکثر {capacity}، "
-                        f"درخواستی {order.quantity})."
-                    ),
-                )
+        if not result.success:
+            return result
 
         # ---------------------------------------------
         # Ready
@@ -457,6 +406,58 @@ class OrderEngine:
             mode="READY",
             order=order,
             broker_name=broker.name,
+            message="سفارش برای ارسال آماده است.",
+        )
+
+    @staticmethod
+    def _check_capacity(
+        order: Order,
+        broker_name: str,
+        capacity_fn,
+        capacity_label: str,
+    ) -> OrderExecutionResult:
+        """
+        منطق مشترک بررسی ظرفیت خرید/فروش.
+
+        - capacity_fn: یک تابع بدون‌آرگومان که ظرفیت
+          محاسبه‌شده توسط broker را برمی‌گرداند.
+          هر استثنا → fail-closed BLOCKED.
+        - capacity_label: برچسب نمایشی ("خرید" یا "فروش")
+          برای پیام خطا.
+        """
+        try:
+            capacity = capacity_fn()
+        except Exception as exc:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=broker_name,
+                message=str(exc),
+            )
+
+        if order.quantity > capacity:
+            return OrderExecutionResult(
+                success=False,
+                sent=False,
+                mode="BLOCKED",
+                order=order,
+                broker_name=broker_name,
+                message=(
+                    f"ظرفیت {capacity_label} آگاه "
+                    f"کافی نیست "
+                    f"(حداکثر {capacity}، "
+                    f"درخواستی {order.quantity})."
+                ),
+            )
+
+        return OrderExecutionResult(
+            success=True,
+            sent=False,
+            mode="READY",
+            order=order,
+            broker_name=broker_name,
             message="سفارش برای ارسال آماده است.",
         )
 
