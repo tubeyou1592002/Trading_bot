@@ -132,6 +132,15 @@ class _StubBroker(Broker):
     def cancel_order(self, order_id):
         raise NotImplementedError
 
+    def get_buy_capacity(
+        self,
+        nsc_id,
+        side_code,
+        fund,
+        price,
+    ):
+        return 1_000_000_000
+
 
 class _StubProvider(InstrumentProvider):
     """

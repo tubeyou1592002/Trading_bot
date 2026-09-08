@@ -406,6 +406,80 @@ class AgaahBroker(Broker):
         }
 
     # =================================================
+    # BUY Capacity
+    # =================================================
+    # GET /api/v1/trades/calculatedquantity
+
+    def get_buy_capacity(
+        self,
+        nsc_id: str,
+        side_code: int,
+        fund,
+        price: int,
+    ) -> int:
+        """
+        دریافت حداکثر تعداد خرید (ظرفیت) از API آگاه.
+
+        Endpoint: GET /api/v1/trades/calculatedquantity
+        Parameters: nscId, sideCode, fund, price
+        Response: data = calculated BUY capacity (int)
+
+        هر خطای HTTP / شبکه / پاسخ نامعتبر باعث
+        پرتاب استثنا می‌شود تا موتور سفارش سفارش را
+        بلاک کند.
+        """
+
+        if not nsc_id:
+            raise ValueError(
+                "nsc_id نمی‌تواند خالی باشد."
+            )
+
+        response = self.session.get(
+            self._url("trades/calculatedquantity"),
+            params={
+                "nscId": nsc_id,
+                "sideCode": side_code,
+                "fund": fund,
+                "price": price,
+            },
+            headers=self._auth_headers(),
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data.get("isSuccess", True):
+            raise RuntimeError(
+                data.get(
+                    "message",
+                    "درخواست ظرفیت خرید ناموفق بود."
+                )
+            )
+
+        capacity = data.get("data")
+
+        if capacity is None:
+            raise RuntimeError(
+                "پاسخ ظرفیت خرید فاقد data است."
+            )
+
+        if isinstance(capacity, bool) or not isinstance(
+            capacity, (int, float)
+        ):
+            raise RuntimeError(
+                "data پاسخ ظرفیت خرید عددی نیست."
+            )
+
+        if capacity < 0:
+            raise RuntimeError(
+                "ظرفیت خرید منفی است."
+            )
+
+        return int(capacity)
+
+    # =================================================
     # Account / Balance
     # =================================================
 

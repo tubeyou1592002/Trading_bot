@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
-from models.order import Order
+from models.order import BUY, Order
 from models.order_validator import (
     OrderValidationError,
     OrderValidator,
@@ -304,6 +304,96 @@ class OrderEngine:
                 broker_name=broker.name,
                 message=str(exc),
             )
+
+        # ---------------------------------------------
+        # BUY Capacity (M6-C)
+        # ---------------------------------------------
+        # برای سفارش خرید، ظرفیت محاسبه‌شده توسط
+        # API آگاه باید بررسی شود.
+        # fund = tradable_balance_t1 (همان‌طور که توسط
+        # Architect تأیید شده است).
+        #
+        # Gate این‌جا قرار می‌گیرد؛ نه در Validator،
+        # زیرا یک فراخوان API است.
+        #
+        # هر خطای API / شبکه / داده‌ نامعتبر باعث
+        # BLOCKED می‌شود (fail-closed).
+
+        if order.side == BUY:
+
+            fund = account.tradable_balance_t1
+
+            if fund is None:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "fund (tradableBalanceT1) مشخص نیست؛ "
+                        "ظرفیت خرید قابل‌محاسبه نیست."
+                    ),
+                )
+
+            if isinstance(fund, bool) or not isinstance(
+                fund, (int, float)
+            ):
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "fund (tradableBalanceT1) معتبر نیست؛ "
+                        "ظرفیت خرید قابل‌محاسبه نیست."
+                    ),
+                )
+
+            if fund < 0:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "fund (tradableBalanceT1) منفی است؛ "
+                        "ظرفیت خرید قابل‌محاسبه نیست."
+                    ),
+                )
+
+            try:
+                capacity = broker.get_buy_capacity(
+                    nsc_id=order.nsc_id,
+                    side_code=order.side,
+                    fund=fund,
+                    price=order.price,
+                )
+            except Exception as exc:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=str(exc),
+                )
+
+            if order.quantity > capacity:
+                return OrderExecutionResult(
+                    success=False,
+                    sent=False,
+                    mode="BLOCKED",
+                    order=order,
+                    broker_name=broker.name,
+                    message=(
+                        "ظرفیت خرید آگاه کافی نیست "
+                        f"(حداکثر {capacity}، "
+                        f"درخواستی {order.quantity})."
+                    ),
+                )
 
         # ---------------------------------------------
         # Ready
