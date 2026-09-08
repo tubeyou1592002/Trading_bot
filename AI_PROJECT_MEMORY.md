@@ -34,7 +34,7 @@
 
 \*\*Current Git baseline:\*\*
 
-`be0d0b7 — M6-E: Unified BUY/SELL Capacity Preflight (Architect approved, pushed)`
+`8cfc4d4 — M6-E Documentation Checkpoint (docs: update project state after M6-E, Architect approved, pushed)`
 
 
 
@@ -75,6 +75,43 @@ The main objective is to:
 
 
 The project must be designed so that different brokers can be added without rewriting the core trading engine.
+
+---
+
+## 2b. Project Goal — Low-Latency, Configurable Order Dispatch
+
+The long-term objective of the project is to build a **Low-Latency, Configurable Order Dispatch** system. The goal is to minimize the time and variance between a dispatchable event and the moment an order enters the broker infrastructure, while keeping the system fully configurable and safe.
+
+### Core Dispatch Engine
+
+The system is a **dispatch engine**, not merely an order sender. It must:
+
+* Accept **pre-ready (pre-submitted / pre-validated) orders** so that no preparation work happens on the dispatch hot path.
+* Allow the user to configure the **start time** and **end time** of order sending.
+* Allow the user to configure the **interval / gap between orders**.
+* Support sending to:
+  * One account / one broker
+  * Multiple accounts / one broker
+  * Multiple accounts / multiple brokers
+* Support **Event-Driven Dispatch**: orders may be triggered immediately when an event is observed.
+  * Example: start sending immediately after a **Permitted** or **Permitted-Reserved** signal.
+  * In Event-Driven mode, the system may continue tracking until it receives a confirmation / token indicating the order has been registered in the trading core.
+* Minimize **latency** and **variance** between a dispatchable event and order entry into the broker infrastructure.
+
+### Configuration, Not Hard-Coded Constants
+
+All timing-related values are **user-configurable** and must not be treated as fixed architectural constants:
+
+* Example values such as `50ms` or `10 seconds` are **illustrative only**; the actual values must be configurable by the user.
+* The architecture must be ready, in the future, to measure latency across individual stages (network, VPS, broker API) so that bottlenecks can be identified and optimized.
+
+### Explicit Non-Guarantee
+
+The system is **NOT a guaranteed order-positioning system** for the trading core queue. The goal is to minimize latency and provide the best practical conditions for early order entry; it does not guarantee that an order will obtain a position in the trading core queue.
+
+### Validation / Preflight Architecture
+
+M6-A through M6-E (identity check, trading-state gate, price/quantity constraints, account cash + BUY capacity, portfolio quantity + SELL gate, unified capacity preflight) **must be preserved** and must not be bypassed in future architecture. However, the future architecture should perform as much preparation and validation as possible **before the dispatch moment**, so that the final dispatch path remains as low-latency as possible.
 
 
 
@@ -2004,7 +2041,7 @@ The following are explicitly **not** part of M6-E:
 - Changes to `brokers/base.py` — unchanged
 - Changes to `brokers/agaah/broker.py` — unchanged
 - Changes to `OrderValidator` (`models/order_validator.py`) — unchanged
-- M6-F / Order Splitting — still pending
+- M6-F / Order Splitting — Deferred / Future Development (out of scope per Architect decision)
 - Any new endpoint or contract changes — none introduced
 
 ### M6 Overall Status
@@ -2016,7 +2053,7 @@ The following are explicitly **not** part of M6-E:
 - M6-D Portfolio Quantity / SELL Gate: **COMPLETED** (Architect approved, pushed as `f3bdf1d`)
 - M6-E Unified BUY/SELL Capacity Preflight: **COMPLETED** (Architect approved, pushed as `be0d0b7`)
 - **M6 preflight core complete: M6-A through M6-E all implemented.**
-- **M6-F / Order Splitting still pending** — next stage pending Architect instruction.
+- **M6-F / Order Splitting: Deferred / Future Development** — out of scope per Architect decision; no implementation planned at this stage.
 
 
 

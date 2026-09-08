@@ -755,7 +755,7 @@ The following are explicitly **not** part of M6-E:
 - Changes to `brokers/base.py` — unchanged
 - Changes to `brokers/agaah/broker.py` — unchanged
 - Changes to `OrderValidator` (`models/order_validator.py`) — unchanged
-- M6-F / Order Splitting — still pending
+- M6-F / Order Splitting — Deferred / Future Development (out of scope per Architect decision)
 - Any new endpoint or contract changes — none introduced
 
 ### M6 Overall Status
@@ -767,5 +767,5 @@ The following are explicitly **not** part of M6-E:
 - M6-D Portfolio Quantity / SELL Gate: **COMPLETED** (Architect approved, pushed as `f3bdf1d`)
 - M6-E Unified BUY/SELL Capacity Preflight: **COMPLETED** (Architect approved, pushed as `be0d0b7`)
 - **M6 preflight core complete: M6-A through M6-E all implemented.**
-- **M6-F / Order Splitting still pending** — next stage pending Architect instruction.
+- **M6-F / Order Splitting: Deferred / Future Development** — out of scope per Architect decision; no implementation planned at this stage.
 
