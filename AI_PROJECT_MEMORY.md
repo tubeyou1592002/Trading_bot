@@ -34,7 +34,7 @@
 
 \*\*Current Git baseline:\*\*
 
-`ca3e2cbf — M5: TSETMC trading state integration`
+`03ede4e — M6-C: BUY Capacity preflight implementation
 
 
 
@@ -1765,28 +1765,49 @@ The following are explicitly **not** part of M6-B and remain for M6-C or later:
 
 ---
 
-### M6-C — Account Cash Validation (PARTIALLY COMPLETED / Architect Approved)
+### M6-C — Account Cash + BUY Capacity Validation (COMPLETED / Architect Approved)
 
-#### Implementation Summary (Account Cash Only)
-- **File modified:** `models/order_validator.py`
-  - Added fail-closed checks for Account Cash in BUY path:
+#### Implementation Summary
+- **Files modified:**
+  - `models/order_validator.py` — Added fail-closed checks for Account Cash in BUY path:
     - `tradable_balance_t1` must be numeric (`int`/`float`), not `bool`, not `None`, not negative.
     - `required_cash = order.price * order.quantity` must be `<= tradable_balance_t1`.
-- **Tests added:** `test_m6c_preflight.py` — 7 tests covering:
-  - valid sufficient cash → READY
-  - insufficient cash → BLOCKED
-  - missing `tradableBalanceT1` → BLOCKED
-  - malformed/string balance → BLOCKED
-  - negative balance → BLOCKED
-  - `bool` balance → BLOCKED
-  - BUY Capacity ambiguity documentation (NOT IMPLEMENTED)
-- **BUY Capacity via Agah (`calculatedquantity`):** NOT IMPLEMENTED / BLOCKED
+  - `brokers/base.py` — Added concrete `get_buy_capacity()` method to `Broker` ABC (default: `NotImplementedError` → fail-closed for brokers that don't override).
+  - `brokers/agaah/broker.py` — Implemented `get_buy_capacity()` calling `GET /api/v1/trades/calculatedquantity` with params `nscId`, `sideCode`, `fund`, `price`; validates `isSuccess`, `data` presence/numeric/non-negative; raises on any API/HTTP/network failure.
+  - `core/order_engine.py` — Added `BUY` import and BUY capacity gate in `prepare()`:
+    - `fund = account.tradable_balance_t1`.
+    - Missing/invalid/negative `fund` → `BLOCKED`.
+    - API call failure → `BLOCKED` (fail-closed).
+    - `order.quantity > capacity` → `BLOCKED`.
+- **Tests added:** `test_m6c_preflight.py` — 16 tests covering:
+  - Account Cash (6 tests):
+    - valid sufficient cash → READY
+    - insufficient cash → BLOCKED
+    - missing `tradableBalanceT1` → BLOCKED
+    - malformed/string balance → BLOCKED
+    - negative balance → BLOCKED
+    - `bool` balance → BLOCKED
+  - BUY Capacity (10 tests):
+    - valid sufficient capacity → READY
+    - insufficient capacity → BLOCKED
+    - `data` == None → BLOCKED
+    - missing `data` → BLOCKED
+    - `isSuccess == false` → BLOCKED
+    - non-numeric `data` → BLOCKED
+    - API/HTTP failure → BLOCKED
+    - timeout/network failure → BLOCKED
+    - connection error → BLOCKED
+    - SELL order skips capacity gate → READY
+- **Tests updated:** `test_m6a_preflight.py`, `test_m6b_preflight.py`, `test_engine_interface.py`, `test_engine_provider_integration.py`, `test_main_order_workflow.py` — added `get_buy_capacity` to FakeBroker implementations.
+- **BUY Capacity via Agah (`calculatedquantity`):** IMPLEMENTED
   - endpoint: `GET /api/v1/trades/calculatedquantity`
-  - Known params: `nscId`, `sideCode`, `fund`, `price`
-  - **Blocker:** Response field name for maximum buy quantity is unknown in repository/API evidence. Cannot implement without Architect-provided response structure.
+  - params: `nscId`, `sideCode`, `fund` (= `tradable_balance_t1`), `price`
+  - response field: `data` = Agah-calculated BUY capacity
+  - Architect-approved response contract (verified via Chrome DevTools)
+  - No new fields added to `Account`/`Order`/`BrokerInstrument`
 
-#### Test Results (M6-C Account Cash)
-- `test_m6c_preflight.py`: 7/7 PASS
+#### Test Results (M6-C Account Cash + BUY Capacity)
+- `test_m6c_preflight.py`: 16/16 PASS
 - `test_m6b_preflight.py`: 21/21 PASS
 - `test_m6a_preflight.py`: 8/8 PASS
 - `test_trading_state.py` (M5 regression): 16/16 PASS
@@ -1795,30 +1816,50 @@ The following are explicitly **not** part of M6-B and remain for M6-C or later:
 - `test_broker_manager.py`: 6/6 PASS
 - `test_instrument_provider.py`: 11/11 PASS
 - `test_main_order_workflow.py`: 7/7 PASS
-- **Total related regression: 97/97 PASS**
+- **Total related regression: 106/106 PASS**
 
-#### Behavioral Contract (M6-C Account Cash)
+#### Behavioral Contract (M6-C Account Cash + BUY Capacity)
 ```
 BUY path:
     tradable_balance_t1 is None/missing
-        └─> BLOCKED
+        └─> OrderValidator raises OrderValidationError
+                └─> OrderEngine.prepare()
+                        └─> RETURN BLOCKED (mode="BLOCKED")
 
     tradable_balance_t1 is bool or non-numeric
-        └─> BLOCKED
+        └─> OrderValidator raises OrderValidationError
+                └─> OrderEngine.prepare()
+                        └─> RETURN BLOCKED (mode="BLOCKED")
 
     tradable_balance_t1 is negative
-        └─> BLOCKED
+        └─> OrderValidator raises OrderValidationError
+                └─> OrderEngine.prepare()
+                        └─> RETURN BLOCKED (mode="BLOCKED")
 
     required_cash > tradable_balance_t1
-        └─> BLOCKED
+        └─> OrderValidator raises OrderValidationError
+                └─> OrderEngine.prepare()
+                        └─> RETURN BLOCKED (mode="BLOCKED")
 
-    required_cash <= tradable_balance_t1
-        └─> continue to next gate
+    tradable_balance_t1 valid + cash sufficient
+        └─> OrderValidator passes
+                └─> OrderEngine.prepare()
+                        └─> BUY Capacity gate:
+                            fund = tradable_balance_t1
+                            broker.get_buy_capacity(nscId, sideCode, fund, price)
+                                ├─ any API/HTTP/network error → BLOCKED
+                                ├─ isSuccess != true → BLOCKED
+                                ├─ data missing/None → BLOCKED
+                                ├─ data non-numeric → BLOCKED
+                                ├─ data < 0 → BLOCKED
+                                └─ capacity >= 0 → compare quantity:
+                                    order.quantity > capacity → BLOCKED
+                                    order.quantity <= capacity → continue
+                                        └─> RETURN READY
 ```
 
-#### Out-of-Scope for M6-C (Account Cash Only)
-The following are explicitly **not** part of M6-C Account Cash and remain blocked/pending:
-- BUY Capacity via Agah (`calculatedquantity`) — NOT IMPLEMENTED, awaiting response structure
+#### Out-of-Scope for M6-C
+The following are explicitly **not** part of M6-C and remain blocked/pending:
 - Portfolio Quantity for Sell (`numberOfShares`)
 - Unified BUY/SELL Preflight
 - Order Splitting
@@ -1829,10 +1870,9 @@ The following are explicitly **not** part of M6-C Account Cash and remain blocke
 ### M6-D — Remaining Preflight Layers (NOT STARTED)
 
 Pending Architect approval and separate task instruction for:
-1. BUY Capacity via Agah (`calculatedquantity`) — blocked pending response structure
-2. Portfolio Quantity for Sell (`numberOfShares`)
-3. Unified BUY/SELL Preflight
-4. Planned Order Splitting
+1. Portfolio Quantity for Sell (`numberOfShares`)
+2. Unified BUY/SELL Preflight
+3. Planned Order Splitting
 
 ---
 
@@ -1841,8 +1881,7 @@ Pending Architect approval and separate task instruction for:
 - M6 Architectural Scope: **DEFINED**
 - M6-A Implementation: **COMPLETED** (Architect approved, pushed as `7ce09e3`)
 - M6-B Implementation: **COMPLETED** (Architect approved, pushed as `84f9130`)
-- M6-C Account Cash Validation: **COMPLETED** (Architect approved, pushed as `62144da`)
-- M6-C BUY Capacity via Agah: **NOT IMPLEMENTED / BLOCKED** (awaiting response structure)
+- M6-C Account Cash + BUY Capacity Validation: **COMPLETED** (Architect approved, pushed as `03ede4e`)
 - M6-D Implementation: **NOT STARTED**
 - **M6 is NOT fully complete yet.**
 
