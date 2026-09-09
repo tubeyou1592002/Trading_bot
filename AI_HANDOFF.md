@@ -799,7 +799,23 @@ This roadmap defines the future execution of the project as a sequence of **inde
 
 **Output:** Base architectural contract for the Dispatch Engine.
 
-**Status:** NOT STARTED
+**Status:** IMPLEMENTED (Architect approved, uncommitted)
+
+**Files added:**
+- `core/dispatch_contracts.py` — Block 0 contracts: `Trigger` ABC, `TimeTrigger`/`EventTrigger` (contract-only), `ExecutionPlan`, `BrokerDispatchRequest`/`BrokerDispatchResponse`, `DispatchResult`.
+- `test_block0_dispatch_contracts.py` — 11 direct contract tests (11/11 PASS).
+
+**Constraints honored:**
+- No scheduler, event bus, polling, timer, or broker implementation.
+- `core/order_engine.py` NOT modified — M6-A…M6-E behavior unchanged.
+- No new security abstraction, proof, token, capability, secret, guard, or wrapper.
+- No new dependencies.
+- `live_trading_enabled` unchanged.
+
+**Dispatch boundary (Block 0):**
+`Trigger → Planner (Block 1) → Dispatch Core (Block 2) → existing M6-A…M6-E → Broker`
+
+**Regression:** 134/134 PASS (123 existing + 11 new Block 0 tests).
 
 ---
 

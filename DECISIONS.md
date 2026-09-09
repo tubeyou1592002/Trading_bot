@@ -856,3 +856,58 @@ A wrongly-allowed order has direct financial consequences. By recording the exac
 * Unknown or unrecoverable states default to `BLOCK`.
 * Order permission (`A` / `AR` = allowed) is decoupled from market trading state semantics (`AR` does not imply immediate execution).
 * No live order submission is enabled by this decision.
+
+---
+
+## Decision 021 — Block 0 Dispatch Architecture Foundation
+
+**Status:** Accepted (Architect approved)
+
+**Decision:**
+
+Block 0 of the Dispatch Engine Execution Roadmap defines the architectural boundary and the base contracts of the Dispatch layer. It is contract-only and introduces no execution behavior.
+
+**Dispatch boundary (Block 0):**
+
+```text
+Trigger
+    │
+    ▼
+Planner (Block 1)
+    │
+    ▼
+Dispatch Core (Block 2)
+    │
+    ▼
+existing M6-A … M6-E  (OrderEngine.prepare / execute)
+    │
+    ▼
+Broker
+```
+
+**Contracts defined in `core/dispatch_contracts.py`:**
+
+* `Trigger` — abstract trigger interface (`evaluate(now) -> bool`). No scheduler, event bus, timer, or polling.
+* `TimeTrigger` / `EventTrigger` — time-based and event-based triggers as contract subclasses only.
+* `ExecutionPlan` — data contract between Planner and Dispatch Core (orders, accounts, broker_names, execution_order, conditions, plan_id, created_at).
+* `BrokerDispatchRequest` / `BrokerDispatchResponse` — data contract between Dispatch Core and Broker.
+* `DispatchResult` — simple, explicit dispatch-level status.
+
+**Constraints:**
+
+* Block 0 does **not** modify `core/order_engine.py`. M6-A through M6-E behavior is unchanged.
+* Block 0 adds **no** new capability, token, proof, guard, wrapper, security abstraction, or security mechanism.
+* Block 0 adds **no** broker implementation, no live execution, and no new dependencies.
+* `live_trading_enabled` is unchanged.
+* Block 0 is a pure contract layer; it has no execution behavior.
+
+**Reason:**
+
+The Dispatch Engine roadmap (Block 0 through Block 10) requires a stable, broker-independent contract foundation before any planner, dispatch core, or scheduling logic is built. Defining the boundary and contracts explicitly in Block 0 prevents later blocks from accidentally entangling dispatch concerns with the existing M6-A…M6-E preflight gates, and keeps the core engine broker-independent (Decision 003).
+
+**Evidence:**
+
+* `core/dispatch_contracts.py` — contract definitions.
+* `test_block0_dispatch_contracts.py` — 11 direct contract tests, 11/11 PASS.
+* Full regression: 134/134 PASS (123 existing + 11 new).
+* `core/order_engine.py` unmodified; `git diff` confirms no changes to M6-A…M6-E.
