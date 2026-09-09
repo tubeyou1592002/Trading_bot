@@ -833,7 +833,37 @@ This roadmap defines the future execution of the project as a sequence of **inde
 
 **Dependencies:** Block 0
 
-**Status:** NOT STARTED
+**Status:** IMPLEMENTED — awaiting commit (Architect approved)
+
+**Files added:**
+- `core/execution_planner.py` — Block 1 planner:
+  - `LogicalOrderInstruction` (frozen dataclass): plan_id, orders, conditions.
+  - `PlannedOrder` (frozen dataclass): order, account_id, broker_name, sequence, conditions.
+  - `ExecutionPlanner.build_plan(instruction) -> ExecutionPlan`.
+  - `PlannerValidationError` for fail-closed validation.
+- `test_execution_planner.py` — 26 direct tests (26/26 PASS).
+
+**Behavior:**
+- Validates the instruction; rejects empty orders, missing/blank plan_id, duplicate/negative/non-integer sequences, blank account_id/broker_name, non-dict conditions.
+- Sorts planned orders by ascending `sequence` and preserves the explicit order/account/broker mapping.
+- Preserves plan-level conditions and per-order conditions under `conditions["orders"][sequence]`.
+- Returns the existing Block 0 `ExecutionPlan` (created_at left `None` for the Dispatch Core to stamp).
+- Deterministic: same input produces equivalent plans; no wall-clock, no randomness.
+- Broker-independent: references brokers by name only; never imports `brokers`, never calls any Broker API, never submits an order, never enables live trading.
+- M6-A..M6-E untouched: no reference to `OrderEngine`, `prepare`, `execute`, `place_order`, `get_buy_capacity`, or `get_sell_capacity` in executable code.
+
+**Constraints honored:**
+- `core/dispatch_contracts.py` NOT modified.
+- M6-A through M6-E NOT modified.
+- Broker implementations NOT modified.
+- No scheduler, timer, polling, async dispatch, execution tracking, latency measurement, multi-account execution, multi-broker execution, or M6-F order splitting.
+- No Broker API call; no order submission; live trading remains disabled.
+- No new dependencies.
+
+**Regression:** 158/158 PASS (132 existing + 26 new Block 1 tests).
+
+**Dispatch boundary (Block 0/1):**
+`Trigger → Planner (Block 1) → Dispatch Core (Block 2) → existing M6-A…M6-E → Broker`
 
 ---
 
@@ -1038,7 +1068,7 @@ Block 0 → Block 1 → Block 2
 | Block | Name | Dependencies | Status |
 |-------|------|--------------|--------|
 | 0 | Dispatch Architecture Foundation | — | IMPLEMENTED (committed `7b29897`) |
-| 1 | Execution Planner | Block 0 | NOT STARTED |
+| 1 | Execution Planner | Block 0 | IMPLEMENTED (awaiting commit) |
 | 2 | Dispatch Core / Low-Latency Engine | Block 1 | NOT STARTED |
 | 3 | Timed / Burst Dispatch | Block 2 | NOT STARTED |
 | 4 | Event-Driven Dispatch | Block 2 | NOT STARTED |
