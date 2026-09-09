@@ -861,7 +861,7 @@ A wrongly-allowed order has direct financial consequences. By recording the exac
 
 ## Decision 021 — Block 0 Dispatch Architecture Foundation
 
-**Status:** Accepted (Architect approved)
+**Status:** Accepted — IMPLEMENTED, committed as `7b29897` (Architect approved)
 
 **Decision:**
 
@@ -911,3 +911,4 @@ The Dispatch Engine roadmap (Block 0 through Block 10) requires a stable, broker
 * `test_block0_dispatch_contracts.py` — 11 direct contract tests, 11/11 PASS.
 * Full regression: 134/134 PASS (123 existing + 11 new).
 * `core/order_engine.py` unmodified; `git diff` confirms no changes to M6-A…M6-E.
+* Committed as `7b29897` — `feat: add Block 0 dispatch architecture foundation`.

@@ -799,7 +799,7 @@ This roadmap defines the future execution of the project as a sequence of **inde
 
 **Output:** Base architectural contract for the Dispatch Engine.
 
-**Status:** IMPLEMENTED (Architect approved, uncommitted)
+**Status:** IMPLEMENTED — committed as `7b29897` (Architect approved)
 
 **Files added:**
 - `core/dispatch_contracts.py` — Block 0 contracts: `Trigger` ABC, `TimeTrigger`/`EventTrigger` (contract-only), `ExecutionPlan`, `BrokerDispatchRequest`/`BrokerDispatchResponse`, `DispatchResult`.
@@ -1037,7 +1037,7 @@ Block 0 → Block 1 → Block 2
 
 | Block | Name | Dependencies | Status |
 |-------|------|--------------|--------|
-| 0 | Dispatch Architecture Foundation | — | NOT STARTED |
+| 0 | Dispatch Architecture Foundation | — | IMPLEMENTED (committed `7b29897`) |
 | 1 | Execution Planner | Block 0 | NOT STARTED |
 | 2 | Dispatch Core / Low-Latency Engine | Block 1 | NOT STARTED |
 | 3 | Timed / Burst Dispatch | Block 2 | NOT STARTED |
