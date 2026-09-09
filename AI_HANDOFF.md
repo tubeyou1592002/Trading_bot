@@ -833,7 +833,11 @@ This roadmap defines the future execution of the project as a sequence of **inde
 
 **Dependencies:** Block 0
 
-**Status:** IMPLEMENTED — awaiting commit (Architect approved)
+**Status:** COMPLETE — IMPLEMENTED, committed as `2c4e857`, pushed to `origin/master` (Architect approved)
+
+**Commit:** `2c4e857` — `feat: implement Block 1 execution planner`
+
+**Push:** Successful to `origin/master` (remote advanced `924475d..2c4e857`)
 
 **Files added:**
 - `core/execution_planner.py` — Block 1 planner:
@@ -1068,7 +1072,7 @@ Block 0 → Block 1 → Block 2
 | Block | Name | Dependencies | Status |
 |-------|------|--------------|--------|
 | 0 | Dispatch Architecture Foundation | — | IMPLEMENTED (committed `7b29897`) |
-| 1 | Execution Planner | Block 0 | IMPLEMENTED (awaiting commit) |
+| 1 | Execution Planner | Block 0 | COMPLETE (committed `2c4e857`, pushed `origin/master`) |
 | 2 | Dispatch Core / Low-Latency Engine | Block 1 | NOT STARTED |
 | 3 | Timed / Burst Dispatch | Block 2 | NOT STARTED |
 | 4 | Event-Driven Dispatch | Block 2 | NOT STARTED |
