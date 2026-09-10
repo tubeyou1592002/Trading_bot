@@ -1418,9 +1418,75 @@ Chat conversations provide context, but the repository must remain independently
 
 
 
-\## 22. Development Principle
+\## 22. Dispatch Engine Architecture
 
+### 22.1 Dispatch Boundary
 
+The Dispatch Engine extends the existing architecture with a new layer between the UI/Application and the existing Order Engine:
+
+```text
+Trigger
+    │
+    ▼
+Planner (Block 1)
+    │
+    ▼
+Dispatch Core (Block 2)
+    │
+    ▼
+existing M6-A … M6-E  (OrderEngine.prepare / execute)
+    │
+    ▼
+Broker
+```
+
+The Dispatch Core is broker-independent (Decision 003) and does not modify the existing M6-A…M6-E preflight gates.
+
+### 22.2 Block 2 — Dispatch Core / Low-Latency Engine
+
+Block 2 is the shared execution core of the Dispatch Engine. It receives an `ExecutionPlan` from Block 1 and dispatches orders through the existing `OrderEngine` path.
+
+**Core / OrderEngine / Broker Adapter boundaries:**
+
+- **Dispatch Core → OrderEngine:** The Dispatch Core delegates to `OrderEngine.execute()` (or `OrderEngine.execute_by_ins_code()`). It does NOT bypass `OrderEngine.prepare()`. All M6-A…M6-E preflight gates run inside `prepare()` before any order is sent to the Broker.
+- **Dispatch Core → Broker Adapter:** The Dispatch Core sends a normalized `BrokerDispatchRequest` envelope. It does NOT construct broker-specific HTTP payloads, headers, or auth tokens. The Broker Adapter translates the envelope into the broker's native API call.
+- **Dispatch Core → BrokerManager:** The Dispatch Core resolves broker names to instances through the existing `BrokerManager`. It does NOT create new broker instances or modify broker lifecycle.
+- **Dispatch Core → InstrumentProvider:** The Dispatch Core resolves instruments through the existing `InstrumentProvider` abstraction (Decision 019). It does NOT call broker-specific instrument APIs directly.
+
+**Account and Broker binding:**
+
+- Accounts and brokers must be pre-identified for execution before dispatch.
+- The Dispatch Core must NOT re-select, re-resolve, filter, or rebalance accounts or brokers during dispatch.
+- Each order in the plan is paired with an `account_id` and `broker_name` via `PlannedOrder` (Block 1) during planning.
+- Multi-Account lifecycle coordination is out of scope for Block 2 and remains for Block 6.
+
+**BrokerDispatchRequest boundary:**
+
+`BrokerDispatchRequest` is the defined normalized contract envelope between Dispatch Core and Broker. The Dispatch Core must establish the real dispatch path that uses this contract. The actual Broker Adapter consuming `BrokerDispatchRequest` is NOT yet implemented; Block 2 must define how the real path will use this contract. The Dispatch Core never constructs broker-specific payloads.
+
+**M6 preservation:**
+
+Block 2 MUST NOT bypass M6-A through M6-E. Block 2 must use the existing `OrderEngine` execution path. All preflight gates remain intact. The specific method calls (`prepare()`, `execute()`, `execute_by_ins_code()`) that Block 2 uses to enter the `OrderEngine` path are not yet decided and are not recorded here.
+
+**Dry-run:**
+
+`live` in `BrokerDispatchRequest` is always False during development. The Dispatch Core does NOT enable live trading. Dry-run is the only mode until Block 10 (Controlled Live Execution) and explicit human approval.
+
+**Out of scope for Block 2:**
+
+- Scheduler, timer, polling, or event bus — Block 3/4 handle these.
+- Multi-account execution coordination — Block 6.
+- Multi-broker routing logic — Block 7.
+- Latency measurement and optimization — Block 8 (base timestamps recorded in Block 2, analysis in Block 8).
+- Order splitting (M6-F) — Deferred.
+- Real trading — Block 10.
+- Any new broker abstraction, security mechanism, token, proof, or guard.
+- Any modification to M6-A through M6-E.
+- Any change to `core/dispatch_contracts.py`.
+
+---
+
+## 23. Development Principle
 
 Preferred development cycle:
 

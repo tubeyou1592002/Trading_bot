@@ -912,3 +912,72 @@ The Dispatch Engine roadmap (Block 0 through Block 10) requires a stable, broker
 * Full regression: 134/134 PASS (123 existing + 11 new).
 * `core/order_engine.py` unmodified; `git diff` confirms no changes to M6-A…M6-E.
 * Committed as `7b29897` — `feat: add Block 0 dispatch architecture foundation`.
+
+---
+
+## Decision 022 — Block 2 Dispatch Core Contract
+
+**Status:** Accepted — Contract defined, implementation NOT STARTED.
+
+**Decision:**
+
+Block 2 (Dispatch Core / Low-Latency Engine) is defined as the shared execution core between the Execution Planner (Block 1) and the existing M6-A…M6-E preflight gates. It implements the execution path using the contracts already established in Block 0.
+
+**Contract alignment:**
+
+Block 2 aligns with the complete Dispatch Core contract defined in `core/dispatch_contracts.py`. The contract is unchanged; Block 2 is responsible for implementing the execution path that uses these contracts.
+
+**Account binding:**
+
+Accounts must be pre-identified for execution before dispatch. The Dispatch Core must NOT re-select, re-resolve, filter, or rebalance accounts during dispatch. The Dispatch Core does NOT call `broker.get_account()` or any account discovery API. Multi-Account lifecycle coordination is out of scope for Block 2 and remains for Block 6.
+
+**Broker binding:**
+
+Brokers must be pre-identified for execution before dispatch. The Dispatch Core must NOT re-select or invent broker instances, create new sessions, or modify broker lifecycle during dispatch. Broker resolution from names to instances uses the existing `BrokerManager` (no new broker abstraction).
+
+**BrokerDispatchRequest as part of the real dispatch path:**
+
+`BrokerDispatchRequest` is the defined normalized contract envelope between Dispatch Core and Broker. The Dispatch Core must establish the real dispatch path that uses this contract. The actual Broker Adapter consuming `BrokerDispatchRequest` is NOT yet implemented; Block 2 must define how the real path will use this contract. The Dispatch Core must NOT construct broker-specific HTTP payloads, headers, or auth tokens.
+
+**Core must not construct broker-specific payloads:**
+
+The Dispatch Core MUST NOT construct broker-specific payloads. It passes only the normalized `BrokerDispatchRequest` envelope. The Broker Adapter is responsible for translating this envelope into the broker's native API request format. This preserves broker independence (Decision 003) and keeps the core layer free of broker-specific implementation details.
+
+**M6-A through M6-E must not be bypassed:**
+
+Block 2 MUST NOT bypass M6-A through M6-E. Block 2 must use the existing `OrderEngine` execution path. All preflight gates (M6-A identity/trading-state, M6-B price/quantity constraints, M6-C BUY capacity, M6-D SELL capacity, M6-E unified capacity) remain intact. The specific method calls (`prepare()`, `execute()`, `execute_by_ins_code()`) that Block 2 uses to enter the `OrderEngine` path are not yet decided and are not recorded here.
+
+**Exact Account → Correct Broker Session/Execution Target:**
+
+The architectural requirement is that each order is dispatched to the exact Account and Broker Session/Execution Target specified during planning. This means:
+- The `account_id` binding from `PlannedOrder` must be preserved and used as the execution target.
+- The `broker_name` binding from `PlannedOrder` must be preserved and used to select the correct Broker instance.
+- The Dispatch Core must NOT re-resolve, rebalance, or reassign accounts or brokers.
+- The Dispatch Core must NOT merge accounts, split orders across accounts, or apply any account selection logic.
+
+This requirement is recorded as an architectural requirement. It does NOT implement Multi-Account lifecycle (Block 6) or Multi-Broker execution (Block 7); those remain for their respective blocks.
+
+**Reason:**
+
+The Dispatch Engine roadmap (Block 0 through Block 10) requires a stable, broker-independent dispatch core before scheduling, multi-account, or multi-broker logic is built. Defining the Block 2 contract explicitly prevents later blocks from accidentally:
+1. Re-selecting accounts or brokers that were already bound by the Planner.
+2. Constructing broker-specific payloads in the core layer.
+3. Bypassing the M6-A…M6-E preflight gates.
+4. Inventing account rebalancing or broker selection logic before the architectural requirement is explicitly reviewed.
+
+**Constraints:**
+
+* Block 2 does NOT modify `core/dispatch_contracts.py`.
+* Block 2 does NOT modify M6-A through M6-E.
+* Block 2 does NOT modify any Broker implementation.
+* Block 2 does NOT introduce a scheduler, timer, polling, or event bus (Blocks 3/4).
+* Block 2 does NOT implement multi-account execution (Block 6) or multi-broker execution (Block 7).
+* Block 2 does NOT enable live trading.
+* Block 2 does NOT add new dependencies.
+* `live_trading_enabled` remains unchanged.
+
+**Evidence:**
+
+* This decision is a contract definition only; no code is implemented yet.
+* Block 2 status remains NOT STARTED.
+* All existing tests (123+) remain unchanged.
