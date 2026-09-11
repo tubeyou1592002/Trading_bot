@@ -337,6 +337,30 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 * افزودن scheduling/timer برای ارسال زمان‌بندی‌شده سفارش.
 * مدیریت چندحسابی و session lifecycle.
 
+**Block 4 — Continuation Plan** (documented for future AI agents):
+
+**Block 4 — Task 1** — `core/trading_state_event_trigger.py`
+- Responsible for validating a Trading State Event.
+- Output determines whether the event conditions are met to proceed to the next stage.
+- Evaluates whether `is_order_entry_allowed is True` and `is_verified is True` on the TradingState.
+- Pure, deterministic function; no broker, clock, or API dependencies.
+- Fail-closed: any state that is blocked, unverified, or invalid returns False.
+
+**Block 4 — Task 2** — Connect a valid Event to the existing Planner
+- Responsible for connecting a validated TradingStateEvent to the existing Execution Planner (Block 1) so that the request to build an `ExecutionPlan` follows the standard project path.
+- Task 2 MUST NOT redesign or modify the Planner.
+- Task 2 MUST NOT execute or modify Dispatch Core.
+- The trigger output (boolean) is used as a gate: only when the event trigger returns True does the planner proceed to build the ExecutionPlan via its standard `build_plan()` method.
+
+**Next Block 4 Task** — Connect `ExecutionPlan` result to Dispatch path
+- Connection of the `ExecutionPlan` obtained from the Planner to the Dispatch Core (Block 2) path will be performed in a separate Task.
+- This section is currently out of scope for Task 2.
+
+**Block Boundaries**
+- Block 3 (Timed / Burst Dispatch) remains independent of Block 4; no new dependency from Block 4 on Block 3 is permitted.
+- Block 5 (Execution Tracking) does not enter Block 4 at this time.
+- Completion of Block 4 must not push responsibilities onto future Blocks beyond their defined scope.
+
 **M5 — IMPLEMENTED: TSETMC Trading State Integration**
 
 تغییرات:
