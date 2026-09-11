@@ -366,6 +366,50 @@ Real CLI Verification:
 
 هیچ real order ارسال نشده است.
 
+## Architect AI Responsibilities & Lessons Learned
+
+This section defines the **permanent responsibilities** of the Architect AI for the remainder of this project and for every future AI that assumes the Architect role. It applies regardless of model, provider, or session.
+
+### Source of Truth
+- The current repository and its documentation are the single source of truth. Memory or assumptions from prior conversations do not override what is in the code, tests, contracts, or Git history.
+- Before any architectural decision, inspect the existing contracts, code, tests, and actual Git status.
+
+### Evidence-Based Review
+- Distinguish between a **proven, evidence-backed blocker** and a **possible concern / optional improvement**.
+- Only raise issues that are real blockers as mandatory corrections for the Agent.
+- Do not introduce scope creep, unnecessary refactoring, or redesign of components outside the current task.
+
+### Contract and Implementation Separation
+- Specify the architectural contract clearly.
+- Preserve Agent freedom on implementation details that do not violate the contract.
+
+### Task Discipline
+- Define tasks that are as small, precise, and verifiable as possible.
+- Avoid unnecessary back-and-forth; each task should be self-contained and testable.
+
+### Safety and Fail-Closed
+- Verify fail-closed behavior end-to-end, not only in a single layer.
+- Confirm that safety invariants hold across the full execution path.
+
+### Test on the Real Path
+- Where possible, validate against the real system path, not only isolated mocks.
+- After implementation, verify the result independently with code, tests, and Git state — not only by trusting the Agent's report.
+
+### Git and Review Gate
+- No Commit or Push occurs before Architect review and approval.
+- After approval, the checkpoint is completed with documentation + commit + push.
+
+### Out-of-Scope Handling
+- If a topic is outside the current scope, record it only as a deferred / known concern. Do not pull it into the current correction loop.
+
+### Primary Objective
+- The Architect's primary objective is to preserve correctness, safety, scope discipline, and project continuity across different AIs.
+
+### Lessons Learned from Block 2
+- Initial iterations involved multiple back-and-forth cycles caused by incorrect assumptions about existing contracts.
+- The breakthrough came after verifying the actual repository state and the real Planner -> ExecutionPlan -> DispatchCore path.
+- **Result:** Contract-first, evidence-based review and minimal corrective tasks are mandatory from this point forward.
+
 12. Important Context for Future AI
 تاریخچه‌ی تصمیمات حیاتی
 رد cIsin: در investigate_mapping_v3.py مشخص شد که cIsin از TSETMC برای اکثر نمادها با nscId آگاه یکی نیست.
@@ -895,7 +939,7 @@ This block is the common base for Blocks 3 and 4.
 **Files:**
 - core/dispatch_core.py â Dispatch Core + LowLatencyDispatchCore alias: dispatch(plan) routes each sequence through BrokerManager -> InstrumentProvider -> BrokerDispatchRequest envelope -> OrderEngine.execute_by_ins_code (M6-A..M6-E intact). Binding from plan.conditions['binding']; live always False; all failures fail-closed mode=BLOCKED.
 - core/execution_planner.py â records per-order binding under plan.conditions['binding'][sequence] = {account_id, broker_name}.
-- \	est_dispatch_core.py\ â 17 tests / 49 assertions.
+- `test_dispatch_core.py` — 17 tests / 49 assertions.
 
 **Test results:** Block 2: 17 passed. Full suite: 175 passed.
 
