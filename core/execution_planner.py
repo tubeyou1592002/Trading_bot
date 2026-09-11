@@ -195,6 +195,20 @@ class ExecutionPlanner:
         merged_conditions["orders"] = {
             po.sequence: dict(po.conditions) for po in ordered
         }
+        # Preserve the exact per-order Account -> Broker binding from the
+        # planning stage (Block 2 contract requirement: "derive or preserve
+        # the binding from the planning stage"). Block 1 produces
+        # ``ExecutionPlan.accounts`` as account_id strings; this per-sequence
+        # binding is what lets the Dispatch Core dispatch each order to the
+        # exact account and broker chosen here. User-supplied plan-level and
+        # per-order conditions remain untouched under their own keys.
+        merged_conditions["binding"] = {
+            po.sequence: {
+                "account_id": po.account_id,
+                "broker_name": po.broker_name,
+            }
+            for po in ordered
+        }
 
         plan = ExecutionPlan(
             orders=[po.order for po in ordered],

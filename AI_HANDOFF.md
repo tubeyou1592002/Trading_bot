@@ -890,7 +890,14 @@ This block is the common base for Blocks 3 and 4.
 
 **Dependencies:** Block 1
 
-**Status:** NOT STARTED
+**Status:** IMPLEMENTED
+
+**Files:**
+- core/dispatch_core.py â Dispatch Core + LowLatencyDispatchCore alias: dispatch(plan) routes each sequence through BrokerManager -> InstrumentProvider -> BrokerDispatchRequest envelope -> OrderEngine.execute_by_ins_code (M6-A..M6-E intact). Binding from plan.conditions['binding']; live always False; all failures fail-closed mode=BLOCKED.
+- core/execution_planner.py â records per-order binding under plan.conditions['binding'][sequence] = {account_id, broker_name}.
+- \	est_dispatch_core.py\ â 17 tests / 49 assertions.
+
+**Test results:** Block 2: 17 passed. Full suite: 175 passed.
 
 ---
 
@@ -1168,7 +1175,7 @@ Block 0 → Block 1 → Block 2
 |-------|------|--------------|--------|
 | 0 | Dispatch Architecture Foundation | — | IMPLEMENTED (committed `7b29897`) |
 | 1 | Execution Planner | Block 0 | COMPLETE (committed `2c4e857`, pushed `origin/master`) |
-| 2 | Dispatch Core / Low-Latency Engine | Block 1 | NOT STARTED |
+| 2 | Dispatch Core / Low-Latency Engine | Block 1 | IMPLEMENTED (committed) |
 | 3 | Timed / Burst Dispatch | Block 2 | NOT STARTED |
 | 4 | Event-Driven Dispatch | Block 2 | NOT STARTED |
 | 5 | Execution Tracking | Block 2, Block 3, Block 4 | NOT STARTED |
