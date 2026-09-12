@@ -1139,8 +1139,25 @@ Block 5 مسئول دریافت و ثبت مستقل نتیجه هر سفارش 
 
 **Task 1 — Order Result Tracking**
 
+**Status:** COMPLETED
+
 هدف:
 ثبت و تشخیص مستقل نتیجه هر سفارش پس از ارسال، با تمرکز فعلی روی تشخیص «ثبت موفق در هسته معاملات».
+
+پیاده‌سازی (Execution Tracker Core):
+- `ExecutionStatus`: `PENDING`, `SUBMITTED`, `REGISTERED`, `FAILED`, `CANCELLED`
+- `ExecutionTracker.register(execution_id)` — ثبت execution جدید با وضعیت `PENDING`
+- `ExecutionTracker.update_status(execution_id, status)` — تغییر وضعیت execution موجود
+- `ExecutionTracker.get_status(execution_id)` — دریافت وضعیت فعلی execution
+- بدون اتصال به Broker/Exchange، بدون تغییر Dispatch/Strategy، بدون UI
+
+**Files added:**
+- `core/execution_tracker.py`
+- `test_execution_tracker.py`
+
+**Tests:**
+- Task tests: 9/9 passed
+- Regression: 54/54 passed (`test_execution_planner.py`, `test_dispatch_core.py`, `test_block0_dispatch_contracts.py`)
 
 خارج از Scope:
 - Fill
@@ -1187,7 +1204,7 @@ This block must integrate with both Timed/Burst and Event-Driven dispatch paths 
 
 **Dependencies:** Block 2, Block 3, Block 4
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2/3/4 NOT STARTED)
 
 ---
 
