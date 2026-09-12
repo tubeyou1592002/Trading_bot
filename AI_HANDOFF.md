@@ -352,9 +352,18 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 - Task 2 MUST NOT execute or modify Dispatch Core.
 - The trigger output (boolean) is used as a gate: only when the event trigger returns True does the planner proceed to build the ExecutionPlan via its standard `build_plan()` method.
 
-**Next Block 4 Task** — Connect `ExecutionPlan` result to Dispatch path
-- Connection of the `ExecutionPlan` obtained from the Planner to the Dispatch Core (Block 2) path will be performed in a separate Task.
-- This section is currently out of scope for Task 2.
+**Block 4 — Task 3** — Connect `ExecutionPlan` result to Dispatch path (IMPLEMENTED)
+- `core/block4_task3.py` — `connect_plan_to_dispatch(execution_plan, dispatch_core)` passes the Task 2 `ExecutionPlan` through the existing Block 2 entry point `DispatchCore.dispatch(plan)` unchanged, and returns the resulting `DispatchResult`.
+- Task 3 MUST NOT redesign or modify the Planner or the Dispatch Core; both remain untouched.
+- Fail-closed: when the Task 2 gate did not fire (`execution_plan is None`), the Dispatch Core is NOT called and the connector reports a skipped dispatch.
+- Block 4 depends only on the existing `ExecutionPlan` / `DispatchResult` contracts (Block 0) and the existing `DispatchCore.dispatch` entry point (Block 2); no new architectural layer.
+- Tests: `test_block4_task3.py` — 5 tests (exact Task 2 plan reaches dispatch by identity, DispatchResult propagation, gate-false / None fail-closed no-dispatch, full chain EventTrigger -> Planner -> ExecutionPlan -> real DispatchCore). Regression: 228/228 PASS.
+
+**Block 4 — Task 3 — Architect Verification Status**
+- Task 3 = IMPLEMENTED
+- Tests = PASS (5/5)
+- Architect Verification = APPROVED
+- Commit/Push = pending — تا همین مرحله؛ پیش از Commit/Push نهایی هیچ تغییر کد یا معماری اضافه نشده است.
 
 **Block Boundaries**
 - Block 3 (Timed / Burst Dispatch) remains independent of Block 4; no new dependency from Block 4 on Block 3 is permitted.
