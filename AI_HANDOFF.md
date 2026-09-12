@@ -1119,17 +1119,71 @@ This block must use the Dispatch Core and must not depend on Timed/Burst.
 
 ---
 
-### Block 5 — Execution Tracking
+### Block 5 — Execution Tracking + Feedback
 
-**Goal:** Track the full execution cycle.
+**Goal:**
 
-**Scope:**
-- Dispatch request.
-- Broker response.
-- Order status.
-- Registration confirmation in the trading core, only if a reliable contract exists.
+Block 5 مسئول دریافت و ثبت مستقل نتیجه هر سفارش و تولید Stop Signal اختیاری است؛ بدون انتظار synchronous برای نتیجه هر سفارش.
 
-This block must be usable through both Timed/Burst and Event-Driven paths.
+**Architecture Principles:**
+
+- سفارش‌ها باید بتوانند به‌صورت رگباری و مستقل ارسال شوند.
+- دریافت نتیجه یک سفارش نباید به‌صورت پیش‌فرض ارسال سفارش‌های بعدی را متوقف کند.
+- نتیجه هر سفارش باید مستقل ثبت و قابل پیگیری باشد.
+- در حالت شرطی، با دریافت اولین نتیجه موفق «ثبت در هسته معاملات»، Stop Signal فعال می‌شود.
+- Stop Signal فقط جلوی ارسال سفارش‌های جدید بعدی را می‌گیرد.
+- سفارش‌هایی که قبل از رسیدن Stop Signal ارسال شده‌اند لغو یا متوقف نمی‌شوند.
+- Block 5 نباید Scheduler، Timer، Polling Loop یا مکانیزم جدید ارسال رگباری ایجاد کند.
+- مسئولیت سرعت و زمان‌بندی ارسال در Block 3/4 باقی می‌ماند.
+- `getorderposition` و `cancel` فعلاً خارج از هسته Block 5 هستند و فقط با Task مستقل آینده اضافه می‌شوند.
+
+**Task 1 — Order Result Tracking**
+
+هدف:
+ثبت و تشخیص مستقل نتیجه هر سفارش پس از ارسال، با تمرکز فعلی روی تشخیص «ثبت موفق در هسته معاملات».
+
+خارج از Scope:
+- Fill
+- average fill price
+- execution ID
+- مدیریت کامل lifecycle سفارش
+
+**Task 2 — Result Collection**
+
+هدف:
+جمع‌آوری و نگهداری نتایج تمام سفارش‌های ارسال‌شده در یک بازه، بدون متوقف کردن جریان ارسال.
+
+نتیجه مورد انتظار:
+در پایان بتوان مشخص کرد هر سفارش چه نتیجه‌ای داشته است.
+
+**Task 3 — Conditional Stop Signal**
+
+هدف:
+پشتیبانی از شرط اختیاری مانند «تا اولین ثبت موفق ادامه بده».
+
+قواعد:
+- ارسال همچنان رگباری است.
+- نتایج سفارش‌ها مستقل دریافت می‌شوند.
+- با اولین نتیجه موفق، Stop Signal فعال می‌شود.
+- فقط ارسال‌های جدید بعد از آن متوقف می‌شوند.
+- سفارش‌های قبلی تحت تأثیر قرار نمی‌گیرند.
+
+**Task 4 — Integration with Dispatch Flow**
+
+هدف:
+اتصال Tracking و Stop Signal به مسیر واقعی ارسال موجود، بدون تغییر مسئولیت‌های Block 3، Block 4 یا Dispatch Core.
+
+الزام:
+هیچ لایه موازی یا مکانیزم ارسال جدید خارج از معماری فعلی ایجاد نشود.
+
+This block must integrate with both Timed/Burst and Event-Driven dispatch paths without owning dispatch responsibility.
+
+| Task | هدف | مسئولیت | خارج از Scope |
+|---|---|---|---|
+| Task 1 | ثبت و تشخیص مستقل نتیجه هر سفارش پس از ارسال | تشخیص نتیجه ثبت سفارش | Fill، average fill price، execution ID، lifecycle کامل |
+| Task 2 | جمع‌آوری نتایج سفارش‌های ارسال‌شده | نگهداری نتایج بدون توقف جریان ارسال | توقف ارسال بعدی |
+| Task 3 | فعال‌سازی Stop Signal شرطی | توقف فقط ارسال‌های جدید بعد از اولین موفقیت | لغو سفارش‌های قبلی |
+| Task 4 | اتصال Tracking به مسیر Dispatch موجود | اتصال بدون تغییر معماری | ایجاد Scheduler یا Dispatch جدید |
 
 **Dependencies:** Block 2, Block 3, Block 4
 
