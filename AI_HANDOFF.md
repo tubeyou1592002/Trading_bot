@@ -370,6 +370,14 @@ M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone ب�
 - Block 5 (Execution Tracking) does not enter Block 4 at this time.
 - Completion of Block 4 must not push responsibilities onto future Blocks beyond their defined scope.
 
+**Block 3 — Task Verification Status**
+- Task 1 = IMPLEMENTED / ARCHITECT APPROVED
+- Task 2 = IMPLEMENTED / ARCHITECT APPROVED
+- Task 3 = IMPLEMENTED / ARCHITECT APPROVED
+- Tests = 32/32 PASS
+- Full Regression = 228/228 PASS
+- Commit/Push documentation update = pending — تا همین مرحله؛ پیش از Commit/Push نهایی هیچ تغییر کد یا معماری اضافه نشده است.
+
 **M5 — IMPLEMENTED: TSETMC Trading State Integration**
 
 تغییرات:
