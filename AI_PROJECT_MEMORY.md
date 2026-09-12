@@ -559,6 +559,68 @@ During testing while market was closed, the response was empty.
 
 
 
+\### Order Discovery — Real Network Observation (Agah Panel)
+
+Source: observed from the real Agah panel Network traffic via Chrome DevTools / Network. No sensitive account or user information is recorded here.
+
+Items without sufficient evidence remain UNKNOWN.
+
+This Discovery is the basis for the design of Block 5.
+
+Block 5 scope note: Block 5 is currently focused on detecting successful order registration in the trading core. Fill, Execution ID and full order lifecycle are currently out of scope.
+
+1. `POST /api/v1/order` — order submission. Observed response includes `decisionId`.
+
+2. `GET /api/v1/order/{decisionId}` — order result / history tracking. Observed fields:
+
+\* `requestId`
+
+\* `action`
+
+\* `actionTitle`
+
+\* `requestStatus`
+
+\* `requestStatusTitle`
+
+\* `decisionQuantity`
+
+\* `remainingQuantity`
+
+\* `requestTime`
+
+\* `responseTime`
+
+\* `delta`
+
+Observed signal (only as an observed signal, not a general claim about the API): `requestStatusTitle = "تائید شده توسط بورس"`.
+
+3. `GET /api/v1/order/getorderposition` — observed parameters:
+
+\* `nscId`
+
+\* `hostOrderNumber`
+
+\* `orderDate`
+
+Observed response fields:
+
+\* `eventDateTime`
+
+\* `ordersAheadQuantity`
+
+\* `ordersAheadValue`
+
+\* `position`
+
+4. `POST /api/v1/order/{decisionId}/cancel` — observed response:
+
+\* `isSuccess = true`
+
+\* `errors = []`
+
+
+
 \### Instrument Live Segmentation
 
 
