@@ -1197,15 +1197,46 @@ Status: COMPLETED
 
 **Task 3 — Conditional Stop Signal**
 
+Status: COMPLETED
+
 هدف:
 پشتیبانی از شرط اختیاری مانند «تا اولین ثبت موفق ادامه بده».
 
-قواعد:
-- ارسال همچنان رگباری است.
-- نتایج سفارش‌ها مستقل دریافت می‌شوند.
-- با اولین نتیجه موفق، Stop Signal فعال می‌شود.
-- فقط ارسال‌های جدید بعد از آن متوقف می‌شوند.
-- سفارش‌های قبلی تحت تأثیر قرار نمی‌گیرند.
+پیاده‌سازی (`core/block5_task3.py`):
+- `StopSignal(enabled: bool = False)` — حالت پیش‌فرض `enabled=False` (ادامه ارسال؛ Stop Signal هرگز فعال نمی‌شود).
+- `observe(result: DispatchResult) -> bool` — فقط در حالت `enabled=True` و روی اولین `success=True`، Stop Signal فعال می‌شود و latches می‌کند.
+- `is_active` / `should_continue()` — قابل تشخیص بودن وضعیت پس از فعال‌شدن.
+- `activation_count` — تعداد دفعات فعال‌شدن Stop Signal (رویداد فعال‌سازی)، نه تعداد successهای مشاهده‌شده.
+- `reset()` — غیرعال‌سازی بدون تغییر `enabled`.
+- رفتار fail-closed: ورودی غیر-`DispatchResult` → `StopSignalError`؛ `enabled` غیر-bool → `StopSignalError`.
+- بدون Broker/API/IO/clock/persistence/scheduler.
+
+رفتار:
+- شرط خاموش → نتیجه موفق باعث Stop Signal نمی‌شود؛ جریان ارسال طبق Timing/Burst موجود ادامه پیدا می‌کند.
+- شرط روشن + نتیجه موفق → Stop Signal روی اولین success فعال می‌شود.
+- شرط روشن + نتیجه ناموفق → Stop Signal فعال نمی‌شود.
+- فقط ارسال‌های جدید بعد از فعال‌شدن Stop Signal متوقف می‌شوند.
+- سفارش‌هایی که قبل از Stop Signal ارسال شده‌اند ل Moff نمی‌شوند و تحت تأثیر قرار نمی‌گیرند.
+- نتیجه هر سفارش همچنان مستقل است.
+
+اتصال به Dispatch واقعی:
+- اتصال Stop Signal به مسیر واقعی Dispatch (Block 2/3/4) در **Task 4** انجام می‌شود.
+- Task 3 صرفاً هسته/گیت را فراهم می‌کند؛ هیچ اتصالی به Dispatch Core، Block 3، Block 4، Scheduler یا UI ایجاد نشده است.
+
+**Files added:**
+- `core/block5_task3.py`
+- `test_block5_task3.py`
+
+**Tests:**
+- Task tests: 13/13 passed
+- Regression: 24/24 offline suites passed (0 failures)
+
+ خارج از Scope:
+- اتصال به Dispatch واقعی (Task 4)
+- Fill / Partial Fill
+- scheduler/timer/polling
+- persistence
+- تغییر `ExecutionTracker`، `DispatchCore`، `DispatchResult`، یا Brokerها
 
 **Task 4 — Integration with Dispatch Flow**
 
@@ -1221,12 +1252,12 @@ This block must integrate with both Timed/Burst and Event-Driven dispatch paths 
 |---|---|---|---|
 | Task 1 | ثبت و تشخیص مستقل نتیجه هر سفارش پس از ارسال | تشخیص نتیجه ثبت سفارش | Fill، average fill price، execution ID، lifecycle کامل |
 | Task 2 | جمع‌آوری نتایج سفارش‌های ارسال‌شده | نگهداری نتایج بدون توقف جریان ارسال | توقف ارسال بعدی |
-| Task 3 | فعال‌سازی Stop Signal شرطی | توقف فقط ارسال‌های جدید بعد از اولین موفقیت | لغو سفارش‌های قبلی |
+| Task 3 | فعال‌سازی Stop Signal شرطی | توقف فقط ارسال‌های جدید بعد از اولین موفقیت | لغو سفارش‌های قبلیٕاتصال به Dispatch واقعی (Task 4)  |
 | Task 4 | اتصال Tracking به مسیر Dispatch موجود | اتصال بدون تغییر معماری | ایجاد Scheduler یا Dispatch جدید |
 
 **Dependencies:** Block 2, Block 3, Block 4
 
-**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2 COMPLETED; Task 3/4 NOT STARTED)
+**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2 COMPLETED; Task 3 COMPLETED; Task 4 NOT STARTED)
 
 ---
 
