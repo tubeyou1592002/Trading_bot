@@ -1167,11 +1167,33 @@ Block 5 مسئول دریافت و ثبت مستقل نتیجه هر سفارش 
 
 **Task 2 — Result Collection**
 
-هدف:
-جمع‌آوری و نگهداری نتایج تمام سفارش‌های ارسال‌شده در یک بازه، بدون متوقف کردن جریان ارسال.
+Status: COMPLETED
 
-نتیجه مورد انتظار:
-در پایان بتوان مشخص کرد هر سفارش چه نتیجه‌ای داشته است.
+هدف:
+اتصال یک connector کوچک به `ExecutionTracker` (Task 1) برای ثبت نتیجه‌ی موجود Dispatch در Tracker — بدون Broker/API/IO/clock/persistence.
+
+پیاده‌سازی (`core/block5_task2.py`):
+- `collect_result(tracker, execution_id, result) -> ExecutionStatus`
+- `collect_result_safe(...)` — fail-closed variant returning `None` on error.
+- Mapping: `DispatchResult.success=True` → `ExecutionStatus.REGISTERED`;
+  `DispatchResult.success=False` → `ExecutionStatus.FAILED`.
+- Fail-closed: unknown/blank `execution_id` and non-`DispatchResult` input raise
+  `ExecutionTrackerError` (delegated to `ExecutionTracker.update_status`).
+- Uses no broker, API, IO, clock, or persistence.
+
+**Files added:**
+- `core/block5_task2.py`
+- `test_block5_task2.py`
+
+**Tests:**
+- Task tests: 9/9 passed
+- Regression: 23/23 offline suites passed (0 failures)
+
+ خارج از Scope:
+- Fill / Partial Fill
+- scheduler/timer/polling
+- persistence
+- تغییر `ExecutionTracker`، `DispatchCore`، `DispatchResult`، یا Brokerها
 
 **Task 3 — Conditional Stop Signal**
 
@@ -1204,7 +1226,7 @@ This block must integrate with both Timed/Burst and Event-Driven dispatch paths 
 
 **Dependencies:** Block 2, Block 3, Block 4
 
-**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2/3/4 NOT STARTED)
+**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2 COMPLETED; Task 3/4 NOT STARTED)
 
 ---
 
