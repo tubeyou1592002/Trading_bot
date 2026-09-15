@@ -273,18 +273,42 @@ class DispatchCore:
 
         binding = plan.conditions.get("binding", {}).get(sequence, {})
         account_id = binding.get("account_id")
-        broker_name = binding.get("broker_name")
+        planned_broker_name = binding.get("broker_name")
 
         if not account_id:
             raise ValueError(
                 f"No account_id bound for sequence {sequence} "
                 "(block 1 binding missing)."
             )
-        if not broker_name:
+        if not planned_broker_name:
             raise ValueError(
                 f"No broker_name bound for sequence {sequence} "
                 "(block 1 binding missing)."
             )
+
+        # Dispatch uses account_routes (the Planning-stage decision):
+        # account_id -> account_routes -> broker_name -> BrokerManager
+        # There is NO fallback to planned_broker_name. If account_routes
+        # is missing, empty, or lacks the account_id entry, Dispatch is
+        # fail-closed.
+        if not plan.account_routes:
+            raise ValueError(
+                f"account_routes missing in plan (sequence {sequence}); "
+                "cannot resolve Account -> Broker route."
+            )
+        route_broker_name = plan.account_routes.get(account_id)
+        if route_broker_name is None:
+            raise ValueError(
+                f"No account route for account_id={account_id} "
+                f"(sequence {sequence}); account_routes missing entry."
+            )
+        if route_broker_name != planned_broker_name:
+            raise ValueError(
+                f"Account route mismatch for account_id={account_id} "
+                f"(sequence {sequence}): route={route_broker_name} "
+                f"vs planned={planned_broker_name}."
+            )
+        broker_name = route_broker_name
 
         return order, account_id, broker_name
 

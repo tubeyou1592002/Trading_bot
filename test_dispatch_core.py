@@ -291,7 +291,7 @@ def test_dispatch_processes_orders_multi_account_multi_broker():
     plan = build_plan(
         [o0, o1, o2],
         ["acc-1", "acc-2", "acc-1"],
-        ["broker-a", "broker-b", "broker-b"],
+        ["broker-a", "broker-b", "broker-a"],
     )
     attach_accounts(plan, {"acc-1": acc1, "acc-2": acc2})
 
@@ -311,7 +311,7 @@ def test_dispatch_processes_orders_multi_account_multi_broker():
         dispatched == [
             ("IRO1TEST0001", "acc-1", "broker-a"),
             ("IRO1TEST0002", "acc-2", "broker-b"),
-            ("IRO1TEST0003", "acc-1", "broker-b"),
+            ("IRO1TEST0003", "acc-1", "broker-a"),
         ],
         f"exact per-order binding preserved {dispatched}",
     )

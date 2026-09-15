@@ -177,6 +177,18 @@ class ExecutionPlanner:
         # Preserve explicit execution order: sort by sequence ascending.
         ordered = sorted(planned_orders, key=lambda po: po.sequence)
 
+        # Build account_routes: account_id -> broker_name, ensuring one account maps to one broker
+        account_routes: Dict[str, str] = {}
+        for po in ordered:
+            if po.account_id in account_routes:
+                if account_routes[po.account_id] != po.broker_name:
+                    raise PlannerValidationError(
+                        f"Account {po.account_id} bound to multiple brokers: "
+                        f"{account_routes[po.account_id]} and {po.broker_name}"
+                    )
+            else:
+                account_routes[po.account_id] = po.broker_name
+
         accounts: List[str] = []
         broker_names: List[str] = []
         for po in ordered:
@@ -216,6 +228,7 @@ class ExecutionPlanner:
             broker_names=broker_names,
             execution_order=execution_order,
             conditions=merged_conditions,
+            account_routes=account_routes,
             plan_id=instruction.plan_id,
             created_at=None,
         )

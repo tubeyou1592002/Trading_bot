@@ -45,7 +45,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 if TYPE_CHECKING:
     from models.account import Account
@@ -132,6 +132,7 @@ class ExecutionPlan:
 
     execution_order: List[int] = field(default_factory=list)
     conditions: dict = field(default_factory=dict)
+    account_routes: Dict[str, str] = field(default_factory=dict)
 
     plan_id: Optional[str] = None
     created_at: Optional[datetime] = None
