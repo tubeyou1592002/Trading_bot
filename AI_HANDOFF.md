@@ -1255,9 +1255,46 @@ This block must integrate with both Timed/Burst and Event-Driven dispatch paths 
 | Task 3 | فعال‌سازی Stop Signal شرطی | توقف فقط ارسال‌های جدید بعد از اولین موفقیت | لغو سفارش‌های قبلیٕاتصال به Dispatch واقعی (Task 4)  |
 | Task 4 | اتصال Tracking به مسیر Dispatch موجود | اتصال بدون تغییر معماری | ایجاد Scheduler یا Dispatch جدید |
 
+**Task 4 — Implementation (IMPLEMENTED — tests PASS; Architect verification pending)**
+
+پیاده‌سازی (`core/block5_task4.py`):
+- `DispatchIntegration(dispatch_core, tracker=None, stop_signal=None)` — یک boundary **اختیاری** که با Dispatch Core سازگار است (`dispatch(plan)` دارد)، پس همان connector موجود Block 4 بدون هیچ تغییری می‌تواند آن را بهکار بگیرد.
+- `stop_guard(stop_signal) -> GuardDecision` — تنها شرط Send Path: `ALLOW` وقتی Stop Signal فعال نیست، `STOP` وقتی فعال است.
+- `DispatchIntegration.dispatch(plan, execution_id=None) -> DispatchResult` — **SEND PATH**:
+  1. Guard (فقط بررسی Stop Signal)
+  2. ثبت execution جدید با وضعیت `PENDING` در `ExecutionTracker`
+  3. واگذاری بدون تغییر به `DispatchCore.dispatch(plan)`
+- `DispatchIntegration.record_result(execution_id, result) -> ExecutionStatus` — **RESULT PATH** مستقل:
+  `DispatchResult → collect_result(...) → ExecutionTracker → StopSignal.observe(...)`
+- در حالت STOP: `DispatchCore.dispatch` اصلاً اجرا نمی‌شود، هیچ executionی ثبت نمی‌شود، هیچ سفارش قبلی cancel یا تغییر نمی‌شود، و `DispatchResult(mode="STOPPED", success=False, sent=False)` برگردانده می‌شود.
+- Result Path داخل Send Path نیست: ارسال هیچ‌وقت منتظر نتیجه سفارش قبلی نمیماند. نتیجه‌ها می‌توانند خارج از ترتیب برسند (۳، ۱، ۴، ۲) و نتیجه‌های دیررس پس از فعال‌شدن Stop همچنان ثبت می‌شوند.
+- Fail-closed: plan نامعتبر، `execution_id` نامعتبر/تکراری، و `execution_id` ناشناخته در Result Path → استثنا قبل از هر ارسال (بدون تغییر در tracker / Stop Signal).
+- نتیجهی synthetic با `mode="STOPPED"` هرگز در Result Path قابل ثبت نیست (استثنا، بدون هیچ تغییری در tracker و Stop Signal): dispatch bypass‌شده execution ندارد، پس نمی‌تواند به یک execution قبلی (مثلاً از طریق `last_execution_id`) نسبت داده شود. مسیر Result فقط برای dispatchهای واقعاً صادرشده معتبر است.
+- بدون Scheduler/Timer/Polling/Clock/IO/Broker و بدون هیچ تغییری در `DispatchCore`، `core/block4_task3.py`، `ExecutionTracker`، `collect_result`، `StopSignal`، یا M6-A…M6-E.
+
+الگوی اتصال:
+```text
+Block 4 → connect_plan_to_dispatch(...) → DispatchIntegration → guard → DispatchCore.dispatch(plan)
+```
+
+بدون Integration رفتار قبلی حفظ شده است: callerهای فعلی همان `DispatchCore` را به `connect_plan_to_dispatch` می‌دهند و رفتار (بدون gating و بدون tracking) دقیقاً مثل قبل است.
+
+**Files added:**
+- `core/block5_task4.py`
+- `test_block5_task4.py`
+
+**Tests:**
+- Task tests: 23/23 PASS (`python test_block5_task4.py`) — شامل تست ممنوعیت ثبت نتیجه‌ی `STOPPED` روی یک execution قبلی.
+- Regression: Block 0/1/2/3/4/5 + M6 offline suites → 282/282 PASS (161 + 121)
+
+نکات نیازمند تأیید معمار (Architect review points):
+- mode جدید `STOPPED` برای dispatch bypass‌شده (متمایز از `ALL_PROCESSED` / `NO_ORDERS` / `BLOCKED`).
+- تخصیص `execution_id` در Integration (تولید uuid وقتی caller مقداری نمی‌دهد) و یک execution record به‌ازای هر dispatch call.
+- خروجی connector همچنان `dispatch_called=True` را برای dispatch متوقف‌شده برمی‌گرداند («رسیدن به entry point»)؛ توقف واقعی از `mode="STOPPED"` یا `integration.is_stopped` قابل تشخیص است.
+
 **Dependencies:** Block 2, Block 3, Block 4
 
-**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2 COMPLETED; Task 3 COMPLETED; Task 4 NOT STARTED)
+**Status:** IN PROGRESS (Task 1 COMPLETED; Task 2 COMPLETED; Task 3 COMPLETED; Task 4 IMPLEMENTED — tests PASS 23/23; Architect verification pending)
 
 ---
 
