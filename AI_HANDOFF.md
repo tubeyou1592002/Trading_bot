@@ -1313,6 +1313,135 @@ Block 4 → connect_plan_to_dispatch(...) → DispatchIntegration → guard → 
 
 **Status:** NOT STARTED
 
+#### هدف معماری
+
+Block 6 باید امکان اجرای مستقل سفارش‌ها برای چند حساب را فراهم کند.
+
+اصل اصلی:
+
+> هر سفارش از لحظه ایجاد تا Dispatch و Execution Tracking باید هویت حساب مشخص و مستقل خود را حفظ کند.
+
+مثال مرجع:
+
+* Account 1 → Symbol A
+* Account 2 → Symbol B
+
+این دو سفارش باید کاملاً مستقل باشند و اطلاعات، مسیر اجرا و وضعیت آن‌ها با یکدیگر اشتباه نشود.
+
+#### Task 6.1 — Account Model
+
+ایجاد مفهوم مستقل `Account` در هسته برنامه برای شناسایی هر حساب.
+
+Account باید حداقل دارای یک شناسه یکتا باشد و اطلاعات لازم برای اتصال آن به Broker را به‌صورت مستقل نگهداری کند.
+
+Account نباید با Symbol، Instrument یا Execution یکی شود.
+
+#### Task 6.2 — Account Context
+
+اضافه‌کردن هویت حساب به مسیر اجرای سفارش.
+
+`ExecutionPlan` باید مشخص کند سفارش برای کدام Account است و این هویت باید بدون از بین رفتن در مسیر:
+
+`ExecutionPlan → DispatchCore → BrokerManager → Broker/Provider → OrderEngine`
+
+حفظ شود.
+
+هدف این Task این است که هر سفارش در تمام مسیر اجرا قابل انتساب به حساب صحیح باشد.
+
+#### Task 6.3 — Account-Aware Dispatch
+
+Dispatch و لایه‌های پایین‌تر باید بر اساس Account انتخاب کنند که سفارش از کدام اتصال/مسیر Broker استفاده کند.
+
+قاعده:
+
+> سفارش Account 1 هرگز نباید از مسیر Account 2 ارسال شود.
+
+Account باید بخشی از context تصمیم Dispatch باشد، نه یک مقدار موقت در UI یا caller.
+
+#### Task 6.4 — Multi-Account Execution
+
+امکان اجرای چند سفارش متعلق به حساب‌های مختلف فراهم شود.
+
+مثال:
+
+`Account 1 → Symbol A`
+
+`Account 2 → Symbol B`
+
+هر سفارش باید Symbol، Quantity، Price و Account خودش را حفظ کند.
+
+اجرای یک سفارش نباید باعث جایگزینی یا اختلاط اطلاعات سفارش حساب دیگر شود.
+
+Dispatch باید همچنان با مدل فعلی non-blocking/burst سازگار بماند و طراحی Block 6 نباید باعث waiting غیرضروری برای پاسخ یک سفارش شود.
+
+#### Task 6.5 — Account-Aware Tracking
+
+Execution Tracking موجود در Block 5 باید در محیط چندحسابی نیز مستقل باقی بماند.
+
+وضعیت‌های:
+
+`PENDING / SUBMITTED / REGISTERED / FAILED / CANCELLED`
+
+باید برای سفارش صحیح و حساب صحیح قابل تشخیص باشند.
+
+اصل:
+
+> REGISTERED شدن سفارش Account 1 نباید با وضعیت سفارش Account 2 اشتباه شود.
+
+تا حد ممکن از Execution ID موجود استفاده شود و Account به‌عنوان هویت سطح بالاتر سفارش در نظر گرفته شود؛ از ایجاد شناسه‌های موازی و غیرضروری خودداری شود.
+
+#### Task 6.6 — Stop/Brake Policy
+
+رفتار Stop/Brake در محیط چندحسابی باید صریح و قابلکنترل باشد.
+
+معماری باید امکان تفکیک این دو رفتار را در نظر بگیرد:
+
+1. توقف فقط همان Account پس از اولین REGISTERED موفق.
+2. توقف کل اجرای Multi-Account پس از اولین REGISTERED موفق.
+
+این رفتار باید Policy مشخص داشته باشد و نباید به‌صورت implicit یا وابسته به ترتیب تصادفی Dispatch باشد.
+
+همچنان اصل Block 5 حفظ شود:
+
+> سفارش‌هایی که قبلاً ارسال شده‌اند متوقف نمی‌شوند؛ Stop فقط ارسال‌های آینده را کنترل می‌کند.
+
+#### Task 6.7 — Integration & Regression
+
+در پایان، تمام تغییرات Block 6 باید یکپارچه تست شوند.
+
+سناریوی حداقل:
+
+* Account 1 → Symbol A
+* Account 2 → Symbol B
+
+تست باید اثبات کند که:
+
+* Account صحیح تا Dispatch حفظ می‌شود.
+* هر سفارش از مسیر Broker صحیح عبور می‌کند.
+* سفارش‌ها با یکدیگر قاطی نمی‌شوند.
+* Tracking هر حساب مستقل است.
+* Stop/Brake مطابق Policy عمل می‌کند.
+* Regression مربوط به Block 1 تا Block 5 همچنان برقرار است.
+
+#### مرز Block 6
+
+Block 6 فعلاً فقط مسئول **Account-aware Execution** است.
+
+موارد زیر خارج از محدوده Block 6 هستند:
+
+* Strategy
+* Portfolio Management
+* Risk Management
+* مدیریت سرمایه
+* UI کامل حساب‌ها
+* گزارش‌گیری پیشرفته
+
+#### قواعد اجرای این Roadmap
+
+هر Task باید به‌صورت مستقل، کوچک و قابل‌تست پیاده‌سازی شود.
+
+معماری Taskها از همین سند مشخص است و Agent نباید معماری جایگزین یا abstraction جدیدی ایجاد کند مگر اینکه در مستندات موجود پروژه برای سازگاری با معماری فعلی لازم باشد.
+
 ---
 
 ### Block 7 — Multi-Broker Execution
