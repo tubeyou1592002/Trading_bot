@@ -73,14 +73,60 @@ Behavior:
     ``STOPPED`` result is rejected by the result path: a bypassed dispatch
     has no execution, so it can never be attributed to one.
 
+Block 6 Task 6.5 — Account-Aware Tracking (additive extension of the
+Result Path):
+
+The Block 5 Result Path above records ONE result per dispatch execution.
+Block 6 Task 6.5 adds the account-aware layer required for multi-account
+execution: **every order of a dispatch keeps its own execution record and
+its own status**, so that ``REGISTERED`` for the order of one account can
+never be confused with the status of another order — not for the same
+account, not for the same broker, not for the same symbol.
+
+    DispatchIntegration.dispatch(plan)
+        │  guard: is the Stop Signal active?
+        ├── resolve the Account binding of EVERY sequence  (fail-closed)
+        │      plan.conditions["binding"][sequence]["account_id"]
+        ├── register the dispatch execution                (PENDING)
+        ├── register ONE order record per sequence          (PENDING)
+        └── DispatchCore.dispatch(plan)   (Block 2, unchanged)
+
+    DispatchIntegration.record_order_result(execution_id, sequence, result)
+        │  result is the existing per-order ``OrderExecutionResult``
+        ▼  produced by the DispatchCore path for THAT sequence
+    ExecutionTracker.update_order_status(execution_id, sequence, status)
+
+Rules of the account-aware layer (Task 6.5):
+
+  * NO parallel execution id is created here. An order record reuses the
+    EXISTING dispatch ``execution_id`` and is keyed by it together with the
+    order's own plan ``sequence``; the ``account_id`` is carried along as
+    the higher-level identity of that order.
+  * ``account_id`` is read ONLY from the binding of that same sequence
+    (``plan.conditions["binding"][sequence]["account_id"]``). There is no
+    fallback whatsoever: no ``plan.accounts[0]``, no symbol / ``nsc_id``, no
+    broker, no order index or position, no previously seen account.
+  * One result touches exactly one record. Recording the result of one order
+    never changes the status of any other order.
+  * Fail-closed: a missing / malformed / blank account binding, an
+    unregistered execution, an unknown sequence, or a result of the wrong
+    type raises before anything is recorded.
+  * The per-order path never touches the Stop Signal: Stop / Brake policy is
+    Block 6 Task 6.6 and stays entirely out of this module.
+  * The Block 5 dispatch-level path (``register`` / ``record_result`` /
+    ``StopSignal``) is unchanged; the account-aware layer is strictly
+    additive.
+
 Explicitly OUT of scope for this module:
   - Any scheduler, timer, polling loop, real clock, thread, or sleep.
   - Any broker implementation, broker adapter, or broker/exchange API call.
   - Any persistence, file I/O, or network access.
   - Any new dispatch path or new routing/validation logic.
   - Any modification to ``DispatchCore``, ``OrderEngine``, M6-A … M6-E,
-    Block 1/3/4, ``ExecutionTracker``, ``collect_result``, ``StopSignal``,
-    ``DispatchResult``, ``ExecutionPlan``, or the broker layer.
+    Block 1/3/4, ``collect_result``, ``StopSignal``, ``DispatchResult``,
+    ``ExecutionPlan``, or the broker layer. ``ExecutionTracker`` is only
+    EXTENDED by the additive Block 6 Task 6.5 account-aware layer described
+    above; its Block 5 API and behavior stay unchanged.
   - Cancelling / stopping orders that were already sent (out of Block 5).
   - Fill / partial fill tracking (out of Block 5).
 """
@@ -88,13 +134,14 @@ Explicitly OUT of scope for this module:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Dict, Optional
 from uuid import uuid4
 
 from core.block5_task2 import collect_result
 from core.block5_task3 import StopSignal
 from core.dispatch_contracts import DispatchResult, ExecutionPlan
 from core.execution_tracker import ExecutionStatus, ExecutionTracker
+from core.order_engine import OrderExecutionResult
 
 
 # ---------------------------------------------------------------------------
@@ -158,6 +205,72 @@ def stop_guard(stop_signal: StopSignal) -> GuardDecision:
         raise DispatchIntegrationError("stop_signal must be a StopSignal")
 
     return GuardDecision.STOP if stop_signal.is_active else GuardDecision.ALLOW
+
+
+# ---------------------------------------------------------------------------
+# Account binding (Block 6 Task 6.5)
+# ---------------------------------------------------------------------------
+
+
+def bound_account_id(plan: ExecutionPlan, sequence: int) -> str:
+    """Account identity bound to ``sequence`` — from the plan binding ONLY.
+
+    The single permitted source is exactly::
+
+        plan.conditions["binding"][sequence]["account_id"]
+
+    No fallback of any kind exists: not ``plan.accounts[0]``, not the symbol
+    / ``nsc_id`` of the order, not the broker, not the position or index of
+    the order, and not a previously seen account. An order whose account
+    cannot be proven from its OWN binding is therefore never tracked
+    (fail-closed).
+
+    Args:
+        plan: The ``ExecutionPlan`` carrying the planning-stage binding.
+        sequence: The order's execution sequence in that plan.
+
+    Returns:
+        The bound ``account_id`` (a non-empty, non-whitespace string).
+
+    Raises:
+        DispatchIntegrationError: if the plan, the ``binding`` mapping, the
+            entry of this sequence, or its ``account_id`` is missing,
+            malformed, or blank (fail-closed).
+    """
+    if not isinstance(plan, ExecutionPlan):
+        raise DispatchIntegrationError("plan must be an ExecutionPlan")
+    if not isinstance(sequence, int) or isinstance(sequence, bool):
+        raise DispatchIntegrationError("sequence must be an integer")
+
+    conditions = plan.conditions
+    if not isinstance(conditions, dict):
+        raise DispatchIntegrationError(
+            "plan.conditions must be a mapping "
+            f"(sequence {sequence}); cannot resolve the Account binding."
+        )
+
+    binding = conditions.get("binding")
+    if not isinstance(binding, dict):
+        raise DispatchIntegrationError(
+            "plan.conditions['binding'] is missing or malformed "
+            f"(sequence {sequence}); cannot resolve the Account binding."
+        )
+
+    entry = binding.get(sequence)
+    if not isinstance(entry, dict):
+        raise DispatchIntegrationError(
+            f"no binding for sequence {sequence} in "
+            "plan.conditions['binding'] (fail-closed)."
+        )
+
+    account_id = entry.get("account_id")
+    if not isinstance(account_id, str) or not account_id.strip():
+        raise DispatchIntegrationError(
+            f"account_id is missing or invalid for sequence {sequence} "
+            "in the plan binding (fail-closed)."
+        )
+
+    return account_id
 
 
 # ---------------------------------------------------------------------------
@@ -279,9 +392,16 @@ class DispatchIntegration:
              * STOP -> return a ``mode=STOPPED_MODE`` result and never
                touch the Dispatch Core, the tracker, or any prior order.
              * ALLOW -> continue.
-          2. Register the NEW execution in the tracker as ``PENDING``
+          2. Resolve the Account binding of EVERY sequence of the plan
+             (Block 6 Task 6.5) — before anything is registered or sent.
+             * invalid / missing / blank binding -> raise, nothing is
+               registered and nothing is dispatched (fail-closed).
+          3. Register the NEW execution in the tracker as ``PENDING``
              (no waiting for any previous order result).
-          3. Delegate to the existing ``DispatchCore.dispatch(plan)`` and
+          4. Register ONE account-aware order record (``PENDING``) per
+             sequence, keyed by that same execution id + the order's own
+             sequence, so each order of each account is tracked separately.
+          5. Delegate to the existing ``DispatchCore.dispatch(plan)`` and
              return its ``DispatchResult`` unchanged.
 
         The returned ``DispatchResult`` is NOT processed here: the result
@@ -302,8 +422,9 @@ class DispatchIntegration:
 
         Raises:
             DispatchIntegrationError: if ``plan`` is not an
-                ``ExecutionPlan``, or ``execution_id`` is provided but is
-                not a non-empty string (fail-closed).
+                ``ExecutionPlan``, ``execution_id`` is provided but is not a
+                non-empty string, or the Account binding of any sequence is
+                missing / malformed (fail-closed).
             ExecutionTrackerError: if ``execution_id`` is already
                 registered (fail-closed, raised before anything is sent).
         """
@@ -314,11 +435,20 @@ class DispatchIntegration:
         if stop_guard(self.stop_signal) is GuardDecision.STOP:
             return self._stopped_result()
 
-        # ---- 2) Register the NEW execution (PENDING) --------------------
+        # ---- 2) Resolve the Account binding of EVERY order (fail-closed) --
+        # Read exclusively from plan.conditions["binding"][sequence]
+        # ["account_id"]; no account is ever guessed. Resolving first means
+        # an untrackable plan is never dispatched and never leaves a record.
+        account_bindings = self._plan_account_bindings(plan)
+
+        # ---- 3) Register the NEW execution (PENDING) --------------------
         # Non-blocking tracking only: nothing is awaited here.
         self._last_execution_id = self._register_execution(execution_id)
 
-        # ---- 3) Delegate to the existing Block 2 entry point ------------
+        # ---- 4) Register ONE order record per sequence (account-aware) ---
+        self._register_plan_orders(self._last_execution_id, account_bindings)
+
+        # ---- 5) Delegate to the existing Block 2 entry point ------------
         # DispatchCore.dispatch is used unchanged; its DispatchResult is
         # returned as-is and is not consumed by the send path.
         return self.dispatch_core.dispatch(plan)
@@ -381,6 +511,73 @@ class DispatchIntegration:
         return status
 
     # ------------------------------------------------------------------
+    # ACCOUNT-AWARE ORDER RESULT PATH (Block 6 Task 6.5)
+    # ------------------------------------------------------------------
+
+    def record_order_result(
+        self,
+        execution_id: str,
+        sequence: int,
+        result: OrderExecutionResult,
+    ) -> ExecutionStatus:
+        """Record ONE order result of ONE issued execution, independently.
+
+        Pipeline::
+
+            OrderExecutionResult (DispatchCore path, per sequence)
+                -> the order record of (execution_id, sequence)
+                -> ExecutionTracker.update_order_status
+
+        The result belongs to the order identified by ``sequence`` and may
+        arrive at any time, before or after the results of the other orders
+        of the same dispatch. It is applied to that SINGLE record only: the
+        status of every other order stays exactly as it was — including
+        orders of the same account, the same broker, or the same symbol, and
+        including orders of other dispatch executions.
+
+        The account identity is NOT taken from ``result``: it was fixed when
+        the order was registered, from the plan binding of that sequence.
+
+        The Stop Signal is deliberately neither consulted nor updated here:
+        the per-order path is pure tracking (Stop / Brake policy is Block 6
+        Task 6.6) and a per-order result never gates future dispatches.
+
+        Args:
+            execution_id: The id of an execution issued by this integration
+                (the dispatch that contained this order).
+            sequence: The order's own execution sequence in that plan.
+            result: The existing ``OrderExecutionResult`` produced by the
+                DispatchCore path for that same sequence.
+
+        Returns:
+            The new ``ExecutionStatus`` of that order (``REGISTERED`` for a
+            successful result, ``FAILED`` otherwise).
+
+        Raises:
+            DispatchIntegrationError: if ``result`` is not an
+                ``OrderExecutionResult`` (fail-closed; nothing recorded).
+            ExecutionTrackerError: if ``execution_id`` is unknown, the order
+                of that sequence is not tracked, or ``execution_id`` /
+                ``sequence`` is invalid (fail-closed; nothing recorded).
+        """
+        if not isinstance(result, OrderExecutionResult):
+            raise DispatchIntegrationError(
+                "result must be an OrderExecutionResult (the per-order "
+                "result produced by the DispatchCore path)"
+            )
+
+        status: ExecutionStatus = (
+            ExecutionStatus.REGISTERED
+            if result.success
+            else ExecutionStatus.FAILED
+        )
+
+        # Only the record of THIS order/account is touched.
+        return self.tracker.update_order_status(
+            execution_id, sequence, status
+        ).status
+
+    # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
@@ -406,6 +603,49 @@ class DispatchIntegration:
         # or duplicate id; nothing has been dispatched at this point.
         self.tracker.register(new_id)
         return new_id
+
+    def _plan_account_bindings(self, plan: ExecutionPlan) -> Dict[int, str]:
+        """Resolve the Account identity of EVERY order of the plan.
+
+        Each ``account_id`` is read exclusively from that sequence's binding
+        (see :func:`bound_account_id`). The first invalid binding aborts the
+        whole dispatch — before any execution or order record is created —
+        so a plan whose orders cannot be proven to belong to their accounts
+        is never dispatched untracked (fail-closed).
+
+        Returns:
+            ``{sequence: account_id}`` for every sequence of the plan, in
+            ``plan.execution_order`` order.
+        """
+        execution_order = plan.execution_order
+        if not execution_order:
+            # DispatchCore treats a missing / empty execution order as a
+            # dispatch-level failure; nothing to bind here.
+            return {}
+        if not isinstance(execution_order, (list, tuple)):
+            raise DispatchIntegrationError(
+                "plan.execution_order must be a list of sequences"
+            )
+
+        return {
+            sequence: bound_account_id(plan, sequence)
+            for sequence in execution_order
+        }
+
+    def _register_plan_orders(
+        self,
+        execution_id: str,
+        account_bindings: Dict[int, str],
+    ) -> None:
+        """Register ONE PENDING order record per sequence (account-aware).
+
+        The record reuses the EXISTING dispatch ``execution_id`` together
+        with the order's own sequence as its key — no parallel identifier is
+        created — and carries the bound ``account_id`` as the higher-level
+        identity of that order. Registration is fail-closed via the tracker.
+        """
+        for sequence, account_id in account_bindings.items():
+            self.tracker.register_order(execution_id, sequence, account_id)
 
     def _stopped_result(self) -> DispatchResult:
         """Fail-closed result for a dispatch bypassed by the Stop Signal.
