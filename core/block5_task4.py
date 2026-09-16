@@ -111,11 +111,58 @@ Rules of the account-aware layer (Task 6.5):
   * Fail-closed: a missing / malformed / blank account binding, an
     unregistered execution, an unknown sequence, or a result of the wrong
     type raises before anything is recorded.
-  * The per-order path never touches the Stop Signal: Stop / Brake policy is
-    Block 6 Task 6.6 and stays entirely out of this module.
+  * The per-order path itself introduces NO stop mechanism: which account a
+    result may brake is decided by the explicit Block 6 Task 6.6 policy
+    (``core/block6_task6.py``), which reuses the EXISTING ``StopSignal``
+    gates. With the default policy (``NONE``) nothing is ever braked and the
+    per-order path stays pure tracking.
   * The Block 5 dispatch-level path (``register`` / ``record_result`` /
-    ``StopSignal``) is unchanged; the account-aware layer is strictly
-    additive.
+    ``StopSignal``) is unchanged; the account-aware layer and the policy hook
+    are strictly additive.
+
+Block 6 Task 6.6 — Multi-Account Stop/Brake Policy (additive extension of the
+Send Path and of the per-order Result Path):
+
+Every per-order result is fed to the integration's explicit Stop/Brake policy
+(``StopPolicy.NONE`` / ``ACCOUNT`` / ``GLOBAL`` — ``core/block6_task6.py``):
+
+    NONE     no brake is ever activated by a per-order result.
+    ACCOUNT  the first successful REGISTERED result of an account brakes THAT
+             account only; the other accounts keep dispatching.
+    GLOBAL   the first successful REGISTERED result of ANY account brakes the
+             whole run (no further dispatch for any account).
+
+    DispatchIntegration.dispatch(plan)
+        â”‚  guard: is the Stop Signal active?       (Block 5, unchanged)
+        â”œâ”€â”€ STOP -> mode="STOPPED" (nothing registered, nothing sent)
+        â”œâ”€â”€ resolve the Account binding of EVERY sequence       (fail-closed)
+        â”œâ”€â”€ Stop/Brake policy gate (Task 6.6): may the accounts of this plan
+        â”‚   still send? no -> mode="STOPPED" (nothing registered, nothing sent)
+        â”œâ”€â”€ register the dispatch execution (PENDING) + one order record each
+        â””â”€â”€ DispatchCore.dispatch(plan)             (Block 2, unchanged)
+
+    DispatchIntegration.record_order_result(execution_id, sequence, result)
+        -> the status of THAT order only                (Task 6.5, unchanged)
+        -> StopBrakePolicy.observe_order_result(account_id, result)
+           account_id = the account of the order record, i.e. the plan binding
+
+Rules of the policy (Task 6.6):
+
+  * The policy value is explicit and selectable; it is never inferred, and it
+    never depends on an order index or on the order in which results arrive.
+  * Only a successful REGISTERED result activates a brake; a FAILED result
+    never stops anything.
+  * A brake only gates FUTURE dispatches: orders that were already sent are
+    never cancelled, stopped, or otherwise modified.
+  * ``ACCOUNT`` is per-account: braking account A does not stop account B.
+    A single plan that mixes a braked account with a non-braked one is not
+    sent at all (a plan is one atomic dispatch unit — see
+    ``StopBrakePolicy.should_continue``).
+  * ``account_id`` still comes ONLY from the binding of that same sequence;
+    it is never taken from the result, from ``plan.accounts[0]``, from a
+    symbol, a broker, an index, or a default.
+  * Fail-closed: an invalid policy value, or an order record without a valid
+    account identity, raises before any status or brake state changes.
 
 Explicitly OUT of scope for this module:
   - Any scheduler, timer, polling loop, real clock, thread, or sleep.
@@ -134,11 +181,12 @@ Explicitly OUT of scope for this module:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from uuid import uuid4
 
 from core.block5_task2 import collect_result
 from core.block5_task3 import StopSignal
+from core.block6_task6 import StopBrakePolicy, StopPolicy
 from core.dispatch_contracts import DispatchResult, ExecutionPlan
 from core.execution_tracker import ExecutionStatus, ExecutionTracker
 from core.order_engine import OrderExecutionResult
@@ -307,6 +355,9 @@ class DispatchIntegration:
             entry point is used unchanged.
         tracker: The ExecutionTracker (Task 1) used for execution records.
         stop_signal: The StopSignal (Task 3) used as the send-path gate.
+        brake_policy: The explicit Stop/Brake policy (Block 6 Task 6.6) used
+            by the per-order result path and by the send-path gate. Defaults
+            to ``StopPolicy.NONE`` (nothing is ever braked).
     """
 
     def __init__(
@@ -314,6 +365,7 @@ class DispatchIntegration:
         dispatch_core,
         tracker: Optional[ExecutionTracker] = None,
         stop_signal: Optional[StopSignal] = None,
+        brake_policy: Optional[object] = None,
     ) -> None:
         """Build the integration around an existing Dispatch Core.
 
@@ -323,6 +375,12 @@ class DispatchIntegration:
                 created here: the caller owns the Dispatch Core instance.
             tracker: Existing ``ExecutionTracker``. When omitted, a fresh
                 empty tracker is created (still the Task 1 component).
+            brake_policy: Explicit Stop/Brake policy of the run. Accepts a
+                ``StopPolicy`` value (``NONE`` / ``ACCOUNT`` / ``GLOBAL``) or
+                an existing ``StopBrakePolicy``. When omitted, the policy is
+                ``StopPolicy.NONE``: a per-order result never brakes
+                anything. A raw string or any other object is rejected
+                (fail-closed).
             stop_signal: Existing ``StopSignal``. When omitted, the Task 3
                 default ``StopSignal(enabled=False)`` is used, i.e. the
                 gate never activates (continuous dispatch — the fail-open
@@ -330,8 +388,9 @@ class DispatchIntegration:
 
         Raises:
             DispatchIntegrationError: if ``dispatch_core`` does not expose
-                a callable ``dispatch``, or ``tracker`` / ``stop_signal``
-                have the wrong type (fail-closed).
+                a callable ``dispatch``, ``tracker`` / ``stop_signal`` have
+                the wrong type, or ``brake_policy`` is neither a
+                ``StopPolicy`` nor a ``StopBrakePolicy`` (fail-closed).
         """
         if not callable(getattr(dispatch_core, "dispatch", None)):
             raise DispatchIntegrationError(
@@ -349,6 +408,7 @@ class DispatchIntegration:
         self.stop_signal = (
             stop_signal if stop_signal is not None else StopSignal()
         )
+        self.brake_policy = self._resolve_brake_policy(brake_policy)
 
         self._last_execution_id: Optional[str] = None
 
@@ -375,6 +435,15 @@ class DispatchIntegration:
         """
         return self._last_execution_id
 
+    @property
+    def stopped_accounts(self) -> Tuple[str, ...]:
+        """Accounts braked by the explicit Stop/Brake policy (Task 6.6).
+
+        Sorted, so the value is deterministic and independent of the order in
+        which results arrived. Empty under ``StopPolicy.NONE`` (the default).
+        """
+        return self.brake_policy.stopped_accounts()
+
     # ------------------------------------------------------------------
     # SEND PATH
     # ------------------------------------------------------------------
@@ -396,12 +465,19 @@ class DispatchIntegration:
              (Block 6 Task 6.5) — before anything is registered or sent.
              * invalid / missing / blank binding -> raise, nothing is
                registered and nothing is dispatched (fail-closed).
-          3. Register the NEW execution in the tracker as ``PENDING``
+          3. Stop / Brake policy gate (Block 6 Task 6.6) — the accounts of
+             this plan are read from the bindings resolved in step 2:
+             * the policy says the dispatch may not be sent (a braked account
+               under ``ACCOUNT``, or a braked run under ``GLOBAL``) ->
+               return a ``mode=STOPPED_MODE`` result; nothing is registered
+               and nothing is sent, and no already sent order is touched.
+             * invalid policy value -> raise (fail-closed).
+          4. Register the NEW execution in the tracker as ``PENDING``
              (no waiting for any previous order result).
-          4. Register ONE account-aware order record (``PENDING``) per
+          5. Register ONE account-aware order record (``PENDING``) per
              sequence, keyed by that same execution id + the order's own
              sequence, so each order of each account is tracked separately.
-          5. Delegate to the existing ``DispatchCore.dispatch(plan)`` and
+          6. Delegate to the existing ``DispatchCore.dispatch(plan)`` and
              return its ``DispatchResult`` unchanged.
 
         The returned ``DispatchResult`` is NOT processed here: the result
@@ -427,6 +503,8 @@ class DispatchIntegration:
                 missing / malformed (fail-closed).
             ExecutionTrackerError: if ``execution_id`` is already
                 registered (fail-closed, raised before anything is sent).
+            StopBrakePolicyError: if the Stop/Brake policy value is invalid
+                (fail-closed, raised before anything is registered).
         """
         if not isinstance(plan, ExecutionPlan):
             raise DispatchIntegrationError("plan must be an ExecutionPlan")
@@ -441,14 +519,30 @@ class DispatchIntegration:
         # an untrackable plan is never dispatched and never leaves a record.
         account_bindings = self._plan_account_bindings(plan)
 
-        # ---- 3) Register the NEW execution (PENDING) --------------------
+        # ---- 3) Stop / Brake policy gate (Block 6 Task 6.6) -------------
+        # Consulted through the SAME send-path guard mechanism as the Stop
+        # Signal above: a plan whose accounts may no longer send is bypassed
+        # with a fail-closed ``mode=STOPPED_MODE`` result. Nothing is
+        # registered, nothing is sent, and no already sent order is ever
+        # cancelled or modified.
+        if not self._brake_allows(account_bindings):
+            return self._stopped_result(
+                message=(
+                    "Dispatch skipped: the Stop/Brake policy does not allow "
+                    "this dispatch (a braked account is involved). No new "
+                    "order was sent and no previously sent order was "
+                    "cancelled or modified."
+                )
+            )
+
+        # ---- 4) Register the NEW execution (PENDING) --------------------
         # Non-blocking tracking only: nothing is awaited here.
         self._last_execution_id = self._register_execution(execution_id)
 
-        # ---- 4) Register ONE order record per sequence (account-aware) ---
+        # ---- 5) Register ONE order record per sequence (account-aware) ---
         self._register_plan_orders(self._last_execution_id, account_bindings)
 
-        # ---- 5) Delegate to the existing Block 2 entry point ------------
+        # ---- 6) Delegate to the existing Block 2 entry point ------------
         # DispatchCore.dispatch is used unchanged; its DispatchResult is
         # returned as-is and is not consumed by the send path.
         return self.dispatch_core.dispatch(plan)
@@ -538,9 +632,13 @@ class DispatchIntegration:
         The account identity is NOT taken from ``result``: it was fixed when
         the order was registered, from the plan binding of that sequence.
 
-        The Stop Signal is deliberately neither consulted nor updated here:
-        the per-order path is pure tracking (Stop / Brake policy is Block 6
-        Task 6.6) and a per-order result never gates future dispatches.
+        The Block 5 Stop Signal is deliberately neither consulted nor updated
+        here. What the result does feed is the explicit Stop/Brake policy of
+        the integration (Block 6 Task 6.6): a successful REGISTERED result may
+        brake the account that owns it (``ACCOUNT``) or the whole run
+        (``GLOBAL``); under the default ``NONE`` nothing is braked at all. The
+        account identity passed to the policy is the one of THIS order record,
+        never ``accounts[0]``, the symbol, the broker, or an index.
 
         Args:
             execution_id: The id of an execution issued by this integration
@@ -555,10 +653,13 @@ class DispatchIntegration:
 
         Raises:
             DispatchIntegrationError: if ``result`` is not an
-                ``OrderExecutionResult`` (fail-closed; nothing recorded).
+                ``OrderExecutionResult``, or the tracked order carries no
+                valid account identity (fail-closed; nothing recorded).
             ExecutionTrackerError: if ``execution_id`` is unknown, the order
                 of that sequence is not tracked, or ``execution_id`` /
                 ``sequence`` is invalid (fail-closed; nothing recorded).
+            StopBrakePolicyError: if the Stop/Brake policy value is invalid
+                (fail-closed; nothing recorded and nothing braked).
         """
         if not isinstance(result, OrderExecutionResult):
             raise DispatchIntegrationError(
@@ -572,10 +673,35 @@ class DispatchIntegration:
             else ExecutionStatus.FAILED
         )
 
-        # Only the record of THIS order/account is touched.
-        return self.tracker.update_order_status(
-            execution_id, sequence, status
-        ).status
+        # ---- Account identity of THIS order, from ITS OWN record --------
+        # The record was created at dispatch time from the binding of this
+        # sequence (plan.conditions["binding"][sequence]["account_id"]). The
+        # identity is never derived from the result, from accounts[0], from a
+        # symbol, a broker, an index, or a default.
+        order_record = self.tracker.get_order_record(execution_id, sequence)
+        account_id = order_record.account_id
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise DispatchIntegrationError(
+                "the tracked order carries no valid account_id "
+                f"(execution_id={execution_id} sequence={sequence}); the "
+                "Stop/Brake policy cannot be applied (fail-closed)."
+            )
+
+        # ---- Stop / Brake policy (Block 6 Task 6.6) ---------------------
+        # Validated BEFORE anything is written, so an invalid policy value or
+        # an invalid account identity leaves the tracker untouched.
+        self.brake_policy.validate_account(account_id)
+
+        # ---- Record the status of THIS order only -----------------------
+        updated = self.tracker.update_order_status(execution_id, sequence, status)
+
+        # ---- Feed the result of THIS account to the policy --------------
+        # Only a success can activate a brake, and only for the scope the
+        # explicit policy selects. The policy never consults the tracker, the
+        # plan, an order index, or an arrival order.
+        self.brake_policy.observe_order_result(account_id, result)
+
+        return updated.status
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -647,19 +773,63 @@ class DispatchIntegration:
         for sequence, account_id in account_bindings.items():
             self.tracker.register_order(execution_id, sequence, account_id)
 
-    def _stopped_result(self) -> DispatchResult:
-        """Fail-closed result for a dispatch bypassed by the Stop Signal.
+    def _brake_allows(self, account_bindings: Dict[int, str]) -> bool:
+        """Ask the explicit Stop/Brake policy whether this dispatch may send.
 
-        No order was sent (``sent=False``) and the Dispatch Core was never
-        invoked, so there is no trace_id and no order count.
+        The accounts are the ones resolved from the plan binding in the
+        previous step — never ``accounts[0]``, a symbol, a broker, or an
+        index. They are passed in plan-sequence order, so the answer cannot
+        depend on dictionary iteration order either.
+
+        Raises:
+            StopBrakePolicyError: if the policy value is invalid or an account
+                identity is invalid (fail-closed; nothing is registered and
+                nothing is dispatched).
+        """
+        return self.brake_policy.should_continue(
+            [account_bindings[sequence] for sequence in sorted(account_bindings)]
+        )
+
+    @staticmethod
+    def _resolve_brake_policy(brake_policy: Optional[object]) -> StopBrakePolicy:
+        """Resolve the explicit Stop/Brake policy of this integration.
+
+        Accepts an explicit ``StopPolicy`` value (``NONE`` / ``ACCOUNT`` /
+        ``GLOBAL``) or an already built ``StopBrakePolicy``. Anything else —
+        including a raw string such as ``"GLOBAL"`` — is rejected
+        (fail-closed): the policy must be explicit.
+        """
+        if brake_policy is None:
+            return StopBrakePolicy()
+        if isinstance(brake_policy, StopBrakePolicy):
+            return brake_policy
+        if isinstance(brake_policy, StopPolicy):
+            return StopBrakePolicy(policy=brake_policy)
+        raise DispatchIntegrationError(
+            "brake_policy must be an explicit StopPolicy value (NONE / "
+            f"ACCOUNT / GLOBAL) or a StopBrakePolicy (got {brake_policy!r})"
+        )
+
+    def _stopped_result(self, message: Optional[str] = None) -> DispatchResult:
+        """Fail-closed result for a dispatch bypassed by a send-path guard.
+
+        Used both for the Block 5 Stop Signal and for the Block 6 Task 6.6
+        Stop/Brake policy gate. No order was sent (``sent=False``) and the
+        Dispatch Core was never invoked, so there is no trace_id and no order
+        count.
         """
         return DispatchResult(
             success=False,
             sent=False,
             mode=STOPPED_MODE,
             message=(
-                "Dispatch skipped: Stop Signal is active. No new order was "
-                "sent and no previously sent order was cancelled or modified."
+                message
+                if message is not None
+                else (
+                    "Dispatch skipped: Stop Signal is active. No new order "
+                    "was sent and no previously sent order was cancelled or "
+                    "modified."
+                )
             ),
             broker_name=None,
             order_count=0,
