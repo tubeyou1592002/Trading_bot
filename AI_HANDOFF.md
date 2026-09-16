@@ -1420,19 +1420,65 @@ Block 6 فلانی فقط مسئول **Account-aware Execution** است.
 
 ### Block 7 — Multi-Broker Execution
 
-**Goal:** Extend execution to multiple Brokers.
+**Goal:** Support multiple Brokers simultaneously, so that different Accounts can execute orders on different Brokers and the core remains independent of any single Broker implementation.
 
 **Scope:**
 - Multiple Brokers.
 - Multiple Accounts across multiple Brokers.
 - Preserve Broker abstraction.
 - Dispatch Core must not depend on any single Broker implementation.
+- Multi-Broker Execution only.
+
+**Out of Scope (for Block 7):**
+- Live Trading.
+- Strategy.
+- Risk Management.
+- Latency Optimization.
+- Stress Testing.
 
 **Output:** Multi-Account / Multi-Broker Dispatch.
 
 **Dependencies:** Block 6
 
 **Status:** NOT STARTED
+
+#### Task 7.1 — Broker Infrastructure Audit & Contract
+Audit the current Broker Interface, BrokerManager, and InstrumentProvider, and define the contract required for genuine multi-Broker support. No new architecture is invented; the existing abstractions are reviewed and the gaps for a second independent Broker are documented.
+
+#### Task 7.2 — Generic Multi-Broker Manager
+Prepare BrokerManager to manage multiple independent Brokers without coupling to any single Broker implementation. Broker selection must come from an explicit route, never from a hardcoded default.
+
+#### Task 7.3 — Broker-Specific Instrument Provider
+Ensure each Broker has its own InstrumentProvider and its own mapping, so that Broker information is never mixed across providers. A Broker's instrument data must not leak into another Broker's namespace.
+
+#### Task 7.4 — Second Broker Stub
+Add a second, fully offline test Broker stub to prove the architecture, with no real API and no Live Trading. The stub exists only to validate that the system can route to a second independent Broker.
+
+#### Task 7.5 — Multi-Broker Dispatch
+Prove that each Order is sent through the correct Broker based on its own Broker binding. An Order bound to Broker A must never be sent through Broker B, regardless of dispatch order or account count.
+
+#### Task 7.6 — Multi-Account + Multi-Broker Integration
+Prove combined multi-Account and multi-Broker scenarios such as:
+- Account1 → BrokerA
+- Account2 → BrokerB
+- Account3 → BrokerA
+
+Each Account must retain its own Broker binding, and no cross-contamination of identity, routing, or state is allowed.
+
+#### Task 7.7 — Integration, Regression & Documentation
+End-to-end test of the entire Block 7, run the full Regression suite, and finalize documentation. All Block 1 through Block 6 behavior must remain intact.
+
+#### Block 7 Commit History
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| 7.1 | — | NOT STARTED |
+| 7.2 | — | NOT STARTED |
+| 7.3 | — | NOT STARTED |
+| 7.4 | — | NOT STARTED |
+| 7.5 | — | NOT STARTED |
+| 7.6 | — | NOT STARTED |
+| 7.7 | — | NOT STARTED |
 
 ---
 
