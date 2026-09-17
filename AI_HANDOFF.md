@@ -1557,7 +1557,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.2 | — | NOT STARTED |
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | 8c2a047 | COMPLETED — Second Broker offline stub verified |
-| 7.5 | — | COMPLETED — Multi-Broker Dispatch routing verified |
+| 7.5 | cf84494 | COMPLETED — Multi-Broker Dispatch routing verified |
 | 7.6 | — | NOT STARTED |
 | 7.7 | — | NOT STARTED |
 
