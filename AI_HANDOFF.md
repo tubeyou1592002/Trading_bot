@@ -1544,7 +1544,8 @@ No production code changed. Task 7.5 only proves correct Broker routing. Multi-A
 ```text
 7.6-L1 = COMPLETED
 7.6-L2 = COMPLETED
-7.7   = NOT STARTED
+7.7   = COMPLETED
+Block 7 = COMPLETED
 ```
 
 ##### 7.6-L1 — Layer 1: N Account / N Broker Foundation
@@ -1575,7 +1576,7 @@ No production code changed. Task 7.5 only proves correct Broker routing. Multi-A
 
 **Task tests:** `23 passed`
 
-**Full regression:** `451 passed`
+**Full regression:** `456 passed`
 
 **Production changes:** none
 
@@ -1587,12 +1588,29 @@ No production code changed. Task 7.5 only proves correct Broker routing. Multi-A
 * بدون تغییر production code
 * بدون Real Trading
 
-### مرز Task 7.7
-* Task 7.7 = NOT STARTED
-* Task 7.7 را شروع یا طراحی نکن؛ فقط وضعیت آن را NOT STARTED نگه دار.
+### مرز Block 7
+* Block 7 = COMPLETED
+* All tasks 7.1 through 7.7 are COMPLETED. Block 7 is ready for closing.
 
 #### Task 7.7 — Integration, Regression & Documentation
-End-to-end test of the entire Block 7, run the full Regression suite, and finalize documentation. All Block 1 through Block 6 behavior must remain intact.
+
+**وضعیت:** COMPLETED
+
+**End-to-End test:** `test_block7_task7.py` — 5 tests, all PASSED
+
+**Full regression:** `456 passed`
+
+**Production code changes:** none
+
+**Real Trading:** none (live=False throughout, Fake brokers/providers only)
+
+**Multi-Account / Multi-Broker:** COMPLETED — N Account / N Broker with independent instrument mapping verified end-to-end
+
+**Layer 1:** COMPLETED (`test_block7_task6_layer1.py`)
+
+**Layer 2:** COMPLETED (`test_block7_task6_layer2.py`)
+
+**Block 7:** COMPLETED — ready for closing. All Block 1 through Block 6 behavior remains intact.
 
 #### Block 7 Commit History
 
@@ -1605,7 +1623,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.5 | cf84494 | COMPLETED — Multi-Broker Dispatch routing verified |
 | 7.6-L1 | a9e3b9a | COMPLETED — Layer 1 N Account / N Broker foundation verified |
 | 7.6-L2 | a6a3a12 | COMPLETED — Layer 2 Account+Broker+Order+Instrument integration proof |
-| 7.7 | — | NOT STARTED |
+| 7.7 | — | COMPLETED — End-to-End integration, regression, and documentation |
 
 ---
 
