@@ -9,11 +9,27 @@ if TYPE_CHECKING:
 class BrokerManager:
 
     def __init__(self):
-        self.brokers = {
-            "آگاه": AgaahBroker(),
-        }
+        self.brokers = {}
+        self.providers = {}
+        self._provider_classes = {}
 
-        self.providers: dict = {}
+        self.register("آگاه", AgaahBroker(), AgaahInstrumentProvider)
+
+    def register(self, name, broker, provider_class):
+        """
+        ثبت یک Broker مستقل همراه با Provider سازگار با همان Broker.
+
+        name: نام Broker برای resolve کردن
+        broker: همان Broker instance که قرار است مدیریت شود
+        provider_class: کلاس Provider سازگار با همین Broker
+        """
+        if name in self.brokers:
+            raise ValueError(
+                f"Broker already registered: {name}"
+            )
+
+        self.brokers[name] = broker
+        self._provider_classes[name] = provider_class
 
     def names(self):
         return list(self.brokers.keys())
@@ -47,8 +63,9 @@ class BrokerManager:
             return self.providers[name]
 
         broker = self.brokers[name]
+        provider_class = self._provider_classes[name]
 
-        provider = AgaahInstrumentProvider(broker)
+        provider = provider_class(broker)
 
         self.providers[name] = provider
 
