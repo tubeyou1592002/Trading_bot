@@ -1616,14 +1616,14 @@ Block 7 = COMPLETED
 
 | Task | Commit | Description |
 |------|--------|-------------|
-| 7.1 | — | COMPLETED — Audit approved; documentation pending commit |
-| 7.2 | — | NOT STARTED |
+| 7.1 | 70ccda3 | COMPLETED — Broker infrastructure audit approved and documented |
+| 7.2 | 7974894 | COMPLETED — Generic Multi-Broker Manager implemented |
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | 8c2a047 | COMPLETED — Second Broker offline stub verified |
 | 7.5 | cf84494 | COMPLETED — Multi-Broker Dispatch routing verified |
 | 7.6-L1 | a9e3b9a | COMPLETED — Layer 1 N Account / N Broker foundation verified |
 | 7.6-L2 | a6a3a12 | COMPLETED — Layer 2 Account+Broker+Order+Instrument integration proof |
-| 7.7 | — | COMPLETED — End-to-End integration, regression, and documentation |
+| 7.7 | 3b9502d | COMPLETED — End-to-End integration, regression, and documentation |
 
 ---
 
@@ -1720,7 +1720,7 @@ Block 0 → Block 1 → Block 2
 | 4 | Event-Driven Dispatch | Block 2 | NOT STARTED |
 | 5 | Execution Tracking | Block 2, Block 3, Block 4 | COMPLETED |
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
-| 7 | Multi-Broker Execution | Block 6 | NOT STARTED |
+| 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | NOT STARTED |
 | 9 | Stress / Simulation | Block 8 | NOT STARTED |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
