@@ -1443,7 +1443,17 @@ Block 6 فلانی فقط مسئول **Account-aware Execution** است.
 **Status:** NOT STARTED
 
 #### Task 7.1 — Broker Infrastructure Audit & Contract
-Audit the current Broker Interface, BrokerManager, and InstrumentProvider, and define the contract required for genuine multi-Broker support. No new architecture is invented; the existing abstractions are reviewed and the gaps for a second independent Broker are documented.
+**Status:** COMPLETED — Audit approved; documentation pending commit
+
+Audit of the current broker infrastructure has been completed and approved. Findings:
+
+- **Broker contract** (`brokers/base.py`): Reviewed. Abstract methods: `name`, `login()`, `get_account()`, `place_order()`, `cancel_order()`. Non-abstract method `get_trading_state(nsc_id) → TradingState` with behavioral guidance in docstring (broker should return `UNVERIFIED` or raise `TradingStateUnavailable` when no reliable source). `get_buy_capacity()` / `get_sell_capacity()` raise `NotImplementedError` by default (fail-closed).
+- **InstrumentProvider contract** (`brokers/base.py`): Reviewed. Abstract methods: `get_instrument(ins_code) → Tuple[Instrument, BrokerInstrument]` (raises `InstrumentLookupError` on failure). `get_nsc_id(ins_code) → Optional[str]` — can return `None` or raise `InstrumentLookupError` depending on implementation policy per docstring. `refresh_cache() → None`.
+- **DispatchCore → BrokerManager → Broker/InstrumentProvider path** (`core/dispatch_core.py`): Reviewed end-to-end. `DispatchCore.dispatch()` pre-resolves brokers via `BrokerManager.get()`, resolves providers lazily via `BrokerManager.get_instrument_provider()`, builds `BrokerDispatchRequest`, and delegates to `OrderEngine.execute_by_ins_code()`.
+- **Agah dependencies** identified and documented: `brokers/manager.py` hardcodes `AgaahBroker` registration and `AgaahInstrumentProvider` creation; `brokers/agaah/broker.py` and `brokers/agaah/instrument_provider.py` contain Agah-specific API details and mapping logic.
+- **Multi-Broker Compatibility:** Base contracts (`Broker`, `InstrumentProvider`) are structurally compatible with a second Broker (generic ABCs, dict-based storage, name-based resolution). Limitation: `BrokerManager` currently hardcodes only `AgaahBroker` / `AgaahInstrumentProvider`.
+- **No new architecture** was created in this task.
+- **No code changed.**
 
 #### Task 7.2 — Generic Multi-Broker Manager
 Prepare BrokerManager to manage multiple independent Brokers without coupling to any single Broker implementation. Broker selection must come from an explicit route, never from a hardcoded default.
@@ -1472,7 +1482,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 
 | Task | Commit | Description |
 |------|--------|-------------|
-| 7.1 | — | NOT STARTED |
+| 7.1 | — | COMPLETED — Audit approved; documentation pending commit |
 | 7.2 | — | NOT STARTED |
 | 7.3 | — | NOT STARTED |
 | 7.4 | — | NOT STARTED |
