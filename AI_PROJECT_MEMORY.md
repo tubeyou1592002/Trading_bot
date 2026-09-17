@@ -32,9 +32,10 @@
 
 
 
-\*\*Current Git baseline:\*\*
+**Previous verified Git baseline:**
 
-`8cfc4d4 — M6-E Documentation Checkpoint (docs: update project state after M6-E, Architect approved, pushed)`
+`d09cc1f — docs: synchronize Block 7 roadmap status`
+
 
 
 
@@ -1583,22 +1584,42 @@ Documentation checkpoint — bdd5a1d
 
 
 
-### Current (M4-B)
+### Current: Block 7 — Multi-Broker Execution
 
-
+**Status: COMPLETED**
 
 ```text
+Block 7 — Multi-Broker Execution
+Status: COMPLETED
 
-M4-B — main.py / Order Workflow
-
-Status: COMMITTED as 9713360
-
-Tests: 7/7 (test_main_order_workflow.py)
-
-Regression: 45/45 PASS (38 pre-existing + 7 new)
-
+7.1  Broker Infrastructure Audit — COMPLETED (70ccda3)
+7.2  Generic Multi-Broker Manager — COMPLETED (7974894)
+7.3  Broker-specific Instrument Provider Isolation — COMPLETED (39f7594)
+7.4  Second Broker Offline Stub — COMPLETED (8c2a047)
+7.5  Multi-Broker Dispatch — COMPLETED (cf84494)
+7.6-L1 N Account / N Broker Foundation — COMPLETED (a9e3b9a)
+7.6-L2 Account + Broker + Order + Instrument Integration — COMPLETED (a6a3a12)
+7.7  End-to-End Integration / Regression / Documentation — COMPLETED (3b9502d)
 ```
 
+**Production changes during Block 7:** `brokers/manager.py` only (Task 7.2)
+
+**Real trading: disabled**
+
+### Current Test State
+
+Block 7 Task tests:
+23 passed — Task 7.6-L2
+5 passed — Task 7.7
+
+Full regression at Block 7 completion:
+456 passed
+
+Production changes during 7.6-L1: none
+Production changes during 7.6-L2: none
+Production changes during 7.7: none
+
+Real trading: disabled
 
 
 Implementation summary:
@@ -1617,7 +1638,7 @@ Implementation summary:
 
 
 
-\* `BrokerManager` remains structurally Agah-specific. No factory map, no plugin architecture, no registry, no DI framework was introduced.
+\* BrokerManager → generic broker registration; broker-specific InstrumentProvider; per-broker provider cache. Current real broker: Agah. Architecture: Multi-Broker (not Agah-specific).
 
 
 
@@ -1727,15 +1748,12 @@ M4-B changes ONLY `main.py` (and adds `test_main_order_workflow.py`). The follow
 
 \* `core/`, `brokers/base.py`, `brokers/agaah/`, `models/`, `market/`, `input/` — all unchanged.
 
-### Next decision point
+### Next Step
 
-M4-B is committed (9713360), all 45/45 tests pass. The next milestones will be defined by a separate user instruction:
+Block 8 — Latency Measurement & Optimization
+Status: NOT STARTED
 
-\* implement real `get_trading_state` for Agah (Decision 017) after identifying a verified source;
-
-\* add scheduling/timer for time-based order submission;
-
-\* add multi-account / session lifecycle management.
+Per Roadmap, Block 8 is the next phase after Block 7 completion.
 
 ### M5 — TSETMC Trading State Integration (IMPLEMENTED)
 
