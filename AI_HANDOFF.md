@@ -1478,7 +1478,26 @@ Provider B → B-TEST-001
 - این Task Broker دوم واقعی اضافه نمی‌کند؛ Broker دوم واقعی متعلق به Task 7.4 است.
 
 #### Task 7.4 — Second Broker Stub
-Add a second, fully offline test Broker stub to prove the architecture, with no real API and no Live Trading. The stub exists only to validate that the system can route to a second independent Broker.
+**Status:** COMPLETED — Architect approved; tests verified.
+
+Second Broker Stub با نام `"فیک"` ایجاد و تست شد. این Stub کاملاً offline و deterministic است.
+
+- Stub کاملاً offline است: هیچ Network/API/Login/Credential/Live Trading ندارد.
+- `FakeInstrumentProviderB(broker)` قرارداد سازنده مشخص دارد — فقط `broker` آرگومان اجباری است.
+- `InstrumentLookupError` مستقیماً از `brokers.base` استفاده می‌شود. هیچ import از `brokers.agaah.*` مجاز نیست.
+- Mapping:
+  `TEST-001 → B-TEST-001`
+- `tse_id == TEST-001`
+- Broker و Provider دوم از طریق `BrokerManager.register()` قابل ثبت و resolve هستند.
+- Provider B به همان `FakeBrokerB` instance وصل است (`provider._broker is fake_broker`).
+- Cache Provider B مستقل از Provider A است (`_cache` و `_nsc_cache` جداگانه).
+- `place_order(..., live=False)` فقط DRY_RUN است (`sent == False`).
+- 12 تست اختصاصی Task 7.4 PASS شده‌اند.
+- regression تست‌های 7.2 و 7.3 نیز PASS شده‌اند.
+- در مجموع: `60 passed, 0 failed`
+- هیچ production code تغییر نکرده است.
+- Task 7.4 فقط Second Broker Stub را اثبات می‌کند.
+- Multi-Broker Dispatch متعلق به Task 7.5 است و هنوز شروع نشده.
 
 #### Task 7.5 — Multi-Broker Dispatch
 Prove that each Order is sent through the correct Broker based on its own Broker binding. An Order bound to Broker A must never be sent through Broker B, regardless of dispatch order or account count.
@@ -1501,7 +1520,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.1 | — | COMPLETED — Audit approved; documentation pending commit |
 | 7.2 | — | NOT STARTED |
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
-| 7.4 | — | NOT STARTED |
+| 7.4 | — | COMPLETED — Second Broker offline stub verified |
 | 7.5 | — | NOT STARTED |
 | 7.6 | — | NOT STARTED |
 | 7.7 | — | NOT STARTED |
