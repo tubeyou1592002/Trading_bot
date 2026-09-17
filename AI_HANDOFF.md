@@ -1499,8 +1499,44 @@ Second Broker Stub با نام `"فیک"` ایجاد و تست شد. این Stub
 - Task 7.4 فقط Second Broker Stub را اثبات می‌کند.
 - Multi-Broker Dispatch متعلق به Task 7.5 است و هنوز شروع نشده.
 
-#### Task 7.5 — Multi-Broker Dispatch
-Prove that each Order is sent through the correct Broker based on its own Broker binding. An Order bound to Broker A must never be sent through Broker B, regardless of dispatch order or account count.
+#### Task 7.5 — Multi-Broker Dispatch Routing Proof (COMPLETED — Architect Approved)
+
+Proved that each Order is sent through the correct Broker based on its own Broker binding. An Order bound to Broker A is never sent through Broker B, regardless of dispatch order or account count.
+
+**Routing proof (A/B/A):**
+```text
+Sequence 1 → BrokerA (instance verified) → TEST-A
+Sequence 2 → BrokerB (instance verified) → TEST-B
+Sequence 3 → BrokerA (instance verified) → TEST-C
+```
+
+**Routing path verified:**
+```text
+ExecutionPlan
+    → conditions["binding"]
+    → account_routes
+    → DispatchCore.dispatch()
+    → BrokerManager.get(broker_name)
+    → correct Broker instance
+    → OrderEngine.execute_by_ins_code(...)
+```
+
+**Key verifications:**
+- Broker instance identity (not just name) confirmed for each order.
+- Order independence proven: A→B→A pattern, not A→A→A or A→B→B.
+- Same symbol / different brokers: two orders with same nsc_id routed to different brokers correctly.
+- Unknown Broker → BLOCKED (fail-closed, no fallback).
+- Route mismatch (binding ≠ account_routes) → BLOCKED (execute_by_ins_code NOT called).
+- Missing account route → BLOCKED (execute_by_ins_code NOT called).
+- Broker instance isolation: FakeBrokerA and FakeBrokerB are distinct instances.
+- `live=False` preserved; no Live Trading executed.
+
+**Tests:**
+- Dedicated Task 7.5 tests: `9 passed`
+- Regression tests (7.2, 7.3, 7.4): `60 passed`
+- Total: `69 passed, 0 failed`
+
+No production code changed. Task 7.5 only proves correct Broker routing. Multi-Account + Multi-Broker integration belongs to Task 7.6 (NOT STARTED).
 
 #### Task 7.6 — Multi-Account + Multi-Broker Integration
 Prove combined multi-Account and multi-Broker scenarios such as:
@@ -1521,7 +1557,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.2 | — | NOT STARTED |
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | 8c2a047 | COMPLETED — Second Broker offline stub verified |
-| 7.5 | — | NOT STARTED |
+| 7.5 | — | COMPLETED — Multi-Broker Dispatch routing verified |
 | 7.6 | — | NOT STARTED |
 | 7.7 | — | NOT STARTED |
 
