@@ -1538,7 +1538,16 @@ ExecutionPlan
 
 No production code changed. Task 7.5 only proves correct Broker routing. Multi-Account + Multi-Broker integration belongs to Task 7.6 (NOT STARTED).
 
-#### Task 7.6 — Layer 1 COMPLETED — N Account / N Broker Foundation Proof
+#### Task 7.6 — N Account / N Broker Integration Proof
+
+**وضعیت:**
+```text
+7.6-L1 = COMPLETED
+7.6-L2 = COMPLETED
+7.7   = NOT STARTED
+```
+
+##### 7.6-L1 — Layer 1: N Account / N Broker Foundation
 
 * Layer 1 با موفقیت تکمیل و توسط Architect تأیید شده است.
 * هدف Layer 1: اثبات Foundation برای `N Account / N Broker`.
@@ -1560,11 +1569,27 @@ No production code changed. Task 7.5 only proves correct Broker routing. Multi-A
 * Regression تست‌های قبلی نیز PASS شدند.
 * مجموع واقعی: `79 passed, 0 failed`
 
-### مرز Layer 2
-* این فقط Layer 1 است.
-* Layer 2 هنوز شروع نشده.
-* Layer 2 باید بعداً سناریوهای ترکیبی‌تر Account + Broker + Order + Instrument را بررسی کند.
-* Task 7.7 نیز هنوز `NOT STARTED` است.
+##### 7.6-L2 — Layer 2: Account + Broker + Order + Instrument Integration Proof
+
+**Commit:** `a6a3a12`
+
+**Task tests:** `23 passed`
+
+**Full regression:** `451 passed`
+
+**Production changes:** none
+
+**نتایج اثبات:**
+* اثبات ترکیب Account + Broker + Order + Instrument
+* اثبات استقلال بین حساب‌ها و بروکرها
+* اثبات mapping مستقل Instrument برای بروکرهای مختلف
+* اثبات fail-closed و نبود cross-routing / fallback
+* بدون تغییر production code
+* بدون Real Trading
+
+### مرز Task 7.7
+* Task 7.7 = NOT STARTED
+* Task 7.7 را شروع یا طراحی نکن؛ فقط وضعیت آن را NOT STARTED نگه دار.
 
 #### Task 7.7 — Integration, Regression & Documentation
 End-to-end test of the entire Block 7, run the full Regression suite, and finalize documentation. All Block 1 through Block 6 behavior must remain intact.
@@ -1578,7 +1603,8 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | 8c2a047 | COMPLETED — Second Broker offline stub verified |
 | 7.5 | cf84494 | COMPLETED — Multi-Broker Dispatch routing verified |
-| 7.6 | a9e3b9a | COMPLETED — Layer 1 N Account / N Broker foundation verified |
+| 7.6-L1 | a9e3b9a | COMPLETED — Layer 1 N Account / N Broker foundation verified |
+| 7.6-L2 | a6a3a12 | COMPLETED — Layer 2 Account+Broker+Order+Instrument integration proof |
 | 7.7 | — | NOT STARTED |
 
 ---
