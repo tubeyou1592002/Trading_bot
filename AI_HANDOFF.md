@@ -1538,13 +1538,33 @@ ExecutionPlan
 
 No production code changed. Task 7.5 only proves correct Broker routing. Multi-Account + Multi-Broker integration belongs to Task 7.6 (NOT STARTED).
 
-#### Task 7.6 — Multi-Account + Multi-Broker Integration
-Prove combined multi-Account and multi-Broker scenarios such as:
-- Account1 → BrokerA
-- Account2 → BrokerB
-- Account3 → BrokerA
+#### Task 7.6 — Layer 1 COMPLETED — N Account / N Broker Foundation Proof
 
-Each Account must retain its own Broker binding, and no cross-contamination of identity, routing, or state is allowed.
+* Layer 1 با موفقیت تکمیل و توسط Architect تأیید شده است.
+* هدف Layer 1: اثبات Foundation برای `N Account / N Broker`.
+* Accountها فقط به‌صورت `models.account.Account` object در تست ساخته شدند.
+* هیچ `AccountRegistry` یا `AccountManager` جدید ایجاد نشد.
+* Account → Broker binding از طریق قرارداد فعلی `ExecutionPlan` بررسی شد:
+  * `account_routes`
+  * `conditions["binding"]`
+* سناریوهای `N=1`, `N=2`, `N=10` اجرا شدند.
+* سناریوی اصلی `10 Broker / 20 Account` اجرا شد.
+* چند Account با یک Broker مشترک تست شد.
+* Account identity مستقل و Broker instance identity مستقل اثبات شد.
+* Unknown Broker → fail-closed / BLOCKED بدون fallback.
+* Missing Account route → fail-closed / BLOCKED بدون fallback.
+* Conflicting binding → fail-closed مطابق قرارداد موجود.
+* هیچ production code تغییر نکرد.
+* فقط `test_block7_task6_layer1.py` اضافه شد.
+* تعداد تست‌های Layer 1: `10`
+* Regression تست‌های قبلی نیز PASS شدند.
+* مجموع واقعی: `79 passed, 0 failed`
+
+### مرز Layer 2
+* این فقط Layer 1 است.
+* Layer 2 هنوز شروع نشده.
+* Layer 2 باید بعداً سناریوهای ترکیبی‌تر Account + Broker + Order + Instrument را بررسی کند.
+* Task 7.7 نیز هنوز `NOT STARTED` است.
 
 #### Task 7.7 — Integration, Regression & Documentation
 End-to-end test of the entire Block 7, run the full Regression suite, and finalize documentation. All Block 1 through Block 6 behavior must remain intact.
@@ -1558,7 +1578,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 | 7.3 | 39f7594 | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | 8c2a047 | COMPLETED — Second Broker offline stub verified |
 | 7.5 | cf84494 | COMPLETED — Multi-Broker Dispatch routing verified |
-| 7.6 | — | NOT STARTED |
+| 7.6 | — | COMPLETED — Layer 1 N Account / N Broker foundation verified |
 | 7.7 | — | NOT STARTED |
 
 ---
