@@ -59,6 +59,10 @@ class _FakeSearchSession:
         })
         return self._response
 
+    def set_response(self, response):
+        """Allow tests to reconfigure the search response at runtime."""
+        self._response = response
+
 
 class _FakeSession:
     """
@@ -138,6 +142,119 @@ def _make_broker_instrument(nsc_id, tse_id):
         nsc_id=nsc_id,
         tse_id=tse_id,
     )
+
+
+# ============================================================
+# Task 7.3 isolation fixtures
+# ============================================================
+
+
+class FakeInstrumentProviderB:
+    """
+    Fully offline fake provider for Broker B.
+
+    Maps TEST-001 -> B-TEST-001. It is a test tool only:
+    - no network, no API, no login/auth
+    - no dependency on AgaahInstrumentProvider
+    - no knowledge of the real Agah mapping
+    - owns its own mapping and cache dictionaries
+    - implements only the minimal InstrumentProvider contract
+    """
+
+    def __init__(self, broker, mapping=None):
+        self._broker = broker
+        self._mapping = dict(mapping or {})
+        self._cache = {}
+        self._nsc_cache = {}
+
+    def get_instrument(
+        self,
+        ins_code,
+    ):
+        if ins_code in self._cache:
+            return self._cache[ins_code]
+
+        nsc_id = self._resolve(ins_code)
+        instrument = Instrument(
+            symbol="فیک-B",
+            name="فیک B",
+            ins_code=ins_code,
+        )
+        broker_instrument = BrokerInstrument(
+            name="فیک B",
+            company_name="فیک B co",
+            nsc_id=nsc_id,
+            tse_id=ins_code,
+        )
+        result = (instrument, broker_instrument)
+        self._cache[ins_code] = result
+        return result
+
+    def get_nsc_id(
+        self,
+        ins_code,
+    ):
+        if ins_code in self._nsc_cache:
+            return self._nsc_cache[ins_code]
+
+        nsc_id = self._resolve(ins_code)
+        self._nsc_cache[ins_code] = nsc_id
+        return nsc_id
+
+    def refresh_cache(self):
+        self._cache.clear()
+        self._nsc_cache.clear()
+
+    def _resolve(self, ins_code):
+        if ins_code not in self._mapping:
+            raise InstrumentLookupError(
+                f"unknown ins_code={ins_code}"
+            )
+        return self._mapping[ins_code]
+
+
+def _make_provider_a():
+    """
+    Build AgaahInstrumentProvider (Provider A) with fully
+    offline fakes. Resolves TEST-001 -> A-TEST-001.
+    """
+    ins_code = "TEST-001"
+    instrument = Instrument(
+        symbol="فیک-A",
+        name="فیک A",
+        ins_code=ins_code,
+    )
+    search_payload = {
+        "isSuccess": True,
+        "data": [
+            {"nscId": "A-TEST-001", "name": "right A"},
+        ],
+    }
+    instrument_by_nsc = {
+        "A-TEST-001": _make_broker_instrument(
+            "A-TEST-001", ins_code
+        ),
+    }
+    broker = FakeBroker(
+        search_response=_FakeResponse(search_payload),
+        instrument_by_nsc=instrument_by_nsc,
+    )
+    tsetmc = FakeTSETMC(instrument=instrument)
+    provider = AgaahInstrumentProvider(broker, tsetmc)
+    return provider, broker
+
+
+def _make_provider_b():
+    """
+    Build FakeInstrumentProviderB (Provider B). Resolves
+    TEST-001 -> B-TEST-001.
+    """
+    broker = FakeBroker()
+    provider = FakeInstrumentProviderB(
+        broker,
+        mapping={"TEST-001": "B-TEST-001"},
+    )
+    return provider, broker
 
 
 # ============================================================
@@ -553,68 +670,300 @@ def test_no_duplicate_tsetmc_lookup_in_get_instrument():
 # ============================================================
 
 
+def test_provider_a_isolation():
+    """
+    Task 7.3-1: Provider A resolves TEST-001 → A-TEST-001.
+    """
+    provider, _ = _make_provider_a()
+    instrument, broker_instrument = provider.get_instrument("TEST-001")
+    assert broker_instrument.nsc_id == "A-TEST-001"
+    assert broker_instrument.tse_id == "TEST-001"
+    assert instrument.ins_code == "TEST-001"
+
+
+def test_provider_b_isolation():
+    """
+    Task 7.3-2: Provider B resolves TEST-001 → B-TEST-001.
+    """
+    provider, _ = _make_provider_b()
+    instrument, broker_instrument = provider.get_instrument("TEST-001")
+    assert broker_instrument.nsc_id == "B-TEST-001"
+    assert broker_instrument.tse_id == "TEST-001"
+    assert instrument.ins_code == "TEST-001"
+
+
+def test_provider_a_and_b_are_different():
+    """
+    Task 7.3-3: Providers A and B produce different nsc_ids for the same ins_code.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    _, bi_a = provider_a.get_instrument("TEST-001")
+    _, bi_b = provider_b.get_instrument("TEST-001")
+
+    assert bi_a.nsc_id != bi_b.nsc_id
+    assert bi_a.nsc_id == "A-TEST-001"
+    assert bi_b.nsc_id == "B-TEST-001"
+
+
+def test_tse_id_is_same_for_both():
+    """
+    Task 7.3-4: Both providers preserve the same tse_id (ins_code) in the result.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    _, bi_a = provider_a.get_instrument("TEST-001")
+    _, bi_b = provider_b.get_instrument("TEST-001")
+
+    assert bi_a.tse_id == bi_b.tse_id == "TEST-001"
+
+
+def test_provider_a_never_returns_b_nsc_id():
+    """
+    Task 7.3-5: Provider A never returns Provider B's nsc_id.
+    """
+    provider_a, _ = _make_provider_a()
+
+    _, bi_a = provider_a.get_instrument("TEST-001")
+    assert bi_a.nsc_id != "B-TEST-001"
+    assert bi_a.nsc_id == "A-TEST-001"
+
+
+def test_provider_b_never_returns_a_nsc_id():
+    """
+    Task 7.3-6: Provider B never returns Provider A's nsc_id.
+    """
+    provider_b, _ = _make_provider_b()
+
+    _, bi_b = provider_b.get_instrument("TEST-001")
+    assert bi_b.nsc_id != "A-TEST-001"
+    assert bi_b.nsc_id == "B-TEST-001"
+
+
+def test_provider_a_cache_isolation():
+    """
+    Task 7.3-7: Provider A cache is isolated from Provider B.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    # Prime caches
+    _, bi_a = provider_a.get_instrument("TEST-001")
+    _, bi_b = provider_b.get_instrument("TEST-001")
+
+    # They should be different objects
+    assert bi_a is not bi_b
+
+    # A should never return B's broker instrument (isolation)
+    # (already guaranteed by different mappings, but explicitly check)
+    assert bi_a.nsc_id != bi_b.nsc_id
+
+
+def test_provider_b_cache_isolation():
+    """
+    Task 7.3-8: Provider B cache is isolated from Provider A.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    # Prime caches
+    _, bi_a = provider_a.get_instrument("TEST-001")
+    _, bi_b = provider_b.get_instrument("TEST-001")
+
+    # Prime again - should hit cache (same instance)
+    _, bi_a2 = provider_a.get_instrument("TEST-001")
+    _, bi_b2 = provider_b.get_instrument("TEST-001")
+
+    assert bi_a2 is bi_a
+    assert bi_b2 is bi_b
+
+
+def test_provider_a_broker_identity():
+    """
+    Task 7.3-9: Provider A wraps Broker A.
+    """
+    provider_a, broker_a = _make_provider_a()
+    assert provider_a._broker is broker_a
+
+
+def test_provider_b_broker_identity():
+    """
+    Task 7.3-10: Provider B wraps Broker B.
+    """
+    provider_b, broker_b = _make_provider_b()
+    assert provider_b._broker is broker_b
+
+
+def test_provider_a_not_b_broker():
+    """
+    Task 7.3-11: Provider A's broker is not Provider B's broker.
+    """
+    provider_a, broker_a = _make_provider_a()
+    provider_b, broker_b = _make_provider_b()
+    assert broker_a is not broker_b
+
+
+def test_provider_b_not_a_broker():
+    """
+    Task 7.3-12: Provider B's broker is not Provider A's broker.
+    """
+    provider_a, broker_a = _make_provider_a()
+    provider_b, broker_b = _make_provider_b()
+    assert broker_b is not broker_a
+
+
+def test_nsc_id_provider_a_isolation():
+    """
+    Task 7.3-13: get_nsc_id for TEST-001 returns A-TEST-001 from Provider A.
+    """
+    provider_a, _ = _make_provider_a()
+    assert provider_a.get_nsc_id("TEST-001") == "A-TEST-001"
+
+
+def test_nsc_id_provider_b_isolation():
+    """
+    Task 7.3-14: get_nsc_id for TEST-001 returns B-TEST-001 from Provider B.
+    """
+    provider_b, _ = _make_provider_b()
+    assert provider_b.get_nsc_id("TEST-001") == "B-TEST-001"
+
+
+def test_nsc_id_a_never_returns_b():
+    """
+    Task 7.3-15: Provider A's get_nsc_id never returns Provider B's nsc_id.
+    """
+    provider_a, _ = _make_provider_a()
+    assert provider_a.get_nsc_id("TEST-001") != "B-TEST-001"
+
+
+def test_nsc_id_b_never_returns_a():
+    """
+    Task 7.3-16: Provider B's get_nsc_id never returns Provider A's nsc_id.
+    """
+    provider_b, _ = _make_provider_b()
+    assert provider_b.get_nsc_id("TEST-001") != "A-TEST-001"
+
+
+def test_nsc_id_cache_independent():
+    """
+    Task 7.3-17: NSC id caches are independent across providers.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    assert provider_a.get_nsc_id("TEST-001") == "A-TEST-001"
+    assert provider_b.get_nsc_id("TEST-001") == "B-TEST-001"
+
+
+def test_change_mapping_a_does_not_affect_b():
+    """
+    Task 7.3-18: Change Provider A's mapping from
+    TEST-001 → A-TEST-001 to TEST-001 → A-CHANGED-001,
+    then verify Provider B still returns B-TEST-001.
+    """
+    provider_a, broker_a = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    initial_a = provider_a.get_nsc_id("TEST-001")
+    initial_b = provider_b.get_nsc_id("TEST-001")
+    assert initial_a == "A-TEST-001"
+    assert initial_b == "B-TEST-001"
+
+    broker_a.session.search.set_response(
+        _FakeResponse({
+            "isSuccess": True,
+            "data": [{"nscId": "A-CHANGED-001", "name": "changed A"}],
+        })
+    )
+    broker_a._instrument_by_nsc = {
+        "A-CHANGED-001": _make_broker_instrument(
+            "A-CHANGED-001", "TEST-001"
+        ),
+    }
+    provider_a.refresh_cache()
+
+    changed_a = provider_a.get_nsc_id("TEST-001")
+    assert changed_a == "A-CHANGED-001", (
+        f"Provider A mapping should change to A-CHANGED-001, "
+        f"got {changed_a!r}"
+    )
+
+    after_a = provider_b.get_nsc_id("TEST-001")
+    assert after_a == "B-TEST-001", (
+        f"Provider B must remain B-TEST-001 after A mapping "
+        f"changed, got {after_a!r}"
+    )
+
+
+def test_change_mapping_b_does_not_affect_a():
+    """
+    Task 7.3-18 reverse: Change Provider B's mapping from
+    TEST-001 → B-TEST-001 to TEST-001 → B-CHANGED-001,
+    then verify Provider A still returns A-TEST-001.
+    """
+    provider_a, _ = _make_provider_a()
+    provider_b, _ = _make_provider_b()
+
+    initial_a = provider_a.get_nsc_id("TEST-001")
+    initial_b = provider_b.get_nsc_id("TEST-001")
+    assert initial_a == "A-TEST-001"
+    assert initial_b == "B-TEST-001"
+
+    provider_b._mapping["TEST-001"] = "B-CHANGED-001"
+    provider_b.refresh_cache()
+
+    changed_b = provider_b.get_nsc_id("TEST-001")
+    assert changed_b == "B-CHANGED-001", (
+        f"Provider B mapping should change to B-CHANGED-001, "
+        f"got {changed_b!r}"
+    )
+
+    after_b = provider_a.get_nsc_id("TEST-001")
+    assert after_b == "A-TEST-001", (
+        f"Provider A must remain A-TEST-001 after B mapping "
+        f"changed, got {after_b!r}"
+    )
+
+
 def main():
-    _run(
-        "test_instrument_provider_is_abstract",
-        test_instrument_provider_is_abstract,
-    )
-    _run(
-        "test_exact_match_returns_correct_nsc_id",
-        test_exact_match_returns_correct_nsc_id,
-    )
-    _run(
-        "test_multiple_results_second_matches",
-        test_multiple_results_second_matches,
-    )
-    _run(
-        "test_no_exact_match_raises",
-        test_no_exact_match_raises,
-    )
-    _run(
-        "test_tsetmc_missing_raises",
-        test_tsetmc_missing_raises,
-    )
-    _run(
-        "test_missing_symbol_raises",
-        test_missing_symbol_raises,
-    )
-    _run(
-        "test_agah_http_error_wrapped",
-        test_agah_http_error_wrapped,
-    )
-    _run(
-        "test_nsc_id_cache",
-        test_nsc_id_cache,
-    )
-    _run(
-        "test_get_instrument_cache",
-        test_get_instrument_cache,
-    )
-    _run(
-        "test_no_direct_ins_code_to_broker_get_instrument",
-        test_no_direct_ins_code_to_broker_get_instrument,
-    )
-    _run(
-        "test_no_duplicate_tsetmc_lookup_in_get_instrument",
-        test_no_duplicate_tsetmc_lookup_in_get_instrument,
-    )
+    _run("test_instrument_provider_is_abstract", test_instrument_provider_is_abstract)
+    _run("test_exact_match_returns_correct_nsc_id", test_exact_match_returns_correct_nsc_id)
+    _run("test_multiple_results_second_matches", test_multiple_results_second_matches)
+    _run("test_no_exact_match_raises", test_no_exact_match_raises)
+    _run("test_tsetmc_missing_raises", test_tsetmc_missing_raises)
+    _run("test_missing_symbol_raises", test_missing_symbol_raises)
+    _run("test_agah_http_error_wrapped", test_agah_http_error_wrapped)
+    _run("test_nsc_id_cache", test_nsc_id_cache)
+    _run("test_get_instrument_cache", test_get_instrument_cache)
+    _run("test_no_direct_ins_code_to_broker_get_instrument", test_no_direct_ins_code_to_broker_get_instrument)
+    _run("test_no_duplicate_tsetmc_lookup_in_get_instrument", test_no_duplicate_tsetmc_lookup_in_get_instrument)
 
-    print()
-    print("=" * 60)
-    passed = sum(1 for _, s, _ in TEST_RESULTS if s == "PASS")
-    failed = sum(1 for _, s, _ in TEST_RESULTS if s == "FAIL")
-    print(f"Results: {passed} passed, {failed} failed")
-    print("=" * 60)
-
-    for name, status, msg in TEST_RESULTS:
-        line = f"  [{status}] {name}"
-        if msg:
-            line += f"  -- {msg}"
-        print(line)
-
-    if failed:
-        sys.exit(1)
-    print("ALL TESTS PASSED")
+    # ---------------------------------------------------------------------
+    # Task 7.3 isolation tests
+    # ---------------------------------------------------------------------
+    _run("test_provider_a_isolation", test_provider_a_isolation)
+    _run("test_provider_b_isolation", test_provider_b_isolation)
+    _run("test_provider_a_and_b_are_different", test_provider_a_and_b_are_different)
+    _run("test_tse_id_is_same_for_both", test_tse_id_is_same_for_both)
+    _run("test_provider_a_never_returns_b_nsc_id", test_provider_a_never_returns_b_nsc_id)
+    _run("test_provider_b_never_returns_a_nsc_id", test_provider_b_never_returns_a_nsc_id)
+    _run("test_provider_a_cache_isolation", test_provider_a_cache_isolation)
+    _run("test_provider_b_cache_isolation", test_provider_b_cache_isolation)
+    _run("test_provider_a_broker_identity", test_provider_a_broker_identity)
+    _run("test_provider_b_broker_identity", test_provider_b_broker_identity)
+    _run("test_provider_a_not_b_broker", test_provider_a_not_b_broker)
+    _run("test_provider_b_not_a_broker", test_provider_b_not_a_broker)
+    _run("test_nsc_id_provider_a_isolation", test_nsc_id_provider_a_isolation)
+    _run("test_nsc_id_provider_b_isolation", test_nsc_id_provider_b_isolation)
+    _run("test_nsc_id_a_never_returns_b", test_nsc_id_a_never_returns_b)
+    _run("test_nsc_id_b_never_returns_a", test_nsc_id_b_never_returns_a)
+    _run("test_nsc_id_cache_independent", test_nsc_id_cache_independent)
+    _run("test_change_mapping_a_does_not_affect_b",
+         test_change_mapping_a_does_not_affect_b)
+    _run("test_change_mapping_b_does_not_affect_a",
+         test_change_mapping_b_does_not_affect_a)
 
 
 if __name__ == "__main__":

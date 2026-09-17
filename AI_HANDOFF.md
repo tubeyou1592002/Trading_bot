@@ -1459,7 +1459,23 @@ Audit of the current broker infrastructure has been completed and approved. Find
 Prepare BrokerManager to manage multiple independent Brokers without coupling to any single Broker implementation. Broker selection must come from an explicit route, never from a hardcoded default.
 
 #### Task 7.3 — Broker-Specific Instrument Provider
-Ensure each Broker has its own InstrumentProvider and its own mapping, so that Broker information is never mixed across providers. A Broker's instrument data must not leak into another Broker's namespace.
+**Status:** COMPLETED — Architect approved; tests verified; committed.
+
+InstrumentProviderها از نظر Broker instance مستقل هستند. Mapping هر Provider مستقل است.
+
+برای `ins_code = TEST-001` با موفقیت اثبات شده:
+```
+Provider A → A-TEST-001
+Provider B → B-TEST-001
+```
+
+- تغییر Mapping A روی B اثر نمی‌گذارد.
+- تغییر Mapping B روی A اثر نمی‌گذارد.
+- Cache Providerها مستقل است.
+- تست‌های قبلی `AgaahInstrumentProvider` همچنان PASS شده‌اند.
+- هیچ production code تغییر نکرده است.
+- Fake Provider فقط در تست و کاملاً offline استفاده شده است.
+- این Task Broker دوم واقعی اضافه نمی‌کند؛ Broker دوم واقعی متعلق به Task 7.4 است.
 
 #### Task 7.4 — Second Broker Stub
 Add a second, fully offline test Broker stub to prove the architecture, with no real API and no Live Trading. The stub exists only to validate that the system can route to a second independent Broker.
@@ -1484,7 +1500,7 @@ End-to-end test of the entire Block 7, run the full Regression suite, and finali
 |------|--------|-------------|
 | 7.1 | — | COMPLETED — Audit approved; documentation pending commit |
 | 7.2 | — | NOT STARTED |
-| 7.3 | — | NOT STARTED |
+| 7.3 | — | COMPLETED — Broker-specific InstrumentProvider isolation verified |
 | 7.4 | — | NOT STARTED |
 | 7.5 | — | NOT STARTED |
 | 7.6 | — | NOT STARTED |
