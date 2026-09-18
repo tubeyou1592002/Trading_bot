@@ -1921,6 +1921,92 @@ Real Trading must remain disabled during this block.
 
 **Status:** NOT STARTED
 
+### Block 9 Task Roadmap
+
+**Task 9.1 — Simulation Harness**
+
+* Build a small offline, deterministic simulation harness.
+* It must exercise the existing dispatch path without real network access, real broker credentials, or real orders.
+* Use fake/mock broker behavior only where required for simulation.
+* Do not modify production dispatch behavior.
+* This task establishes the foundation for all later Block 9 stress scenarios.
+
+**Task 9.2 — High Volume**
+
+* Use the Task 9.1 harness to test increasing execution volumes.
+* Verify correctness, state integrity, result integrity, and absence of lost or duplicated executions.
+* Keep the test deterministic and offline.
+* Do not introduce optimization or production behavior changes.
+
+**Task 9.3 — Severe Burst**
+
+* Extend the simulation to model highly concentrated/burst execution arrival.
+* Verify that burst conditions do not corrupt sequence identity, results, or state.
+* Keep real trading disabled and keep the scenario fully simulated.
+
+**Task 9.4 — Multi-Account Isolation**
+
+* Simulate multiple accounts processing different orders at the same time.
+* Explicitly verify account isolation.
+* Example requirement:
+  `Account 1 → Stock A`
+  `Account 2 → Stock B`
+* No account may receive another account's order, state, instrument, or result.
+
+**Task 9.5 — Multi-Broker Isolation**
+
+* Simulate multiple brokers with independent execution paths.
+* Verify broker, account, instrument, sequence, and result isolation.
+* Example:
+  `Account 1 → Broker A`
+  `Account 2 → Broker B`
+* No broker-specific state or result may cross into another broker path.
+
+**Task 9.6 — Failure Injection**
+
+* Simulate controlled Broker/API/network failures.
+* Cover failure categories such as exception, timeout, failed response, and missing response where the existing architecture can represent them.
+* Verify fail-closed behavior and preservation of existing safety gates.
+* Do not perform real network or real broker failure testing in this Block.
+
+**Task 9.7 — Acceptance & Closure**
+
+* Run the final combined Block 9 scenarios.
+* Verify:
+
+  * high volume
+  * severe burst
+  * multi-account isolation
+  * multi-broker isolation
+  * Broker/API/network failure handling
+  * preservation of M6-A through M6-E
+  * no lost, duplicated, or cross-routed execution results
+* Run the full regression suite.
+* Update the Block 9 documentation with factual test evidence.
+* Change Block 9 status to `COMPLETED` only after all required evidence is independently verified.
+
+### Fixed Block 9 Boundaries
+
+Explicitly document that Block 9 must NOT:
+
+* enable `live_trading_enabled`
+* send real orders
+* require real broker credentials
+* perform real-world network stress testing
+* redesign DispatchCore
+* bypass or weaken M6-A through M6-E
+* introduce M6-F / Order Splitting
+* perform automatic optimization
+* replace the existing production dispatch architecture
+
+### Ordering
+
+Document the required sequence:
+
+`9.1 → 9.2 → 9.3 → 9.4 → 9.5 → 9.6 → 9.7`
+
+Each later task depends on the simulation foundation established by Task 9.1.
+
 ---
 
 ### Block 10 — Controlled Live Execution
