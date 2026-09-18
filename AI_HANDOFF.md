@@ -1645,6 +1645,8 @@ Block 7 = COMPLETED
 
 ---
 
+**Task 8.1 Audit:** Complete. See `audit_block8_task8_1.md` for full findings. Key facts: only DispatchTrace.start_time/end_time via datetime.now() exists as base instrumentation; no per-order timing, no latency computation, no high-res timers, no timing propagation to DispatchResult, and dead timestamp fields in ExecutionRecord.
+
 ### Block 9 — Stress / Simulation
 
 **Goal:** Test the system under heavy load.
