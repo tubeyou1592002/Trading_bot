@@ -1641,7 +1641,7 @@ Block 7 = COMPLETED
 
 **Dependencies:** Block 7
 
-**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement); Task 8.3 COMPLETE (Phase A broker/API-boundary measurement implemented + tested; Phase B read-only tool implemented, not executed). Uncommitted, awaiting Architect review.
+**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement); Task 8.3 COMPLETE (Phase A broker/API-boundary measurement implemented + tested; Phase B read-only tool implemented, not executed); Task 8.4 COMPLETE (latency reporting & attribution layer implemented + tested). Uncommitted, awaiting Architect review.
 
 ---
 
@@ -1773,6 +1773,53 @@ On the measured path the optional `broker_timing` keyword is passed to `OrderEng
 #### Intentionally outside Task 8.3 (not implemented / not attempted)
 
 DNS / TCP / TLS or packet-level latency, VPS / hosting / connection-method investigation, broker ranking or multi-broker performance conclusions, optimization of any kind, caching, batching, concurrency, async execution, order reordering, and any change to Broker contracts, `ExecutionTracker`, `OrderExecutionResult`, account binding, instrument mapping, M6-A … M6-E, or `live=False`. Task 8.4 / 8.5 remain outstanding.
+
+### Task 8.4 — Latency Report & Attribution
+
+**Status:** COMPLETE (incl. review fix: clock-safe stage containment + explicit attribution boundary). Uncommitted, awaiting independent architectural review.
+
+Read-only reporting and attribution ONLY, built on top of the existing Task 8.2/8.3 infrastructure (`DispatchLatencyReport`, `OrderLatency`, `BrokerApiCallTiming`, `LatencyCollector`). No new timing infrastructure, no new measurement, no change to dispatch behavior, ordering, concurrency, retries, polling, timeouts, or any Broker method. No real order was sent and `live_trading_enabled` / dry-run behavior were not touched.
+
+**What was added (all appended to `core/latency_instrumentation.py`):**
+
+* `LatencyDistribution` — frozen dataclass: `count` / `min_ns` / `median_ns` / `mean_ns` / `max_ns`. Empty data reports `count=0` with `None` values — never fabricated (e.g. as 0).
+* `BrokerApiFailureInfo` — one recorded Broker/API call failure exactly as Task 8.3 kept it (`sequence`, `operation`, real measured `duration_ns`). Failed-call timing is preserved, not dropped.
+* `OrderLatencyAttribution` — per-execution attribution for one `sequence`:
+
+```text
+total execution latency      = the record's own measured order_engine_path window
+    ├── Broker/API time      = round trips nested IN that window (shared clock only)
+    └── application-side     = the record's own derived remainder (None when clocks differ)
+```
+
+  plus `order_success` (the existing `OrderExecutionResult.success` flag, `None` when no result was produced) and `engine_stage_failed` (three-valued: `True` / `False` / `None` on different clocks — see review fix below). A raising Broker/API call is NOT folded into `order_success`: the engine already turns broker exceptions into fail-closed BLOCKED results, and the raw call failures stay separately visible. No broker ranking / scoring — the report stays factual.
+* `LatencyAnalysis` + `analyze_latency_report(report)` — the factual aggregate: order counts (total / successful / failed), dispatch duration, per-stage distributions (Task 8.2 stages), execution latency distribution, Broker/API total + per-order distribution + per-operation detail + failure list/count, application-side distribution (only from values that exist), and one attribution entry per execution in report order.
+* Tiny supporting accessors `OrderLatency.stage_failed(stage_name)` and `OrderLatency.broker_api_calls_within(stage_name)` — read-only checks over already-recorded data. Added so failure attribution and the attribution boundary do not depend on operation names; the only caller is Task 8.4 analysis.
+
+**Review fix (clock safety + attribution boundary):**
+
+* **Clock safety in stage containment:** `OrderLatency` now carries `clocks_shared`, stamped by the collector from its own configuration (hand-built records default to `True`). Containment by timestamp comparison is computed ONLY on a shared clock: `broker_api_calls_within()` returns `[]` and `stage_failed()` returns `None` when the two layers used different clock sources (no cross-clock claim is fabricated); an absent stage is `False`, and raw failures stay visible via `broker_api_failures()` in every case. Task 8.2/8.3 measurement behavior is untouched.
+* **Explicit attribution boundary:** `total_execution_latency_ns`, `broker_api_time_ns` and `application_side_ns` decompose ONE window — the measured `order_engine_path` stage. `broker_api_time_ns` is ENGINE-SCOPED: it counts only calls nested in that window when containment is inferable; the pre-engine `get_instrument` round trip (recorded by `DispatchCore._resolve_instrument` in `instrument_resolution`, before the engine stage) is never silently folded into it. The sequence-wide sum is kept under its own explicit name — `broker_api_time_sequence_wide_ns` (ALL measured round trips of the record, inside the window or not) — alongside `broker_api_calls_within_engine`; `broker_api_failure_count` and every aggregate keep ALL measured round trips (including outside the window). Cross-clock records leave the engine-scoped `broker_api_time_ns` at 0 rather than fabricating containment. No measurement was changed or lost.
+
+**Attribution rules enforced (no guessing, no clock mixing):** the attribution boundary is the record's own measured `order_engine_path` window; Broker/API time inside that decomposition comes only from calls actually nested in it (shared clock), while the sequence-wide and aggregate Broker/API values still cover every measured call of the record, including the pre-engine instrument resolution; application-side time is the value the record itself carries and stays `None` when the stage clock and broker clock are not the same source (never derived across clocks); the total execution latency is `None` when the engine stage was never recorded (e.g. blocked before the engine path) instead of being synthesized from other windows; nothing can go negative (windows are monotonic-validated at creation, the application remainder is clamped at 0 by the collector, and the analysis is a pure read).
+
+**Files changed (Task 8.4):**
+
+* `core/latency_instrumentation.py` — Task 8.4 reporting/attribution layer appended at the end of the module (`LatencyDistribution`, `BrokerApiFailureInfo`, `OrderLatencyAttribution`, `LatencyAnalysis`, `analyze_latency_report`) plus the small `OrderLatency.stage_failed` accessor. The Task 8.2/8.3 classes, fields, semantics, and docstrings are unchanged; `test_block8_task8_2.py` / `test_block8_task8_3.py` pass byte-identical in behavior.
+* `test_block8_task8_4.py` — new: 32 Task 8.4 tests (fully offline: deterministic fake clocks, no `sleep()`, `socket.socket` patched to raise, no credentials).
+* `AI_HANDOFF.md` — this section.
+* No other file was touched. `core/dispatch_core.py`, `core/order_engine.py`, and every Broker contract are byte-identical to commit `616782f`.
+
+**Tests executed:**
+
+* `python -m pytest test_block8_task8_4.py -q`: 32/32 PASS.
+* Full regression: `python -m pytest -q`: **518/518 PASS** (486 pre-existing + 32 new). No pre-existing test was modified. `git diff --check`: clean.
+
+**Focused coverage (mapped to the 12 mandated scenarios):** single execution report; multi-execution per-sequence reporting (no cross-order leak); min/median/mean/max (incl. hand-computed aggregates and even-count median); Broker/API aggregates (total, per-order, per-operation); application-side attribution (delay lands broker-side or application-side, never both); different-clock attribution → `None` (unit-level mixed report AND end-to-end stage-clock-only injection); zero/one-tick latencies stay non-negative and intact; failed execution stays visible; Broker/API failure keeps its timing and existing ERROR/BLOCKED semantics; missing data (empty report, engine stage absent) → `None`/count=0, never invented; sequence identity preserved into the analysis; ordinary `dispatch()` regression (identical broker interaction, zero clock reads).
+
+**Measurement limitations (unchanged from Task 8.3):** `broker_api_time_ns` is a Broker/API **round trip** (local preparation + transfer + remote processing + local response handling inside the existing method), NOT network-only latency; no DNS/TCP/TLS or packet-level data exists and none was synthesized. `application_side_ns` remains an accounting remainder of the engine stage, not a hard bound. The analysis adds no new measurement and re-measures nothing.
+
+**Intentionally outside Task 8.4 (not implemented / not attempted):** broker ranking/scoring, benchmark/load/stress/burst testing, persistence/dashboards/new metrics frameworks, any optimization, and any change to dispatch, Broker methods, or `live` behavior. Task 8.5 remains outstanding.
 
 ### Block 9 — Stress / Simulation
 

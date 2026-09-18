@@ -61,6 +61,14 @@ TWO CLOCKS, NEVER MIXED:
     never spends an extra read of the stage clock, so the four stage windows
     and the dispatch window are exactly the ones Task 8.2 defined.
 
+    Task 8.4 — reporting / attribution (read-only, added at the end of this
+    module): ``analyze_latency_report()`` converts an existing
+    ``DispatchLatencyReport`` into a small factual summary (order counts,
+    count/min/median/mean/max distributions, Broker/API totals, per-execution
+    attribution). It re-measures nothing, invents nothing, and ranks
+    nothing; values that were never measured (e.g. application-side time on
+    non-shared clocks) stay ``None``.
+
 Per-order independence (both layers):
 
     All identity and timing is stored per ``sequence`` inside the collector.
@@ -79,6 +87,7 @@ changes the semantics of any call it observes.
 
 from __future__ import annotations
 
+import statistics
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -89,6 +98,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    Tuple,
 )
 
 if TYPE_CHECKING:
@@ -237,6 +247,14 @@ class OrderLatency:
     # (``None`` when the collector could not derive it on a single clock).
     application_side_ns: Optional[int] = None
 
+    # True when the stage layer and the broker/API layer that filled THIS
+    # record were timed on the same clock source (the normal/default
+    # configuration). Only then may stage containment be inferred by
+    # comparing call timestamps against stage windows; the collector stamps
+    # this from its own configuration. Hand-built records default to True
+    # (both of their layers are, by construction, on one clock).
+    clocks_shared: bool = True
+
     # -- Task 8.2 stage accessors ------------------------------------------
 
     def stage(self, stage_name: str) -> Optional[StageTiming]:
@@ -308,6 +326,62 @@ class OrderLatency:
     def broker_api_failures(self) -> List[BrokerApiCallTiming]:
         """Measured calls that raised (fail-closed paths keep their timing)."""
         return [timing for timing in self.broker_api_calls if not timing.ok]
+
+    def broker_api_calls_within(self, stage_name: str) -> List[BrokerApiCallTiming]:
+        """
+        Task 8.4 accessor: measured calls nested INSIDE the named Task 8.2
+        stage window.
+
+        CLOCK SAFETY: stage windows are timed on the stage clock while every
+        broker call is timed on the broker clock. Containment by timestamp
+        comparison is therefore only computed when this record's two layers
+        were timed on the same clock source (``clocks_shared``). Otherwise —
+        or when the stage does not exist — the result is an empty list,
+        which means "no containment claim possible", NOT "the stage had no
+        calls". Callers that must distinguish the two must check
+        ``clocks_shared`` / ``stage(...)`` themselves (``stage_failed``
+        does).
+        """
+        if not self.clocks_shared:
+            return []
+        stage = self.stage(stage_name)
+        if stage is None:
+            return []
+        return [
+            call
+            for call in self.broker_api_calls
+            if call.start >= stage.start and call.end <= stage.end
+        ]
+
+    def stage_failed(self, stage_name: str) -> Optional[bool]:
+        """
+        Task 8.4 accessor: whether any measured call recorded inside the
+        named Task 8.2 stage raised (its ``ok`` flag is ``False``).
+
+        Read-only view over the already-recorded data — no behavior change
+        and no new measurement.
+
+        Clock-safe, three-valued:
+
+        * ``False`` — the stage exists and (on a shared clock) no nested
+          call raised;
+        * ``True``  — the stage exists and (on a shared clock) at least
+          one nested call raised;
+        * ``None``  — no result can be stated: the stage does not exist
+          (there is nothing to attribute, and no value is invented), or
+          the stage exists but this record's two layers were timed on
+          different clock sources (containment cannot be inferred without
+          comparing timestamps from different clocks). The raw failures
+          stay visible via ``broker_api_failures()`` either way.
+        """
+        if self.stage(stage_name) is None:
+            return None
+        if not self.clocks_shared:
+            return None
+        return any(
+            not call.ok
+            for call in self.broker_api_calls_within(stage_name)
+        )
 
     # ``application_side_ns`` is a derived field (see
     # ``LatencyCollector.finalize_broker_accounting``): it equals the
@@ -544,7 +618,13 @@ class LatencyCollector:
     def _order(self, sequence: int) -> OrderLatency:
         record = self._orders.get(sequence)
         if record is None:
-            record = OrderLatency(sequence=sequence)
+            record = OrderLatency(
+                sequence=sequence,
+                # Stamp THIS collector's clock configuration onto the
+                # record, so Task 8.4 reporting can tell whether stage
+                # containment is even inferable for it.
+                clocks_shared=self._clocks_shared,
+            )
             self._orders[sequence] = record
         return record
 
@@ -666,3 +746,299 @@ class LatencyCollector:
             dispatch_end=dispatch_end,
             orders=list(self._orders.values()),
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 8.4 — reporting / attribution (read-only over the Task 8.2/8.3 data)
+# ---------------------------------------------------------------------------
+
+
+def _ns_stats(durations: Tuple[int, ...]) -> "LatencyDistribution":
+    """
+    Compute count/min/median/mean/max for ``durations`` (ns).
+
+    Zero-arg guard returns ``count=0`` and all ``None`` values — an empty set
+    has no latency, and no value is invented for it.
+    """
+    if not durations:
+        return LatencyDistribution()
+    return LatencyDistribution(
+        count=len(durations),
+        min_ns=min(durations),
+        median_ns=int(statistics.median(durations)),
+        mean_ns=int(statistics.mean(durations)),
+        max_ns=max(durations),
+    )
+
+
+@dataclass(frozen=True)
+class LatencyDistribution:
+    """
+    A factual latency distribution: count / min / median / mean / max.
+
+    All values are integers in nanoseconds measured by Task 8.2/8.3; ``None``
+    means "no data" (e.g. ``count=0``), never an estimate. Empty-set values
+    are left ``None`` rather than being fabricated (e.g. as 0).
+    """
+
+    count: int = 0
+    min_ns: Optional[int] = None
+    median_ns: Optional[int] = None
+    mean_ns: Optional[int] = None
+    max_ns: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class BrokerApiFailureInfo:
+    """
+    One recorded Broker/API call failure, exactly as Task 8.3 kept it.
+
+    The timing of a failed call is preserved (never dropped from the
+    report); ``duration_ns`` is the real measured window of the failing
+    call. No exception text is re-synthesized here.
+    """
+
+    sequence: int
+    operation: str
+    duration_ns: int
+
+
+@dataclass(frozen=True)
+class OrderLatencyAttribution:
+    """
+    Factual attribution for exactly one execution (one ``sequence``).
+
+    ``broker_api_time_ns`` is ENGINE-SCOPED: it counts only the measured
+    round trips of calls nested inside the attribution window (the record's
+    ``order_engine_path`` stage), and only when containment is inferable
+    (shared clock). ``application_side_ns`` is the measured Task 8.2/8.3
+    derived value carried by the record (``None`` when the clocks are not
+    shared — never a guess).
+
+    ``broker_api_time_sequence_wide_ns`` is the sequence-wide sum: ALL
+    measured round trips of this record, including calls outside the
+    attribution window (e.g. the pre-engine instrument resolution). It is
+    kept under its own explicit name so the engine-scoped decomposition is
+    never silently mixed with it. The same sequence-wide coverage applies
+    to ``broker_api_failure_count`` and to every aggregate.
+
+    ``total_execution_latency_ns`` is available only when the record itself
+    states the whole execution window (its ``order_engine_path`` stage). When
+    that stage was never recorded (e.g. the dispatch failed before the
+    engine stage) the total is ``None`` — the split is not invented from
+    other windows.
+
+    ``order_success`` is the existing Task 8.2 ``OrderExecutionResult.success``
+    flag (``None`` when the order never produced a result). A raising
+    Broker/API call is not folded into it: the existing engine already turns
+    broker exceptions into fail-closed results, and the raw call failures
+    stay separately visible in ``broker_api_failure_count`` and
+    ``engine_stage_failed``. There is deliberately no broker ranking here:
+    the record keeps its own ``broker_name`` so the report stays factual
+    per execution.
+
+    Attribution boundary: ``total_execution_latency_ns``,
+    ``broker_api_time_ns`` and ``application_side_ns`` decompose the SAME
+    execution window — the record's measured ``order_engine_path`` stage:
+
+        total_execution_latency_ns = order_engine_path stage duration
+        broker_api_time_ns         = round trips of calls nested in that
+                                     window (0 when containment is not
+                                     inferable across clocks)
+        application_side_ns        = the collector's own remainder of that
+                                     window (None when clocks are not shared)
+
+    Broker/API calls OUTSIDE that window (e.g. the pre-engine instrument
+    resolution in ``DispatchCore._resolve_instrument``) stay recorded and
+    keep counting in ``broker_api_time_sequence_wide_ns``, in
+    ``broker_api_failure_count`` and in every aggregate; they are never
+    silently folded into this window's decomposition.
+    """
+
+    sequence: int
+    broker_name: Optional[str]
+    total_execution_latency_ns: Optional[int]
+    # Engine-scoped: only calls nested in the attribution window.
+    broker_api_time_ns: int
+    application_side_ns: Optional[int]
+    order_success: Optional[bool]
+    engine_stage_failed: Optional[bool]
+    # Sequence-wide: EVERY measured round trip of this record, inside the
+    # window or not (kept under its own explicit name).
+    broker_api_time_sequence_wide_ns: int
+    broker_api_failure_count: int
+    broker_api_calls_within_engine: int
+
+
+@dataclass(frozen=True)
+class LatencyAnalysis:
+    """
+    Task 8.4 factual summary over one ``DispatchLatencyReport``.
+
+    Built by ``analyze_latency_report()``; every number is derived from the
+    measurements the report already carries. Nothing here re-measures,
+    extrapolates, or ranks brokers.
+    """
+
+    trace_id: Optional[str]
+    total_orders: int
+    successful_orders: int
+    failed_orders: int
+
+    # Total measured dispatch window (``dispatch_start``/``dispatch_end``).
+    dispatch_duration_ns: int
+
+    # Per-execution latency distribution (each order's measured
+    # ``order_engine_path`` window — the same value the attribution reports
+    # as ``total_execution_latency_ns``).
+    execution_latency_ns: "LatencyDistribution"
+
+    # Task 8.2 stage detail (includes ``order_engine_path``).
+    stage_durations_ns: Dict[str, "LatencyDistribution"]
+
+    # Task 8.3: Broker/API round trips — the sum across orders, the
+    # per-order distribution, the per-operation detail, and the failures the
+    # report actually recorded.
+    broker_api_total_ns: int
+    broker_api_time_ns: "LatencyDistribution"
+    broker_api_by_operation_ns: Dict[str, "LatencyDistribution"]
+    broker_api_failure_count: int
+    broker_api_failures: Tuple["BrokerApiFailureInfo", ...]
+
+    # Task 8.4 attribution (one entry per execution record, in report order).
+    attributions: Tuple["OrderLatencyAttribution", ...]
+
+    # Application-side attribution is only defined on a shared clock; the
+    # report never fabricates it. ``None`` when no order carried a value.
+    application_side_time_ns: "LatencyDistribution"
+
+
+def analyze_latency_report(report: DispatchLatencyReport) -> LatencyAnalysis:
+    """
+    Convert a Task 8.3 ``DispatchLatencyReport`` into a factual summary.
+
+    Read-only: this function takes the report's own measurements (Task 8.2
+    stage windows, Task 8.3 broker/API round trips, the derived application
+    accounting the collector already produced) and aggregates them. It does
+    not touch the dispatch path, re-measure anything, or rank brokers.
+
+    Attribution rules (Task 8.4):
+
+    * The attribution boundary is the record's own measured
+      ``order_engine_path`` stage window; ``total_execution_latency_ns`` is
+      that window's duration (``None`` when it was not recorded).
+    * Broker/API time inside that decomposition = only the round trips of
+      calls actually nested in that window, when containment is inferable
+      (shared clock). Cross-clock records leave the engine-scoped
+      ``broker_api_time_ns`` at 0 — no containment claim is fabricated —
+      while ``broker_api_time_sequence_wide_ns`` keeps the full sum.
+    * Sequence-wide broker/API time (``broker_api_time_sequence_wide_ns``,
+      ``broker_api_failure_count``) and every aggregate still covers ALL
+      measured calls of the record, including calls outside the engine
+      window (e.g. the pre-engine instrument resolution); nothing is lost.
+    * Application-side time = the value the record itself carries
+      (``None`` when the two clocks are not shared — never a guess).
+    * Nothing is negative: stage/round-trip windows are validated monotonic
+      at creation, and the derived application remainder is clamped at 0 by
+      the collector. No value here can turn negative.
+    """
+    orders = list(report.orders)
+
+    successful = sum(
+        1
+        for record in orders
+        if record.execution_result is not None
+        and record.execution_result.success is True
+    )
+    failed = len(orders) - successful
+
+    stage_distributions: Dict[str, "LatencyDistribution"] = {}
+    for stage_name in DISPATCH_STAGES:
+        durations = tuple(
+            record.duration_ns(stage_name)
+            for record in orders
+            if record.duration_ns(stage_name) is not None
+        )
+        stage_distributions[stage_name] = _ns_stats(durations)  # type: ignore[arg-type]
+
+    broker_totals = tuple(
+        record.broker_api_round_trip_ns for record in orders
+    )
+    application_sides = tuple(
+        record.application_side_ns
+        for record in orders
+        if record.application_side_ns is not None
+    )
+
+    by_operation: Dict[str, List[int]] = {}
+    for record in orders:
+        for operation, value in record.broker_api_totals_by_operation().items():
+            by_operation.setdefault(operation, []).append(value)
+
+    failures = tuple(
+        BrokerApiFailureInfo(
+            sequence=record.sequence,
+            operation=call.operation,
+            duration_ns=call.duration_ns,
+        )
+        for record in orders
+        for call in record.broker_api_calls
+        if not call.ok
+    )
+
+    attributions = tuple(
+        OrderLatencyAttribution(
+            sequence=record.sequence,
+            broker_name=record.broker_name,
+            total_execution_latency_ns=record.duration_ns(ORDER_ENGINE_PATH),
+            application_side_ns=record.application_side_ns,
+            # Task 8.2 ``success`` flag. A raising Broker/API call is NOT
+            # counted as an order failure here: the existing engine turns
+            # many broker exceptions into fail-closed BLOCKED results with
+            # ``success=False`` — that distinction stays visible (and is
+            # reported factually) via ``stage_failed`` / failure info
+            # instead of being double-counted.
+            order_success=(
+                record.execution_result.success
+                if record.execution_result is not None
+                else None
+            ),
+            engine_stage_failed=record.stage_failed(ORDER_ENGINE_PATH),
+            broker_api_failure_count=len(record.broker_api_failures()),
+            # Explicit boundary: ``broker_api_time_ns`` is engine-scoped —
+            # only calls nested in the engine window belong to this
+            # window's decomposition. When containment is not inferable
+            # (different clocks) no within-window value is fabricated
+            # (it stays 0); the full sequence-wide sum is kept explicitly
+            # in ``broker_api_time_sequence_wide_ns``.
+            broker_api_time_ns=sum(
+                call.duration_ns
+                for call in record.broker_api_calls_within(ORDER_ENGINE_PATH)
+            ),
+            broker_api_time_sequence_wide_ns=record.broker_api_round_trip_ns,
+            broker_api_calls_within_engine=len(
+                record.broker_api_calls_within(ORDER_ENGINE_PATH)
+            ),
+        )
+        for record in orders
+    )
+
+    return LatencyAnalysis(
+        trace_id=report.trace_id,
+        total_orders=len(orders),
+        successful_orders=successful,
+        failed_orders=failed,
+        dispatch_duration_ns=report.dispatch_duration,
+        execution_latency_ns=stage_distributions[ORDER_ENGINE_PATH],
+        stage_durations_ns=stage_distributions,
+        broker_api_total_ns=sum(broker_totals),
+        broker_api_time_ns=_ns_stats(broker_totals),
+        broker_api_by_operation_ns={
+            operation: _ns_stats(tuple(values))
+            for operation, values in by_operation.items()
+        },
+        broker_api_failure_count=len(failures),
+        broker_api_failures=failures,
+        attributions=attributions,
+        application_side_time_ns=_ns_stats(application_sides),
+    )
