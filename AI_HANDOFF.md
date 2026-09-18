@@ -1819,7 +1819,87 @@ total execution latency      = the record's own measured order_engine_path windo
 
 **Measurement limitations (unchanged from Task 8.3):** `broker_api_time_ns` is a Broker/API **round trip** (local preparation + transfer + remote processing + local response handling inside the existing method), NOT network-only latency; no DNS/TCP/TLS or packet-level data exists and none was synthesized. `application_side_ns` remains an accounting remainder of the engine stage, not a hard bound. The analysis adds no new measurement and re-measures nothing.
 
-**Intentionally outside Task 8.4 (not implemented / not attempted):** broker ranking/scoring, benchmark/load/stress/burst testing, persistence/dashboards/new metrics frameworks, any optimization, and any change to dispatch, Broker methods, or `live` behavior. Task 8.5 remains outstanding.
+**Intentionally outside Task 8.4 (not implemented / not attempted):** broker ranking/scoring, benchmark/load/stress/burst testing, persistence/dashboards/new metrics frameworks, any optimization, and any change to dispatch, Broker methods, or `live` behavior.
+
+### Block 8.5 — Latency Optimization Insight
+
+**Goal:** Create a read-only analysis layer that converts the existing `LatencyAnalysis` from Task 8.4 into a structured optimization insight. The architecture and rules below are fixed; do not redesign them.
+
+**Required files:**
+
+* `core/block8_task8_5.py` — new: `LatencyOptimizationInsight` immutable dataclass and `build_latency_insight(analysis)` pure function.
+* `test_block8_task8_5.py` — new: comprehensive tests covering 13 scenarios (normal, one order, multiple orders, missing data, unavailable states, zero totals, percentage accuracy, input integrity, etc.).
+
+**Update only:**
+
+* `AI_HANDOFF.md` — this section, documenting Task 8.5 completion.
+
+**Do not modify:** dispatch, order-engine, broker, or existing Task 8.2/8.3 timing infrastructure.
+
+**Required API in `core/block8_task8_5.py`:**
+
+```python
+@dataclass(frozen=True)
+class LatencyOptimizationInsight:
+    status: str
+    analyzed_orders: int
+    execution_total_ns: int
+    broker_api_total_ns: int
+    application_side_total_ns: int
+    broker_api_share_pct: Optional[float]
+    application_side_share_pct: Optional[float]
+    reason: str
+
+def build_latency_insight(analysis: LatencyAnalysis) -> LatencyOptimizationInsight
+```
+
+**Calculation rules:**
+
+* Use only `analysis.attributions`.
+* For each attribution, use `total_execution_latency_ns`, `broker_api_time_ns`, `application_side_ns`.
+* Do NOT use `broker_api_time_sequence_wide_ns` for component split.
+* An attribution is analyzable only when all three fields are present and non-negative.
+* Aggregate only analyzable attributions.
+* Calculate percentages as `broker_api_total_ns / execution_total_ns * 100` and `application_side_total_ns / execution_total_ns * 100`.
+* If `execution_total_ns == 0`, return `status = "UNAVAILABLE"` with `None` percentages and reason.
+* If no analyzable attributions, return `status = "UNAVAILABLE"` with totals = `0`, `None` percentages and reason.
+* If analyzable data exists and execution total > 0, return `status = "AVAILABLE"` with totals, percentages, and empty reason.
+
+**Clock rule:** Do not independently infer clock compatibility. Task 8.4 already carries attribution values safely. If attribution does not contain usable `application_side_ns`, treat as non-analyzable.
+
+**Data integrity:** Never create negative latency values, invent missing values, use sequence-wide Broker/API time in engine decomposition, alter sequence identity, modify original `LatencyAnalysis` or its attributions.
+
+**Tests executed:**
+
+* `python -m pytest test_block8_task8_5.py -q`: **15/15 PASS**.
+* Full regression: `python -m pytest -q`: **533/533 PASS** (486 pre-existing + 32 Task 8.4 + 15 Task 8.5 new). No pre-existing test was modified.
+* `git diff --check`: clean.
+
+**Focused coverage (implemented by 15 tests):**
+
+The 13 mandated scenarios are covered by the 15 tests:
+
+1. normal multi-order calculation
+2. one order
+3. multiple orders
+4. missing `application_side_ns`
+5. missing Broker/API attribution
+6. no analyzable orders
+7. zero execution total
+8. non-negative percentage results
+9. percentage calculation accuracy
+10. sequence-wide Broker/API time is not used
+11. input object remains unchanged
+12. existing Task 8.4 attribution fields remain unchanged
+13. mixed/unavailable data does not produce a guessed result
+
+*Additional tests cover: zero execution with non-zero totals (covers the special case when execution_total_ns == 0 but broker/application sides are non-zero), input immutability validation, field consistency validation, and insight immutability checks.*
+
+**DispatchCore/OrderEngine/Broker behavior unchanged:** No modifications to dispatch path, Broker interfaces, order-engine timing logic, or any measurement infrastructure.
+
+**Confirmation:** Task 8.5 completed successfully.
+
+**Note:** Task 8.5 completed as part of Block 8, which now provides end-to-end latency measurement (8.2/8.3 instrumentation + 8.4 analysis + 8.5 insight).
 
 ### Block 9 — Stress / Simulation
 
