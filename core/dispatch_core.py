@@ -56,8 +56,12 @@ Key responsibilities (Block 2 contract):
       a ``DispatchLatencyReport`` timing the four internal stages
       (``plan_item``, ``plan_account``, ``instrument_resolution``,
       ``order_engine_path``) with monotonic ``perf_counter_ns`` ticks.
-      Measurement only — no optimization, and no broker / API / network
-      latency separation (that is Task 8.3).
+    - Task 8.3: additionally measure the round trip of each existing
+      broker / provider call in the order path, per sequence, so the
+      ``order_engine_path`` stage can be split into application-side time and
+      Broker/API round-trip time. A broker/API round trip is NOT pure network
+      latency (see ``core/latency_instrumentation.py``). Measurement only —
+      no optimization, and still no DNS/TCP/TLS-level instrumentation.
 
 Explicitly NOT implemented here (deferred to their blocks):
     - Scheduler / timer / polling / event bus ............... Blocks 3/4
@@ -88,11 +92,14 @@ from core.dispatch_contracts import (
 )
 from core.latency_instrumentation import (
     INSTRUMENT_RESOLUTION,
+    OP_GET_INSTRUMENT,
     ORDER_ENGINE_PATH,
     PLAN_ACCOUNT,
     PLAN_ITEM,
+    BrokerCallRecorder,
     DispatchLatencyReport,
     LatencyCollector,
+    measure_broker_call,
 )
 from core.order_engine import OrderEngine
 from models.account import Account
@@ -142,6 +149,7 @@ class DispatchCore:
         self,
         broker_manager: Optional[BrokerManager] = None,
         latency_clock: Optional["Callable[[], int]"] = None,
+        broker_clock: Optional["Callable[[], int]"] = None,
     ):
         self.broker_manager = broker_manager or BrokerManager()
         self.order_engine = OrderEngine()
@@ -150,9 +158,15 @@ class DispatchCore:
         # accidentally enable live dispatch (Block 10 owns that switch).
         self.live_trading_enabled = False
         # Task 8.2: injectable monotonic clock (defaults to
-        # ``time.perf_counter_ns``). Only used by ``dispatch_with_latency``;
-        # ``dispatch`` never creates a collector and never reads a clock.
+        # ``time.perf_counter_ns``) for the dispatch/stage layer. Only used by
+        # ``dispatch_with_latency``; ``dispatch`` never creates a collector
+        # and never reads a clock.
         self.latency_clock = latency_clock
+        # Task 8.3: injectable clock for the broker/API round-trip layer.
+        # Kept separate from ``latency_clock`` so broker/API measurement never
+        # spends a read of the Task 8.2 stage clock. When both are left at
+        # their default they are the same ``time.perf_counter_ns`` source.
+        self.broker_clock = broker_clock
 
     # ------------------------------------------------------------------
     # Public API
@@ -195,7 +209,10 @@ class DispatchCore:
         Timing uses monotonic ``perf_counter_ns`` ticks only; the existing
         wall-clock ``DispatchTrace`` timestamps are untouched.
         """
-        collector = LatencyCollector(clock=self.latency_clock)
+        collector = LatencyCollector(
+            clock=self.latency_clock,
+            broker_clock=self.broker_clock,
+        )
         dispatch_start = collector.now()
         result = self._dispatch(plan, collector=collector)
         dispatch_end = collector.now()
@@ -269,6 +286,15 @@ class DispatchCore:
                         broker_name=broker_name,
                         ins_code=getattr(order, "nsc_id", None),
                     )
+                # Task 8.3: ONE broker/API boundary recorder per sequence.
+                # Every measured broker call is written into THIS sequence's
+                # own record — there is no shared "current order" context.
+                broker_timing = (
+                    collector.broker_recorder(sequence)
+                    if collector is not None
+                    else None
+                )
+
                 if broker_name not in broker_instances:
                     raise ValueError(
                         f"Unknown broker for sequence {sequence}: {broker_name}"
@@ -311,7 +337,11 @@ class DispatchCore:
                     collector,
                     sequence,
                     INSTRUMENT_RESOLUTION,
-                    lambda: self._resolve_instrument(provider, order.nsc_id),
+                    lambda: self._resolve_instrument(
+                        provider,
+                        order.nsc_id,
+                        broker_timing,
+                    ),
                 )
 
                 # Normalized envelope (Block 0 contract). It is the real
@@ -329,7 +359,8 @@ class DispatchCore:
                 # Task 8.2 stage 4 — ``order_engine_path``.
                 # Includes everything downstream of ``_execute_single_order``
                 # (including any broker call hidden behind the OrderEngine);
-                # it is NOT pure application time.
+                # it is NOT pure application time. Task 8.3 itemizes the
+                # broker/API round trips nested inside this stage.
                 result = self._measure(
                     collector,
                     sequence,
@@ -338,11 +369,16 @@ class DispatchCore:
                         broker=broker,
                         provider=provider,
                         dispatch_request=dispatch_request,
+                        broker_timing=broker_timing,
                     ),
                 )
                 results.append((sequence, result))
                 if collector is not None:
                     collector.record_execution_result(sequence, result)
+                    # Derive the application-side accounting from the
+                    # recorded measurements (None when it cannot be derived
+                    # on a single clock, or when no submit happened).
+                    collector.finalize_broker_accounting(sequence)
 
                 self._log_order(sequence, result, trace_id)
 
@@ -560,6 +596,7 @@ class DispatchCore:
         broker,
         provider,
         dispatch_request: BrokerDispatchRequest,
+        broker_timing: Optional[BrokerCallRecorder] = None,
     ):
         """
         Delegate one order to the existing OrderEngine path.
@@ -574,15 +611,23 @@ class DispatchCore:
 
         Returns an ``OrderExecutionResult``; never raises.
         """
+        engine_kwargs = {
+            "broker": broker,
+            "provider": provider,
+            "ins_code": dispatch_request.order.nsc_id,
+            "order": dispatch_request.order,
+            "account": dispatch_request.account,
+            "live": dispatch_request.live,  # always False in Block 2
+        }
+        if broker_timing is not None:
+            # Task 8.3: the measurement keyword is supplied ONLY when
+            # measurement was explicitly requested, so the normal dispatch
+            # path invokes the engine with exactly the same arguments as
+            # before this task.
+            engine_kwargs["broker_timing"] = broker_timing
+
         try:
-            result = self.order_engine.execute_by_ins_code(
-                broker=broker,
-                provider=provider,
-                ins_code=dispatch_request.order.nsc_id,
-                order=dispatch_request.order,
-                account=dispatch_request.account,
-                live=dispatch_request.live,  # always False in Block 2
-            )
+            result = self.order_engine.execute_by_ins_code(**engine_kwargs)
         except Exception as exc:
             # Fail-closed: any unexpected error -> BLOCKED, never sent.
             from core.order_engine import OrderExecutionResult
@@ -599,7 +644,12 @@ class DispatchCore:
             )
         return result
 
-    def _resolve_instrument(self, provider, ins_code: str):
+    def _resolve_instrument(
+        self,
+        provider,
+        ins_code: str,
+        broker_timing: Optional[BrokerCallRecorder] = None,
+    ):
         """
         Resolve the BrokerInstrument for ``ins_code`` through the existing
         InstrumentProvider abstraction (Block 2 sequence step b).
@@ -607,9 +657,17 @@ class DispatchCore:
         Never raises: if the provider cannot confirm the instrument, the
         envelope still carries ``None`` and the OrderEngine path performs
         the authoritative fail-closed lookup afterwards.
+
+        ``broker_timing`` (Task 8.3) optionally measures the round trip of
+        the existing provider/broker instrument read. Measurement only: the
+        never-raises contract above is unchanged.
         """
         try:
-            result = provider.get_instrument(ins_code)
+            result = measure_broker_call(
+                broker_timing,
+                OP_GET_INSTRUMENT,
+                lambda: provider.get_instrument(ins_code),
+            )
         except Exception:
             return None
         if isinstance(result, tuple) and len(result) == 2:

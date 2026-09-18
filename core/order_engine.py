@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
@@ -15,11 +15,24 @@ from models.trading_state import (
 
 if TYPE_CHECKING:
     from brokers.base import InstrumentProvider
+    from core.latency_instrumentation import BrokerCallRecorder
 else:
     from brokers.base import (
         InstrumentLookupError,
         InstrumentProvider,
     )
+
+# Task 8.3 — Broker/API boundary measurement. These are used ONLY to time the
+# existing broker/provider calls around their call sites; no broker contract,
+# payload, credential or return value is touched.
+from core.latency_instrumentation import (
+    OP_GET_BUY_CAPACITY,
+    OP_GET_INSTRUMENT,
+    OP_GET_SELL_CAPACITY,
+    OP_GET_TRADING_STATE,
+    OP_PLACE_ORDER,
+    measure_broker_call,
+)
 
 
 @dataclass
@@ -49,9 +62,14 @@ class OrderEngine:
         order: Order,
         account: Account,
         live: bool = False,
+        broker_timing: Optional["BrokerCallRecorder"] = None,
     ) -> OrderExecutionResult:
         """
         اجرای سفارش با دریافت `ins_code` به‌جای BrokerInstrument.
+
+        ``broker_timing`` (Task 8.3) is an optional, opt-in recorder that
+        measures the round trip of the existing broker/provider calls. When
+        it is None the behavior is exactly as before and no clock is read.
 
         Pipeline:
 
@@ -99,8 +117,10 @@ class OrderEngine:
         # ---------------------------------------------
 
         try:
-            _, broker_instrument = (
-                provider.get_instrument(ins_code)
+            _, broker_instrument = measure_broker_call(
+                broker_timing,
+                OP_GET_INSTRUMENT,
+                lambda: provider.get_instrument(ins_code),
             )
         except InstrumentLookupError as exc:
             return OrderExecutionResult(
@@ -164,6 +184,7 @@ class OrderEngine:
             instrument=broker_instrument,
             account=account,
             live=live,
+            broker_timing=broker_timing,
         )
 
     def prepare(
@@ -172,9 +193,15 @@ class OrderEngine:
         order: Order,
         instrument: BrokerInstrument,
         account: Account,
+        broker_timing: Optional["BrokerCallRecorder"] = None,
     ) -> OrderExecutionResult:
         """
         آماده‌سازی سفارش بدون ارسال.
+
+        ``broker_timing`` (Task 8.3) optionally measures the round trip of
+        the existing ``get_trading_state`` / capacity reads. Measurement only:
+        all M6-A … M6-E gates, their order, and their fail-closed behavior are
+        unchanged.
         """
 
         if broker is None:
@@ -229,8 +256,12 @@ class OrderEngine:
         # منتشر می‌شوند تا باگ‌ها پنهان نشوند.
 
         try:
-            state = broker.get_trading_state(
-                instrument.nsc_id
+            state = measure_broker_call(
+                broker_timing,
+                OP_GET_TRADING_STATE,
+                lambda: broker.get_trading_state(
+                    instrument.nsc_id
+                ),
             )
         except TradingStateUnavailable as exc:
             return OrderExecutionResult(
@@ -368,21 +399,29 @@ class OrderEngine:
                     ),
                 )
 
-            capacity_fn = lambda: broker.get_buy_capacity(
-                nsc_id=order.nsc_id,
-                side_code=order.side,
-                fund=fund,
-                price=order.price,
+            capacity_fn = lambda: measure_broker_call(
+                broker_timing,
+                OP_GET_BUY_CAPACITY,
+                lambda: broker.get_buy_capacity(
+                    nsc_id=order.nsc_id,
+                    side_code=order.side,
+                    fund=fund,
+                    price=order.price,
+                ),
             )
             capacity_label = "خرید"
 
         else:
 
-            capacity_fn = lambda: broker.get_sell_capacity(
-                nsc_id=order.nsc_id,
-                side_code=order.side,
-                fund=None,
-                price=order.price,
+            capacity_fn = lambda: measure_broker_call(
+                broker_timing,
+                OP_GET_SELL_CAPACITY,
+                lambda: broker.get_sell_capacity(
+                    nsc_id=order.nsc_id,
+                    side_code=order.side,
+                    fund=None,
+                    price=order.price,
+                ),
             )
             capacity_label = "فروش"
 
@@ -468,9 +507,15 @@ class OrderEngine:
         instrument: BrokerInstrument,
         account: Account,
         live: bool = False,
+        broker_timing: Optional["BrokerCallRecorder"] = None,
     ) -> OrderExecutionResult:
         """
         آماده‌سازی و اجرای سفارش.
+
+        ``broker_timing`` (Task 8.3) optionally measures the round trip of the
+        existing ``place_order`` call. It is measurement only: ``live``,
+        the engine-level safety check, and the existing exception handling are
+        unchanged.
 
         live=False:
             فقط Dry Run.
@@ -485,6 +530,7 @@ class OrderEngine:
             order=order,
             instrument=instrument,
             account=account,
+            broker_timing=broker_timing,
         )
 
         if not prepared.success:
@@ -516,9 +562,13 @@ class OrderEngine:
                 )
 
         try:
-            broker_result = broker.place_order(
-                order,
-                live=live,
+            broker_result = measure_broker_call(
+                broker_timing,
+                OP_PLACE_ORDER,
+                lambda: broker.place_order(
+                    order,
+                    live=live,
+                ),
             )
 
         except Exception as exc:

@@ -1641,7 +1641,7 @@ Block 7 = COMPLETED
 
 **Dependencies:** Block 7
 
-**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement; uncommitted, awaiting Architect review)
+**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement); Task 8.3 COMPLETE (Phase A broker/API-boundary measurement implemented + tested; Phase B read-only tool implemented, not executed). Uncommitted, awaiting Architect review.
 
 ---
 
@@ -1689,6 +1689,90 @@ Measurement only. No optimization was performed, no execution behavior was chang
 - Full existing regression suite: 470/470 PASS (456 pre-existing + 14 new); no pre-existing test was modified.
 
 **Intentionally outside Task 8.2 (not implemented / not attempted):** Broker, API and network latency separation (Task 8.3); VPS / hosting / connection investigation; multi-broker performance conclusions; any optimization, caching, concurrency, or async execution; any refactoring for speed. Task 8.3 / 8.4 / 8.5 remain outstanding.
+
+---
+
+### Task 8.3 — Broker/API/Network Latency Analysis
+
+**Status:** COMPLETE (Phase A implemented + tested; Phase B tool implemented but **NOT executed** — see below). Uncommitted, awaiting independent architectural review.
+
+Measurement and analysis only. No optimization was performed, and no ordering/state-changing operation was introduced or called.
+
+#### Phase A — Offline Broker/API-boundary measurement (IMPLEMENTED + TESTED)
+
+Extends the Task 8.2 monotonic instrumentation (`time.perf_counter_ns`) with a second layer that items, per order, the round trip of every **existing** broker/provider method call in the dispatch execution path:
+
+| Operation | Existing call site | What it is |
+|---|---|---|
+| `get_instrument` | `DispatchCore._resolve_instrument` (Task 8.2 stage `instrument_resolution`) | InstrumentProvider → Broker instrument read |
+| `get_instrument` | `OrderEngine.execute_by_ins_code` step 1 | InstrumentProvider → Broker instrument read (second lookup, in the measured run typically a provider **cache hit**) |
+| `get_trading_state` | `OrderEngine.prepare` (M6-A trading-state gate) | Broker trading-state read |
+| `get_buy_capacity` / `get_sell_capacity` | `OrderEngine.prepare` (M6-C / M6-D capacity gate) | Broker capacity read |
+| `place_order` | `OrderEngine.execute` | Broker submission call (dry-run today, `live=False`) |
+
+Per-order report additions (`core/latency_instrumentation.py`):
+
+* `broker_api_calls[]` — `BrokerApiCallTiming(operation, start, end, duration_ns, ok)` for each measured call, in call order, stored on that sequence's own `OrderLatency` (no shared mutable "current order" context).
+* `broker_api_round_trip_ns` — total measured round trip for the order; plus `broker_api_round_trip_for(operation)`, `broker_api_totals_by_operation()`, `broker_api_failures()`.
+* `application_side_ns` — `order_engine_path` minus the measured broker calls nested inside that same stage (never negative).
+* `application_before_broker_ns` / `application_after_broker_ns` — the two application windows around the existing submission call, computed only from boundaries the code already exposes (the `order_engine_path` stage window and the measured `place_order` round trip). Both are `None` when the order never reached submission.
+
+Architecture: **ONE execution implementation still** — `DispatchCore.dispatch()` and `dispatch_with_latency()` both remain on the single `_dispatch()`. Exactly one per-`sequence` `BrokerCallRecorder` is created; measurement wraps existing calls through a single `measure_broker_call()` call-through (calls once, re-raises exceptions unchanged, records in `finally`) so every M6-A … M6-E gate, dry-run / `live=False`, fail-closed behavior, account binding, broker routing and instrument identity are untouched. When no collector is supplied the ordinary path passes **no** measurement keyword to the engine and reads **no** clock.
+
+**Two clocks, never mixed (important design point):** the Task 8.2 stage layer keeps its clock (`latency_clock`) and the Task 8.3 broker/API layer uses its own clock (`broker_clock`); both default to `time.perf_counter_ns`. Broker/API measurement therefore never spends a read of the stage clock, which is why the four Task 8.2 stage windows and the dispatch window are exactly the ones Task 8.2 defined (the original `test_block8_task8_2.py` determinism test passes unchanged). The derived application accounting (`application_before_broker_ns`, `application_after_broker_ns`, `application_side_ns`) is only computed when both layers are on the same clock source — true in the normal/default configuration — and is reported as `None` rather than fabricated when they are not. Each `broker_api_round_trip` stays valid either way, since it is measured entirely on the broker clock.
+
+**Accuracy limitation (important):** `broker_api_round_trip` is the duration of the whole existing broker method call — it includes local request preparation, network transfer, remote processing, response transfer and local response handling inside that method. It is **NOT** pure network latency. No DNS/TCP/TLS or packet-level instrumentation was added, and no VPS/hosting investigation was performed.
+
+**Files changed (Task 8.3 Phase A):**
+
+* `core/latency_instrumentation.py` — broker/API boundary model (`BrokerApiCallTiming`, `BrokerCallRecorder`, `measure_broker_call`, per-order accessors, `finalize_broker_boundary`).
+* `core/order_engine.py` — optional trailing `broker_timing=None` on `execute_by_ins_code` / `prepare` / `execute`, and measurement around the five existing broker/provider call sites. No gate, ordering, payload, or return value changed.
+* `core/dispatch_core.py` — one recorder per sequence, threaded into `_resolve_instrument` / `_execute_single_order`, plus `finalize_broker_boundary` after each order.
+* `test_block8_task8_3.py` — new: 16 Phase A tests.
+* No pre-existing test was modified. `test_block8_task8_2.py` is byte-for-byte identical to commit `5194f1d`.
+
+**Tests executed (Phase A):**
+
+* `test_block8_task8_3.py`: 16/16 PASS (all fully offline, deterministic fake clocks, no `sleep()`).
+* Full regression: **486/486 PASS** (470 pre-existing + 16 new).
+
+**Phase A evidence:**
+
+* A single dry-run BUY order measures exactly 5 broker/API round trips (`get_instrument` ×2, `get_trading_state`, `get_buy_capacity`, `place_order`), each nested inside the stage that actually contains it, with the order's own identity.
+* With the Task 8.2 stage clock injected alone, the stage windows still read exactly `[20,40,60,80] → [30,50,70,90]` and the dispatch window `10 → 100`, while the broker/API round trips are still measured and the cross-clock derived values stay `None` (pinned by a dedicated test).
+* Separation proven deterministically in both directions: a synthetic 5 ms delay injected inside the broker `get_buy_capacity` call appears as 5,000,005 ns in `broker_api_round_trip_for("get_buy_capacity")` and only 5 ns in `application_side_ns`; the same delay injected into application-side validation appears as 5,000,005 ns in `application_side_ns` and only 5 ns in `broker_api_round_trip_ns`.
+* A raising broker call (`TradingStateUnavailable`, capacity error) is recorded with `ok=False` and a valid duration; a raising `place_order` keeps the existing `mode="ERROR"` engine semantics while the dispatch verdict stays fail-closed `BLOCKED`, and no broker response is fabricated.
+* Three cross-aligned orders (different sequence / account / broker / instrument) keep their measurements on their own sequence, and the broker that actually executed each order matches that order's measured operations.
+* Normal `dispatch(plan)` performs zero clock reads and produces the identical broker interaction log and identical result semantics.
+* All Phase A tests pass with `socket.socket` patched to raise → no network, no credentials.
+
+#### Phase B — Real read-only measurement (IMPLEMENTED, NOT EXECUTED)
+
+A safe read-only operation **does** exist in the repository, so Phase B was implementable without guessing an endpoint or blocker.
+
+* **Mechanism:** `measure_broker_latency.py` — a standalone, explicitly-invoked operator tool (`python measure_broker_latency.py --operation get_account --samples 3`).
+* **Read-only only:** `--operation` is restricted to `READ_ONLY_OPERATIONS` (`get_account`, `get_instrument`, `get_trading_state`, `get_buy_capacity`, `get_sell_capacity`). `place_order` and `cancel_order` are unreachable from the tool; no order/cancel code path exists in it.
+* **No state change:** no order sent, nothing cancelled, no account/position modification, `live_trading_enabled` never touched.
+* **Credentials:** the existing interactive mechanism (`get_captcha` + captcha image + `input` username + `getpass` password + captcha text, mirroring `test_agah_login.py`). Nothing is hard-coded, and no credential or token is ever printed.
+* **Isolation:** the tool is not imported by `DispatchCore` and is never invoked automatically; importing it performs no I/O, and it is not collected or run by the test suite.
+* **Sampling:** sequential single-request samples, default 3, hard-capped at 10 (diagnostic, not a benchmark; no bursts, no polling loop).
+* **Output:** local timestamp, broker name, operation, per-sample round trip + ok/failed, sample count, and min / median / mean / max of the successful samples, plus the round-trip-vs-network-latency caveat. It deliberately does not rank brokers.
+* **Executed?** **NO.** No real credentials or broker session were available in this environment, and no real network call was made. No real measurement values are reported here.
+* **How to run it (operator, on a machine with the existing credentials):**
+
+```bash
+python measure_broker_latency.py --operation get_account --samples 3
+python measure_broker_latency.py --operation get_instrument --nsc-id <nscId>
+python measure_broker_latency.py --operation get_trading_state --nsc-id <nscId>
+```
+
+#### Integration note
+
+On the measured path the optional `broker_timing` keyword is passed to `OrderEngine.execute_by_ins_code`, which is supplied **only** when measurement is requested. A caller that replaces `execute_by_ins_code` with a narrower fake and then calls `dispatch_with_latency()` must accept that optional keyword; the ordinary `dispatch()` path invokes the engine with exactly the pre-Task-8.3 arguments.
+
+#### Intentionally outside Task 8.3 (not implemented / not attempted)
+
+DNS / TCP / TLS or packet-level latency, VPS / hosting / connection-method investigation, broker ranking or multi-broker performance conclusions, optimization of any kind, caching, batching, concurrency, async execution, order reordering, and any change to Broker contracts, `ExecutionTracker`, `OrderExecutionResult`, account binding, instrument mapping, M6-A … M6-E, or `live=False`. Task 8.4 / 8.5 remain outstanding.
 
 ### Block 9 — Stress / Simulation
 
@@ -1766,7 +1850,7 @@ Block 0 → Block 1 → Block 2
 | 5 | Execution Tracking | Block 2, Block 3, Block 4 | COMPLETED |
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
-| 8 | Latency Measurement & Optimization | Block 7 | IN PROGRESS (Task 8.1 + 8.2 complete) |
+| 8 | Latency Measurement & Optimization | Block 7 | IN PROGRESS (Task 8.1 + 8.2 + 8.3 complete) |
 | 9 | Stress / Simulation | Block 8 | NOT STARTED |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
 
