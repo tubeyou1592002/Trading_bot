@@ -1641,11 +1641,54 @@ Block 7 = COMPLETED
 
 **Dependencies:** Block 7
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement; uncommitted, awaiting Architect review)
 
 ---
 
 **Task 8.1 Audit:** Complete. See `audit_block8_task8_1.md` for full findings. Key facts: only DispatchTrace.start_time/end_time via datetime.now() exists as base instrumentation; no per-order timing, no latency computation, no high-res timers, no timing propagation to DispatchResult, and dead timestamp fields in ExecutionRecord.
+
+**Task 8.2 — Internal Dispatch Latency Measurement:** COMPLETE (uncommitted — awaiting independent architectural review).
+
+Measurement only. No optimization was performed, no execution behavior was changed, and Broker / API / network latency separation was **not** implemented (that remains Task 8.3).
+
+**What was measured (per dispatch and per order):**
+
+- Dispatch level: `dispatch_start`, `dispatch_end`, total elapsed `dispatch_duration`, plus the existing `trace_id`.
+- Per order, independently: `sequence`, `account_id`, `broker_name`, `ins_code`, the internal stage timings, and the existing `OrderExecutionResult` (held by reference).
+- Only the four existing `DispatchCore` internal stages:
+  1. `plan_item` — existing `_plan_item(...)`
+  2. `plan_account` — existing `_plan_account(...)`
+  3. `instrument_resolution` — existing `_resolve_instrument(...)`
+  4. `order_engine_path` — existing `_execute_single_order(...)`
+
+`order_engine_path` includes everything downstream of `_execute_single_order()`, including any broker call currently hidden behind the `OrderEngine`. It is therefore **NOT** pure application time; Broker / API / network separation is intentionally deferred to Task 8.3.
+
+**Clock:**
+
+- Elapsed durations use `time.perf_counter_ns()` (monotonic, high-resolution).
+- The existing wall-clock `DispatchTrace.start_time` / `end_time` (`datetime.now()`) timestamps are unchanged, and the two clocks are never mixed.
+
+**Architecture (one execution implementation only):**
+
+- The existing `DispatchCore.dispatch()` body was minimally extracted into the single private `DispatchCore._dispatch(plan, collector=None)`. There is no second dispatch path and no duplicated business logic.
+- `dispatch(plan)` -> `_dispatch(plan, collector=None)`: public behavior, result semantics, and signature unchanged; no latency object is created or consumed and no clock is read.
+- `dispatch_with_latency(plan)` -> the same `_dispatch` with an opt-in `LatencyCollector`; returns `(DispatchResult, DispatchLatencyReport)`.
+- No fields were added to `DispatchResult`, `OrderExecutionResult`, or any Broker contract.
+- Per-order identity and stage timings are stored per `sequence` in the collector; there is no shared mutable `current_account` / `current_broker` / `current_ins_code` context.
+- Measurement never changes execution semantics: dry-run / `live=False`, fail-closed behavior, M6-A, M6-B, M6-C, M6-D, M6-E, account binding, broker routing, instrument identity, order sequence, and existing exception handling are all preserved.
+
+**Files changed:**
+
+- `core/latency_instrumentation.py` — new: `StageTiming`, `OrderLatency`, `DispatchLatencyReport`, `LatencyCollector` (injectable/patchable clock).
+- `core/dispatch_core.py` — single `_dispatch` implementation, `dispatch_with_latency`, and the `_measure` stage wrapper; existing `DispatchTrace` wall-clock timestamps untouched.
+- `test_block8_task8_2.py` — new: 13 Task 8.2 tests.
+
+**Tests executed:**
+
+- `test_block8_task8_2.py`: 13/13 PASS.
+- Full existing regression suite: 469/469 PASS (456 pre-existing + 13 new); no pre-existing test was modified.
+
+**Intentionally outside Task 8.2 (not implemented / not attempted):** Broker, API and network latency separation (Task 8.3); VPS / hosting / connection investigation; multi-broker performance conclusions; any optimization, caching, concurrency, or async execution; any refactoring for speed. Task 8.3 / 8.4 / 8.5 remain outstanding.
 
 ### Block 9 — Stress / Simulation
 
@@ -1723,7 +1766,7 @@ Block 0 → Block 1 → Block 2
 | 5 | Execution Tracking | Block 2, Block 3, Block 4 | COMPLETED |
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
-| 8 | Latency Measurement & Optimization | Block 7 | NOT STARTED |
+| 8 | Latency Measurement & Optimization | Block 7 | IN PROGRESS (Task 8.1 + 8.2 complete) |
 | 9 | Stress / Simulation | Block 8 | NOT STARTED |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
 

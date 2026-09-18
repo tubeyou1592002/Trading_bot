@@ -51,6 +51,13 @@ Key responsibilities (Block 2 contract):
     - Record base timestamps (dispatch start/end) for Block 8 latency
       analysis.
     - Provide full traceability via ``trace_id``.
+    - Task 8.2: provide an opt-in ``dispatch_with_latency(plan)`` that runs
+      the same single ``_dispatch`` implementation and additionally returns
+      a ``DispatchLatencyReport`` timing the four internal stages
+      (``plan_item``, ``plan_account``, ``instrument_resolution``,
+      ``order_engine_path``) with monotonic ``perf_counter_ns`` ticks.
+      Measurement only — no optimization, and no broker / API / network
+      latency separation (that is Task 8.3).
 
 Explicitly NOT implemented here (deferred to their blocks):
     - Scheduler / timer / polling / event bus ............... Blocks 3/4
@@ -70,7 +77,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from brokers.manager import BrokerManager
@@ -78,6 +85,14 @@ from core.dispatch_contracts import (
     BrokerDispatchRequest,
     DispatchResult,
     ExecutionPlan,
+)
+from core.latency_instrumentation import (
+    INSTRUMENT_RESOLUTION,
+    ORDER_ENGINE_PATH,
+    PLAN_ACCOUNT,
+    PLAN_ITEM,
+    DispatchLatencyReport,
+    LatencyCollector,
 )
 from core.order_engine import OrderEngine
 from models.account import Account
@@ -109,8 +124,12 @@ class DispatchCore:
     API:
 
         core.dispatch(plan) -> DispatchResult
+        core.dispatch_with_latency(plan) -> (DispatchResult, DispatchLatencyReport)
 
-    ``dispatch`` iterates ``plan.execution_order`` (ascending), reads the
+    Both entry points delegate to the single ``_dispatch`` implementation
+    below; they differ only in whether a ``LatencyCollector`` is enabled.
+
+    ``_dispatch`` iterates ``plan.execution_order`` (ascending), reads the
     per-order account_id / broker_name binding preserved by the Planner
     (``plan.conditions["binding"]``), resolves the exact broker instance and
     instrument provider, builds the normalized ``BrokerDispatchRequest``
@@ -122,6 +141,7 @@ class DispatchCore:
     def __init__(
         self,
         broker_manager: Optional[BrokerManager] = None,
+        latency_clock: Optional["Callable[[], int]"] = None,
     ):
         self.broker_manager = broker_manager or BrokerManager()
         self.order_engine = OrderEngine()
@@ -129,6 +149,10 @@ class DispatchCore:
         # always False. This instance flag exists so callers can never
         # accidentally enable live dispatch (Block 10 owns that switch).
         self.live_trading_enabled = False
+        # Task 8.2: injectable monotonic clock (defaults to
+        # ``time.perf_counter_ns``). Only used by ``dispatch_with_latency``;
+        # ``dispatch`` never creates a collector and never reads a clock.
+        self.latency_clock = latency_clock
 
     # ------------------------------------------------------------------
     # Public API
@@ -144,6 +168,60 @@ class DispatchCore:
         - No broker payload construction happens in this core.
 
         Returns a ``DispatchResult`` describing the overall attempt.
+
+        This is the unchanged normal path: no latency object is created or
+        consumed, and no callers need to know about latency measurement.
+        Behavior is identical to ``dispatch_with_latency`` (both delegate to
+        the single ``_dispatch`` implementation) apart from the absence of
+        timing collection.
+        """
+        return self._dispatch(plan, collector=None)
+
+    def dispatch_with_latency(
+        self,
+        plan: ExecutionPlan,
+    ) -> Tuple[DispatchResult, DispatchLatencyReport]:
+        """
+        Opt-in measured dispatch (Task 8.2 — measurement only).
+
+        Runs the exact same single internal execution implementation as
+        ``dispatch`` (``_dispatch``), the only difference being that a
+        ``LatencyCollector`` is enabled.
+
+        Returns ``(DispatchResult, DispatchLatencyReport)``. The
+        ``DispatchResult`` semantics are unchanged; nothing is added to
+        ``DispatchResult`` or ``OrderExecutionResult``.
+
+        Timing uses monotonic ``perf_counter_ns`` ticks only; the existing
+        wall-clock ``DispatchTrace`` timestamps are untouched.
+        """
+        collector = LatencyCollector(clock=self.latency_clock)
+        dispatch_start = collector.now()
+        result = self._dispatch(plan, collector=collector)
+        dispatch_end = collector.now()
+        report = collector.build_report(
+            trace_id=result.trace_id,
+            dispatch_start=dispatch_start,
+            dispatch_end=dispatch_end,
+        )
+        return result, report
+
+    # ------------------------------------------------------------------
+    # Single internal execution implementation
+    # ------------------------------------------------------------------
+
+    def _dispatch(
+        self,
+        plan: ExecutionPlan,
+        collector: Optional[LatencyCollector] = None,
+    ) -> DispatchResult:
+        """
+        The one and only dispatch implementation.
+
+        ``dispatch`` and ``dispatch_with_latency`` both funnel through this
+        method; there is no second copy of dispatch business logic. The only
+        difference between the two public entry points is whether
+        ``collector`` is enabled.
         """
         trace_id = str(uuid4())
         start_time = datetime.now()
@@ -174,7 +252,23 @@ class DispatchCore:
 
             # ---- Execute each order exactly once, in plan order --------
             for sequence in plan.execution_order:
-                order, account_id, broker_name = self._plan_item(plan, sequence)
+                # Task 8.2 stage 1 — ``plan_item``.
+                order, account_id, broker_name = self._measure(
+                    collector,
+                    sequence,
+                    PLAN_ITEM,
+                    lambda: self._plan_item(plan, sequence),
+                )
+                if collector is not None:
+                    # Identity is stored on THIS sequence's own record; no
+                    # mutable "current order" context is shared between
+                    # orders.
+                    collector.record_identity(
+                        sequence,
+                        account_id=account_id,
+                        broker_name=broker_name,
+                        ins_code=getattr(order, "nsc_id", None),
+                    )
                 if broker_name not in broker_instances:
                     raise ValueError(
                         f"Unknown broker for sequence {sequence}: {broker_name}"
@@ -187,7 +281,14 @@ class DispatchCore:
                 # the bound Account object (if any) is used as-is. When the
                 # plan carries only the account_id, nothing is invented: the
                 # order is BLOCKED fail-closed with the binding intact.
-                account = self._plan_account(plan, account_id)
+                #
+                # Task 8.2 stage 2 — ``plan_account``.
+                account = self._measure(
+                    collector,
+                    sequence,
+                    PLAN_ACCOUNT,
+                    lambda: self._plan_account(plan, account_id),
+                )
                 if account is None:
                     result = self._blocked_no_account(
                         order=order,
@@ -196,13 +297,22 @@ class DispatchCore:
                         sequence=sequence,
                     )
                     results.append((sequence, result))
+                    if collector is not None:
+                        collector.record_execution_result(sequence, result)
                     self._log_order(sequence, result, trace_id)
                     continue
 
                 # Resolve the instrument through the existing
                 # InstrumentProvider path (Block 2 sequence step b).
                 provider = self.broker_manager.get_instrument_provider(broker_name)
-                instrument = self._resolve_instrument(provider, order.nsc_id)
+
+                # Task 8.2 stage 3 — ``instrument_resolution``.
+                instrument = self._measure(
+                    collector,
+                    sequence,
+                    INSTRUMENT_RESOLUTION,
+                    lambda: self._resolve_instrument(provider, order.nsc_id),
+                )
 
                 # Normalized envelope (Block 0 contract). It is the real
                 # conduit of the dispatch path: routing builds it, the
@@ -216,12 +326,23 @@ class DispatchCore:
                     trace_id=trace_id,
                 )
 
-                result = self._execute_single_order(
-                    broker=broker,
-                    provider=provider,
-                    dispatch_request=dispatch_request,
+                # Task 8.2 stage 4 — ``order_engine_path``.
+                # Includes everything downstream of ``_execute_single_order``
+                # (including any broker call hidden behind the OrderEngine);
+                # it is NOT pure application time.
+                result = self._measure(
+                    collector,
+                    sequence,
+                    ORDER_ENGINE_PATH,
+                    lambda: self._execute_single_order(
+                        broker=broker,
+                        provider=provider,
+                        dispatch_request=dispatch_request,
+                    ),
                 )
                 results.append((sequence, result))
+                if collector is not None:
+                    collector.record_execution_result(sequence, result)
 
                 self._log_order(sequence, result, trace_id)
 
@@ -251,6 +372,39 @@ class DispatchCore:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _measure(
+        self,
+        collector: Optional[LatencyCollector],
+        sequence: int,
+        stage_name: str,
+        func: Callable[[], object],
+    ):
+        """
+        Run ``func`` and, when a collector is enabled, record its stage
+        timing against ``sequence``.
+
+        Measurement never changes dispatch semantics:
+
+        - with no collector, ``func`` is simply called (no clock is read);
+        - with a collector, the return value is passed through untouched and
+          exceptions still propagate unchanged (the timing is recorded in
+          ``finally`` before the exception leaves).
+        """
+        if collector is None:
+            return func()
+
+        start = collector.now()
+        try:
+            value = func()
+        finally:
+            collector.record_stage(
+                sequence,
+                stage_name,
+                start,
+                collector.now(),
+            )
+        return value
 
     def _plan_item(
         self,
