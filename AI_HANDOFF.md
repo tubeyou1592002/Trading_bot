@@ -1641,13 +1641,13 @@ Block 7 = COMPLETED
 
 **Dependencies:** Block 7
 
-**Status:** IN PROGRESS — Task 8.1 COMPLETE (audit); Task 8.2 COMPLETE (internal Dispatch latency measurement); Task 8.3 COMPLETE (Phase A broker/API-boundary measurement implemented + tested; Phase B read-only tool implemented, not executed); Task 8.4 COMPLETE (latency reporting & attribution layer implemented + tested). Uncommitted, awaiting Architect review.
+**Status:** COMPLETED — Task 8.1, 8.2, 8.3, 8.4, and 8.5 completed. Tasks 8.3 Phase B read-only tool implemented but **not executed** with real broker credentials/network; no real latency values were reported.
 
 ---
 
 **Task 8.1 Audit:** Complete. See `audit_block8_task8_1.md` for full findings. Key facts: only DispatchTrace.start_time/end_time via datetime.now() exists as base instrumentation; no per-order timing, no latency computation, no high-res timers, no timing propagation to DispatchResult, and dead timestamp fields in ExecutionRecord.
 
-**Task 8.2 — Internal Dispatch Latency Measurement:** COMPLETE (uncommitted — awaiting independent architectural review).
+**Task 8.2 — Internal Dispatch Latency Measurement:** COMPLETE.
 
 Measurement only. No optimization was performed, no execution behavior was changed, and Broker / API / network latency separation was **not** implemented (that remains Task 8.3).
 
@@ -1688,13 +1688,13 @@ Measurement only. No optimization was performed, no execution behavior was chang
 - `test_block8_task8_2.py`: 14/14 PASS.
 - Full existing regression suite: 470/470 PASS (456 pre-existing + 14 new); no pre-existing test was modified.
 
-**Intentionally outside Task 8.2 (not implemented / not attempted):** Broker, API and network latency separation (Task 8.3); VPS / hosting / connection investigation; multi-broker performance conclusions; any optimization, caching, concurrency, or async execution; any refactoring for speed. Task 8.3 / 8.4 / 8.5 remain outstanding.
+**Intentionally outside Task 8.2 (not implemented / not attempted):** Broker, API and network latency separation (Task 8.3); VPS / hosting / connection investigation; multi-broker performance conclusions; any optimization, caching, concurrency, or async execution; any refactoring for speed.
 
 ---
 
 ### Task 8.3 — Broker/API/Network Latency Analysis
 
-**Status:** COMPLETE (Phase A implemented + tested; Phase B tool implemented but **NOT executed** — see below). Uncommitted, awaiting independent architectural review.
+**Status:** COMPLETE (Phase A implemented + tested; Phase B read-only tool implemented but **not executed** with real broker credentials/network; no real latency values were reported).
 
 Measurement and analysis only. No optimization was performed, and no ordering/state-changing operation was introduced or called.
 
@@ -1776,7 +1776,7 @@ DNS / TCP / TLS or packet-level latency, VPS / hosting / connection-method inves
 
 ### Task 8.4 — Latency Report & Attribution
 
-**Status:** COMPLETE (incl. review fix: clock-safe stage containment + explicit attribution boundary). Uncommitted, awaiting independent architectural review.
+**Status:** COMPLETE (incl. review fix: clock-safe stage containment + explicit attribution boundary). Task 8.4 completed and committed.
 
 Read-only reporting and attribution ONLY, built on top of the existing Task 8.2/8.3 infrastructure (`DispatchLatencyReport`, `OrderLatency`, `BrokerApiCallTiming`, `LatencyCollector`). No new timing infrastructure, no new measurement, no change to dispatch behavior, ordering, concurrency, retries, polling, timeouts, or any Broker method. No real order was sent and `live_trading_enabled` / dry-run behavior were not touched.
 
@@ -1977,7 +1977,7 @@ Block 0 → Block 1 → Block 2
 | 5 | Execution Tracking | Block 2, Block 3, Block 4 | COMPLETED |
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
-| 8 | Latency Measurement & Optimization | Block 7 | IN PROGRESS (Task 8.1 + 8.2 + 8.3 complete) |
+| 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | NOT STARTED |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
 
