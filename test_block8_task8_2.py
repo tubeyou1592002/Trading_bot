@@ -534,6 +534,47 @@ def test_exception_path_still_fails_closed_and_still_reports():
     assert record.execution_result.mode == "BLOCKED"
 
 
+def test_raising_stage_closes_its_timing_and_keeps_fail_closed():
+    """A measured stage that raises must still close its timing and must not
+    rewrite execution semantics: no later stage is fabricated and the
+    dispatch stays fail-closed BLOCKED.
+    """
+    core = DispatchCore(
+        broker_manager=make_manager({"Broker-A": FakeBroker("Broker-A")}),
+        latency_clock=StepClock(step=5),
+    )
+    _, _, _, plan = single_order_setup()
+
+    def raising_plan_item(plan, sequence):
+        raise RuntimeError("plan_item exploded")
+
+    core._plan_item = raising_plan_item
+
+    result, report = core.dispatch_with_latency(plan)
+
+    assert result.success is False
+    assert result.mode == "BLOCKED"
+    assert report.dispatch_end >= report.dispatch_start
+    assert report.dispatch_duration >= 0
+
+    record = report.order(1)
+    assert record.stage_names() == [PLAN_ITEM]
+    timing = record.stage(PLAN_ITEM)
+    assert timing is not None
+    assert timing.end >= timing.start
+    assert timing.duration_ns >= 0
+    assert record.execution_result is None
+
+    # Same fail-closed verdict without measurement (semantics preserved).
+    normal_core = DispatchCore(
+        broker_manager=make_manager({"Broker-A": FakeBroker("Broker-A")})
+    )
+    _, _, _, normal_plan = single_order_setup()
+    normal_core._plan_item = raising_plan_item
+    normal_result = normal_core.dispatch(normal_plan)
+    assert (normal_result.success, normal_result.mode) == (False, "BLOCKED")
+
+
 def test_invalid_timing_values_are_rejected():
     with pytest.raises(ValueError):
         StageTiming(stage_name=PLAN_ITEM, start=100, end=50)

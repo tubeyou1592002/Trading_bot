@@ -1681,12 +1681,12 @@ Measurement only. No optimization was performed, no execution behavior was chang
 
 - `core/latency_instrumentation.py` — new: `StageTiming`, `OrderLatency`, `DispatchLatencyReport`, `LatencyCollector` (injectable/patchable clock).
 - `core/dispatch_core.py` — single `_dispatch` implementation, `dispatch_with_latency`, and the `_measure` stage wrapper; existing `DispatchTrace` wall-clock timestamps untouched.
-- `test_block8_task8_2.py` — new: 13 Task 8.2 tests.
+- `test_block8_task8_2.py` — new: 14 Task 8.2 tests.
 
 **Tests executed:**
 
-- `test_block8_task8_2.py`: 13/13 PASS.
-- Full existing regression suite: 469/469 PASS (456 pre-existing + 13 new); no pre-existing test was modified.
+- `test_block8_task8_2.py`: 14/14 PASS.
+- Full existing regression suite: 470/470 PASS (456 pre-existing + 14 new); no pre-existing test was modified.
 
 **Intentionally outside Task 8.2 (not implemented / not attempted):** Broker, API and network latency separation (Task 8.3); VPS / hosting / connection investigation; multi-broker performance conclusions; any optimization, caching, concurrency, or async execution; any refactoring for speed. Task 8.3 / 8.4 / 8.5 remain outstanding.
 
