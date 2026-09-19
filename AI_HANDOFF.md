@@ -2125,17 +2125,101 @@ Each later task depends on the simulation foundation established by Task 9.1.
 
 ### Block 10 — Controlled Live Execution
 
-**Goal:** Controlled entry into Live Trading, only after:
-- Completion of required blocks
-- Successful tests
-- Architect review
-- Explicit human approval
+**Goal:** After Block 9 is complete and validated, give the system a controlled, fail-closed path for Live Execution.
 
-**Output:** Controlled entry into Live Trading.
+**Architectural Note (critical):** Block 10 is **NOT** a redesign of capabilities already built and validated in Blocks 5, 6, 7, 8, and 9. Block 10 reuses the existing Multi-Account Execution (Block 6), Multi-Broker Execution (Block 7), Execution Tracking (Block 5), Latency instrumentation (Block 8), and Stress/Simulation harness (Block 9) capabilities exactly as they are. Block 10 only adds the minimal layer required to enable **Controlled Live Execution**, and it preserves every existing M6-A through M6-E safety gate.
 
-**Dependencies:** Block 9
+**Scope:**
+- Define explicitly the conditions under which Live Execution is permitted.
+- Add a final, independent Safety Gate that prevents any real order from being dispatched when Live conditions are not satisfied.
+- Enable Live Execution on a single, controlled dispatch path, preserving the existing architecture.
+- Final end-to-end verification that Dry Run remains non-real and Live remains gated.
+
+**Out of Scope (Block 10 must NOT):**
+- Redesign Multi-Account Execution (Block 6).
+- Redesign Multi-Broker Execution (Block 7).
+- Redesign Execution Tracking (Block 5).
+- Redesign Latency Measurement/Optimization (Block 8).
+- Redesign the Simulation Harness (Block 9).
+- Bypass or weaken M6-A through M6-E.
+- Introduce M6-F / Order Splitting.
+- Change the `Planner → Dispatch Core → Account/Broker binding → OrderEngine → Broker` dispatch path.
+- Send any real order before explicit human approval.
+
+**Output:** Controlled, gated entry into Live Trading.
+
+**Dependencies:** Block 9 — Stress / Simulation
 
 **Status:** NOT STARTED
+
+#### Task 10.1 — Live Execution Contract
+
+Define precisely the conditions under which Live Execution is permitted.
+
+This task must specify:
+- What "Live" means exactly (a dispatch path where real orders may be submitted to a real Broker for a real Account, as opposed to Dry Run which never submits).
+- The prerequisites that must hold before Live is allowed (Block 9 complete and green; M6-A through M6-E gates active; Architect review completed; explicit human approval given; a Live-capable Broker/Account bound).
+- The conditions that forbid Live Execution (unmet prerequisites; any M6 gate returning BLOCKED/UNVERIFIED; missing or invalid Account/Broker binding; no human approval token).
+- The boundary between Dry Run and Live: the single, explicit switch point where `live` transitions from `False` (Dry Run, always the current default) to `True` (Live), guarded by the Safety Gate.
+
+**Output:** A formal Live Execution Contract (conditions + gate rules + Dry-Run/Live boundary).
+
+**Status:** NOT STARTED
+
+#### Task 10.2 — Safety Gate
+
+Add a final, independent Safety Gate that prevents a real order from being dispatched when the Live conditions of Task 10.1 are not satisfied.
+
+This task focuses on control and prevention. It MUST NOT redesign the existing Dispatch logic.
+
+**Output:** A Safety Gate (guard) that is evaluated at the Live Dispatch boundary; fail-closed: any unmet condition blocks dispatch with `mode="BLOCKED"` and `live` effectively `False`.
+
+**Status:** NOT STARTED
+
+#### Task 10.3 — Controlled Live Dispatch
+
+Enable Live Execution on a single, limited, controlled dispatch path while preserving the existing architecture:
+
+`Planner → Dispatch Core → Account/Broker binding → OrderEngine → Broker`
+
+This task MUST NOT redesign Multi-Account, Multi-Broker, Execution Tracking, or the existing Dispatch Architecture.
+
+**Output:** A gated Live Dispatch path that reuses Block 6 (account binding), Block 7 (broker routing), Block 5 (tracking), and Block 2/4 (Dispatch Core), adding only the Live enablement layer on top.
+
+**Status:** NOT STARTED
+
+#### Task 10.4 — Final Live Verification
+
+Final verification of Block 10.
+
+Minimum verifications:
+- Dry Run remains non-real (no order sent; `live=False` / `sent=False`) across all scenarios.
+- Live is active only under the exact conditions defined in Task 10.1.
+- The Safety Gate (Task 10.2) blocks dispatch whenever Live conditions are invalid.
+- Mismatched Account and Broker combinations do not dispatch Live.
+- The existing Dispatch path is preserved (Planner → Dispatch Core → Account/Broker binding → OrderEngine → Broker).
+- Undesired or accidental Live activation is covered by tests (no random/implicit Live enablement).
+
+**Output:** Final verification suite proving Controlled Live Execution is safe and that Live never fires unintentionally.
+
+**Status:** NOT STARTED
+
+#### Block 10 — Task Summary
+
+| Task | هدف | مسئولیت | خارج از Scope |
+|---|---|---|---|
+| 10.1 | Live Execution Contract | تعریف شرایط مجاز بودن Live | هیچ Dispatch یا Broker implementationی اضافه نشود |
+| 10.2 | Safety Gate | جلوگیری از ارسال واقعی در شرایط نامعتبر | بازطراحی منطق Dispatch موجود |
+| 10.3 | Controlled Live Dispatch | فعال‌سازی Live در مسیر محدود و کنترل‌شده | بازطراحی Multi-Account / Multi-Broker / Tracking / Architecture موجود |
+| 10.4 | Final Live Verification | اعتبارسنجی نهایی | ارسال هر سفارش واقعی قبل از تأیید انسانی |
+
+**Acceptance Criteria:**
+- The four Tasks above are defined and sequenced.
+- Live cannot dispatch when any M6 gate is BLOCKED/UNVERIFIED or when human approval is absent.
+- Dry Run path is byte-identical in behavior to the pre-Block-10 path.
+- No Block 5, 6, 7, 8, or 9 capability is redesigned or replaced.
+- No real order is sent before explicit human approval.
+- `git diff` shows only documentation for Block 10 roadmap definition (this task); no code/test changes.
 
 ---
 
@@ -2157,6 +2241,8 @@ Block 0 → Block 1 → Block 2
                     Block 9
                         ↓
                    Block 10
+                        ↓
+                      UI
 ```
 
 **Key architectural points:**
@@ -2164,6 +2250,8 @@ Block 0 → Block 1 → Block 2
 - **Block 3 and Block 4 are siblings**, not dependent on each other. Both depend on Block 2 (Dispatch Core).
 - **Block 5 depends on Block 2, Block 3, and Block 4** so it can track both dispatch paths.
 - **Latency instrumentation starts in Block 2**, not Block 8. Block 8 analyzes and optimizes existing data.
+- **Block 10 depends on Block 9** and must reuse Blocks 5–9 as-is; it only adds the Live enablement layer.
+- **UI depends on Block 10**, so the Controlled Live Execution path is a prerequisite for the UI to offer a Live Trading surface.
 
 ### Roadmap Summary
 
@@ -2179,7 +2267,8 @@ Block 0 → Block 1 → Block 2
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
-| 10 | Controlled Live Execution | Block 9 | NOT STARTED |
+| 10 | Controlled Live Execution | Block 9 | NOT STARTED (4 tasks defined) |
+| UI | User Interface | Block 10 | NOT STARTED |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
 
