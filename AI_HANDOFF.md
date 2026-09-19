@@ -1959,6 +1959,30 @@ Real Trading must remain disabled during this block.
 * Keep the test deterministic and offline.
 * Do not introduce optimization or production behavior changes.
 
+**Task 9.2 — Status: COMPLETED**
+
+* Status: `COMPLETED`
+* Commit: `a64b7bb`
+* Files added/changed:
+  * `core/simulation_harness.py` — extended with the volume-scenario methods (`volume_order_fields`, `build_volume_plan`, `run_volume_scenario`); reuses the Task 9.1 components, no new architecture.
+  * `test_block9_task9_2.py` — Task 9.2 High Volume tests.
+* Execution mode: fully offline and deterministic.
+* Volumes tested: 10, 50, and 100 orders.
+* Real path exercised: `ExecutionPlanner → ExecutionPlan → DispatchCore.dispatch() → BrokerManager → OrderEngine → SimulationBroker → DispatchResult`.
+* Sequences are unique and complete; no lost execution and no duplicate execution observed.
+* No sequence/order mismatch observed.
+* State contamination across consecutive runs checked; deterministic rerun checked.
+* Live trading never enabled (`live_trading_enabled` stays `False`).
+* No real network, no real broker, no real credential, and no real order used.
+* `DispatchCore` and `OrderEngine` unchanged; M6-A through M6-E unchanged; Block 6 account binding unchanged; Block 7 broker routing unchanged; Block 8 instrumentation unchanged.
+* No concurrency / async / queue / optimization / caching / batching architecture added.
+* Task 9.2 tests: `15/15 PASS`.
+* Full regression after Task 9.2: `562/562 PASS`.
+* `git diff --check`: clean.
+* Commit/Push: completed (`a64b7bb`); `origin/master` now at `a64b7bb`.
+
+**Task 9.2 boundary (explicitly NOT included):** Task 9.2 only implemented High Volume Simulation. Severe Burst is Task 9.3, Multi-Account is Task 9.4, Multi-Broker is Task 9.5, and Failure Injection is Task 9.6.
+
 **Task 9.3 — Severe Burst**
 
 * Extend the simulation to model highly concentrated/burst execution arrival.
