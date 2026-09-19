@@ -348,6 +348,9 @@ class SimulationHarness:
     """
 
     DEFAULT_BROKER_NAME = "SIM"
+    # Task 9.3: deterministic burst severity — larger than every Task 9.2
+    # volume (10 / 50 / 100).
+    DEFAULT_BURST_VOLUME = 250
 
     def __init__(
         self,
@@ -514,6 +517,36 @@ class SimulationHarness:
         No shortcut is taken: the plan is dispatched through the same real
         ``DispatchCore`` entry point as the base scenario; the only
         substituted components remain the Task 9.1 simulation pair.
+        """
+        plan = self.build_volume_plan(volume, plan_id=plan_id)
+        result = self.dispatch_core.dispatch(plan)
+        return SimulationRunRecord(
+            dispatch_result=result,
+            broker=self.broker,
+            provider=self.provider,
+            plan=plan,
+        )
+
+    # -- burst scenario runner (Task 9.3) --------------------------------------
+
+    def run_burst_scenario(
+        self,
+        volume: int = DEFAULT_BURST_VOLUME,
+        plan_id: str = "task9.3-burst-plan",
+    ) -> SimulationRunRecord:
+        """
+        Run one Severe Burst scenario (Task 9.3) on the REAL dispatch path:
+
+            ExecutionPlanner -> ExecutionPlan -> DispatchCore.dispatch()
+                -> BrokerManager -> OrderEngine -> SimulationBroker
+                -> DispatchResult
+
+        A burst here is severity, not concurrency: ``volume`` orders (more
+        than any Task 9.2 volume) arrive compressed into ONE ExecutionPlan
+        and are executed strictly sequentially by the real engine inside a
+        single ``dispatch()`` call. The Task 9.2 plan builder is reused
+        unchanged — no queue, no threading, no batching, no new
+        architecture, and no production component is touched.
         """
         plan = self.build_volume_plan(volume, plan_id=plan_id)
         result = self.dispatch_core.dispatch(plan)
