@@ -527,6 +527,105 @@ class SimulationHarness:
             plan=plan,
         )
 
+    # -- multi-account isolation scenario runner (Task 9.4) --------------------
+
+    def multi_account_plan(
+        self,
+        volume: int = 4,
+        plan_id: str = "task9.4-multi-account-plan",
+    ) -> ExecutionPlan:
+        """
+        Build ONE ``ExecutionPlan`` that interleaves two accounts across two
+        distinct instruments, on the REAL Block 1 planner and the existing
+        Block 6 binding architecture (Task 9.4):
+
+            odd  sequences -> ACC-SIM-1 -> STOCK-A
+            even sequences -> ACC-SIM-2 -> STOCK-B
+
+        The two accounts carry deliberately distinct
+        ``tradable_balance_t1`` values, so the identity of the account that
+        actually drove each execution is observable in the real engine's
+        ``get_buy_capacity(fund=...)`` call (M6-D passes
+        ``account.tradable_balance_t1`` as ``fund``).
+
+        Both accounts route to the same single registered simulation broker
+        via ``plan.account_routes`` (multi-broker isolation is Task 9.5 and
+        is intentionally NOT exercised here). Deterministic: same inputs
+        produce the same plan.
+        """
+        if not isinstance(volume, int) or isinstance(volume, bool) or volume < 1:
+            raise ValueError("volume must be a positive integer")
+
+        # Same local-import convention as the other scenario builders: the
+        # real project planner, no new architecture.
+        from core.execution_planner import (
+            ExecutionPlanner,
+            LogicalOrderInstruction,
+            PlannedOrder,
+        )
+
+        acc1 = make_simulation_account(
+            "ACC-SIM-1", tradable_balance_t1=1_000_000_000
+        )
+        acc2 = make_simulation_account(
+            "ACC-SIM-2", tradable_balance_t1=2_000_000_000
+        )
+
+        planned = []
+        for sequence in range(1, volume + 1):
+            if sequence % 2 == 1:
+                account, ins_code, price = acc1, "STOCK-A", 10_000 + sequence
+            else:
+                account, ins_code, price = acc2, "STOCK-B", 20_000 + sequence
+            planned.append(
+                PlannedOrder(
+                    order=make_simulation_order(
+                        ins_code=ins_code,
+                        side=1,  # BUY (single-side: multi-side is out of scope)
+                        price=price,
+                        quantity=10 + (sequence % 10),
+                    ),
+                    account_id=account.account_id,
+                    broker_name=self.broker_name,
+                    sequence=sequence,
+                )
+            )
+
+        plan = ExecutionPlanner().build_plan(
+            LogicalOrderInstruction(plan_id=plan_id, orders=planned)
+        )
+        # Attach the resolved Account objects exactly like the Task 9.1 base
+        # scenario (integration-layer convention); _plan_account matches each
+        # sequence's binding to the right object by account_id.
+        plan.accounts = [acc1, acc2]
+        return plan
+
+    def run_multi_account_scenario(
+        self,
+        volume: int = 4,
+        plan_id: str = "task9.4-multi-account-plan",
+    ) -> SimulationRunRecord:
+        """
+        Run one Multi-Account Isolation scenario (Task 9.4) on the REAL
+        dispatch path:
+
+            ExecutionPlanner -> ExecutionPlan -> DispatchCore.dispatch()
+                -> BrokerManager -> OrderEngine -> SimulationBroker
+                -> DispatchResult
+
+        No shortcut is taken: the interleaved two-account plan is dispatched
+        through the same real ``DispatchCore`` entry point; the only
+        substituted components remain the Task 9.1 simulation pair.
+        """
+        plan = self.multi_account_plan(volume, plan_id=plan_id)
+        result = self.dispatch_core.dispatch(plan)
+        return SimulationRunRecord(
+            dispatch_result=result,
+            broker=self.broker,
+            provider=self.provider,
+            plan=plan,
+        )
+
     # -- burst scenario runner (Task 9.3) --------------------------------------
 
     def run_burst_scenario(
