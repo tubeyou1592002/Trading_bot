@@ -1919,7 +1919,7 @@ Real Trading must remain disabled during this block.
 
 **Dependencies:** Block 8
 
-**Status:** IN PROGRESS
+**Status:** COMPLETED
 
 ### Block 9 Task Roadmap
 
@@ -2061,19 +2061,43 @@ Real Trading must remain disabled during this block.
 
 **Task 9.7 — Acceptance & Closure**
 
-* Run the final combined Block 9 scenarios.
-* Verify:
+* Status: `COMPLETED`
+* Commit: `4be5044` — `test: add Block 9 acceptance and closure tests`
+* Push: completed to `origin/master`.
 
-  * high volume
-  * severe burst
-  * multi-account isolation
-  * multi-broker isolation
-  * Broker/API/network failure handling
-  * preservation of M6-A through M6-E
-  * no lost, duplicated, or cross-routed execution results
-* Run the full regression suite.
-* Update the Block 9 documentation with factual test evidence.
-* Change Block 9 status to `COMPLETED` only after all required evidence is independently verified.
+Task 9.7 ran the final combined Block 9 scenarios and verified all acceptance criteria before changing the Block 9 status to `COMPLETED`.
+
+**Focused test results (Task 9.7):** `7/7 PASS`
+
+**Block 9 focused tests (Tasks 9.1–9.7):** `85/85 PASS`
+
+**Full project regression:** `618/618 PASS`
+
+**`git diff --check`:** clean
+
+**Final acceptance coverage (verified):**
+
+- High Volume
+- Severe Burst
+- Multi-Account Isolation
+- Multi-Broker Isolation
+- Failure Injection
+- account/broker/instrument/sequence isolation
+- no lost executions
+- no duplicated executions
+- no cross-routed execution/result contamination
+- state isolation across consecutive runs
+- deterministic rerun behavior
+- preservation of M6-A through M6-E
+
+**Safety evidence recorded:**
+
+- `live_trading_enabled` remained `False`
+- no real orders were sent
+- no real broker credentials were required
+- no real-world network stress was performed
+- simulation remained fully offline
+- production DispatchCore / OrderEngine / Broker contracts were not redesigned or replaced
 
 ### Fixed Block 9 Boundaries
 
@@ -2154,7 +2178,7 @@ Block 0 → Block 1 → Block 2
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
-| 9 | Stress / Simulation | Block 8 | IN PROGRESS |
+| 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
