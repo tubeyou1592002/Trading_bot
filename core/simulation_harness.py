@@ -158,6 +158,23 @@ class SimulationBroker(Broker):
         self.live_trading_enabled = False  # hard-off, like production today
         self.calls: List[SimulationCallRecord] = []
         self.place_order_calls: List[Tuple[Order, bool]] = []
+        # Task 9.6 — controlled, deterministic failure injection knobs.
+        # Only THIS simulation broker ever fails; nothing in the engine,
+        # core, or contracts changes behavior.
+        self.fail_on_nsc_id: Optional[str] = None
+        self.fail_on_sequence: Optional[int] = None
+        self.fail_mode: str = "exception"  # "exception" | "failed_response" | "timeout"
+        self.failure_exception: Exception = RuntimeError("SIM broker failure")
+        self.fail_response: Optional[dict] = None  # default built in _fail_response
+        self.timeout_after_n_calls: int = 1
+        self.timeout_calls_seen = 0
+        self.timeouts_raised = 0
+        # One-shot semantics: an armed failure fires on the FIRST matching
+        # place_order, records itself, and disarms (no retry, no repeat).
+        self.fired_count = 0
+        # Per-broker counter of incoming place_order calls (used to scope a
+        # sequence-targeted failure; deterministic within one broker).
+        self._place_seq_seen = 0
 
     # -- contract methods ---------------------------------------------------
 
@@ -205,6 +222,131 @@ class SimulationBroker(Broker):
                 "SimulationBroker: live orders are forbidden in simulation."
             )
 
+        # Task 9.6 — controlled failure injection, recorded and deterministic.
+        # The failure is strictly scoped by identity and the live flag is
+        # checked BEFORE it, so a live refusal always wins.
+        if self._should_fail(order):
+            return self._fail_response(order)
+
+        return {
+            "mode": "DRY_RUN",
+            "sent": False,
+            "order_id": f"SIM-{order.nsc_id}",
+            "payload": order.to_payload(),
+        }
+
+    # -- Task 9.6: controlled failure injection (simulation only) ------------
+
+    def configure_failure(
+        self,
+        fail_on_nsc_id: Optional[str] = None,
+        fail_on_sequence: Optional[int] = None,
+        fail_mode: str = "exception",
+        failure_exception: Optional[Exception] = None,
+        fail_response: Optional[dict] = None,
+        timeout_after_n_calls: int = 1,
+    ) -> None:
+        """
+        Arm exactly ONE controlled failure on this simulation broker.
+
+        Deterministic and identity-scoped: the failure fires on the FIRST
+        matching ``place_order`` (by nsc_id, or by the per-broker sequence
+        of incoming place_order calls), records itself in ``calls`` as an
+        ``injected_failure`` op, and disarms itself — the engine's own
+        handling (no retry) sees exactly one failure.
+        """
+        self.fail_on_nsc_id = fail_on_nsc_id
+        self.fail_on_sequence = fail_on_sequence
+        self.fail_mode = fail_mode
+        if failure_exception is not None:
+            self.failure_exception = failure_exception
+        self.fail_response = fail_response
+        self.timeout_after_n_calls = timeout_after_n_calls
+        self.timeout_calls_seen = 0
+        self.timeouts_raised = 0
+        self.fired_count = 0
+        self._place_seq_seen = 0
+
+    def clear_failure(self) -> None:
+        """Remove any armed failure (broker returns to the healthy path)."""
+        self.fail_on_nsc_id = None
+        self.fail_on_sequence = None
+        self.fail_mode = "exception"
+        self.fail_response = None
+        self.timeout_after_n_calls = 1
+        self.timeout_calls_seen = 0
+        self.timeouts_raised = 0
+        self.fired_count = 0
+        self._place_seq_seen = 0
+
+    def _should_fail(self, order) -> bool:
+        """True when the armed failure applies to this place_order call."""
+        nsc_match = (
+            self.fail_on_nsc_id is not None
+            and order.nsc_id == self.fail_on_nsc_id
+        )
+        return nsc_match or self._sequence_matched(order)
+
+    def _sequence_matched(self, order) -> bool:
+        """True when the sequence-scoped failure applies to this call."""
+        if self.fail_on_sequence is None:
+            return False
+        self._place_seq_seen += 1
+        return self._place_seq_seen == self.fail_on_sequence
+
+    def _record_injected(self, kind: str, order) -> None:
+        self.calls.append(
+            SimulationCallRecord(
+                op="injected_failure",
+                payload={"kind": kind, "nsc_id": order.nsc_id},
+            )
+        )
+        self.fired_count += 1
+
+    def _disarm(self) -> None:
+        self.fail_on_nsc_id = None
+        self.fail_on_sequence = None
+
+    def _fail_response(self, order):
+        """Produce the configured failure outcome for one place_order call."""
+        if self.fail_mode == "exception":
+            self._record_injected("exception", order)
+            self._disarm()
+            raise self.failure_exception
+        if self.fail_mode == "failed_response":
+            envelope = self.fail_response or {
+                "mode": "FAILED",
+                "sent": False,
+                "success": False,
+                "error": "SIM: broker rejected the order",
+                "order_id": f"SIM-{order.nsc_id}",
+            }
+            # Record the exact envelope the broker returned so the broker-side
+            # fact is observable (the current engine contract carries a
+            # non-exception response through as the per-order ``response``
+            # without re-interpreting it — see the Task 9.6 report).
+            self.calls.append(
+                SimulationCallRecord(
+                    op="injected_failure",
+                    payload={
+                        "kind": "failed_response",
+                        "nsc_id": order.nsc_id,
+                        "response": envelope,
+                    },
+                )
+            )
+            self.fired_count += 1
+            self._disarm()
+            return envelope
+        if self.fail_mode == "timeout":
+            self.timeout_calls_seen += 1
+            if self.timeout_calls_seen >= self.timeout_after_n_calls:
+                self._record_injected("timeout", order)
+                self.timeouts_raised += 1
+                self._disarm()
+                raise TimeoutError(
+                    f"SIM: simulated timeout after {self.timeout_calls_seen} calls"
+                )
         return {
             "mode": "DRY_RUN",
             "sent": False,
@@ -728,6 +870,138 @@ class SimulationHarness:
             broker_a_name=broker_a_name,
             broker_b_name=broker_b_name,
         )
+        result = self.dispatch_core.dispatch(plan)
+        return SimulationRunRecord(
+            dispatch_result=result,
+            broker=self.broker,
+            provider=self.provider,
+            plan=plan,
+            brokers={
+                name: self.manager.get(name)
+                for name in (broker_a_name, broker_b_name)
+            },
+            providers={
+                name: self.manager.get_instrument_provider(name)
+                for name in (broker_a_name, broker_b_name)
+            },
+        )
+
+    # -- failure-injection scenario runner (Task 9.6) --------------------------
+
+    def run_failure_scenario(
+        self,
+        volume: int = 8,
+        plan_id: str = "task9.6-failure-plan",
+        broker_a_name: str = "SIM-A",
+        broker_b_name: str = "SIM-B",
+        fail_broker_name: str = "SIM-B",
+        fail_nsc_id: Optional[str] = "STOCK-B",
+        fail_on_broker_sequence: Optional[int] = None,
+        fail_mode: str = "exception",
+        failure_exception: Optional[Exception] = None,
+        fail_response: Optional[dict] = None,
+    ) -> SimulationRunRecord:
+        """
+        Run one controlled Failure-Injection scenario (Task 9.6) on the REAL
+        dispatch path:
+
+            ExecutionPlanner -> ExecutionPlan -> DispatchCore.dispatch()
+                -> BrokerManager (per-sequence broker + provider)
+                -> OrderEngine -> SimulationBroker A / SimulationBroker B
+                -> DispatchResult
+
+        Deterministic interleaved plan (8 orders by default), two accounts,
+        two brokers, three instruments:
+
+            odd  sequences -> ACC-SIM-1 -> SIM-A -> STOCK-A (seq % 4 == 1)
+                                                   STOCK-C (seq % 4 == 3)
+            even sequences -> ACC-SIM-2 -> SIM-B -> STOCK-B
+
+        The failure is armed ONLY on the named simulation broker (SIM-B by
+        default) and is scoped to exactly one cause: either the first
+        ``place_order`` of ``fail_nsc_id`` on that broker, or its
+        ``fail_on_broker_sequence``-th incoming ``place_order`` call. The
+        broker produces the configured outcome (exception / failed response
+        / simulated timeout) inside the REAL engine path; the engine's own
+        exception handling turns it into the per-order result the current
+        architecture defines. Nothing else in the path changes: no retry,
+        no failover, no queue — isolation of the other executions is proven,
+        not engineered.
+
+        Only fail_nsc_id OR fail_on_broker_sequence may be armed per run;
+        when ``fail_nsc_id`` is given it takes precedence (single cause).
+        """
+        if not isinstance(volume, int) or isinstance(volume, bool) or volume < 1:
+            raise ValueError("volume must be a positive integer")
+
+        # Same local-import convention as the other scenario builders.
+        from core.execution_planner import (
+            ExecutionPlanner,
+            LogicalOrderInstruction,
+            PlannedOrder,
+        )
+
+        acc1 = make_simulation_account(
+            "ACC-SIM-1", tradable_balance_t1=1_000_000_000
+        )
+        acc2 = make_simulation_account(
+            "ACC-SIM-2", tradable_balance_t1=2_000_000_000
+        )
+
+        planned = []
+        for sequence in range(1, volume + 1):
+            if sequence % 2 == 1:
+                # A path: alternate the two Account-1 instruments.
+                if sequence % 4 == 1:
+                    ins_code, price, quantity = (
+                        "STOCK-A", 10_000 + sequence, 100 + sequence
+                    )
+                else:
+                    ins_code, price, quantity = (
+                        "STOCK-C", 30_000 + sequence, 300 + sequence
+                    )
+                account, broker_name = acc1, broker_a_name
+            else:
+                ins_code, price, quantity = (
+                    "STOCK-B", 20_000 + sequence, 200 + sequence
+                )
+                account, broker_name = acc2, broker_b_name
+            planned.append(
+                PlannedOrder(
+                    order=make_simulation_order(
+                        ins_code=ins_code,
+                        side=1,
+                        price=price,
+                        quantity=quantity,
+                    ),
+                    account_id=account.account_id,
+                    broker_name=broker_name,
+                    sequence=sequence,
+                )
+            )
+
+        plan = ExecutionPlanner().build_plan(
+            LogicalOrderInstruction(plan_id=plan_id, orders=planned)
+        )
+        plan.accounts = [acc1, acc2]
+
+        # Arm the controlled failure on exactly ONE simulation broker.
+        fail_broker = self.manager.get(fail_broker_name)
+        if fail_nsc_id is not None:
+            fail_broker.configure_failure(
+                fail_on_nsc_id=fail_nsc_id,
+                fail_mode=fail_mode,
+                failure_exception=failure_exception,
+                fail_response=fail_response,
+            )
+        elif fail_on_broker_sequence is not None:
+            fail_broker.configure_failure(
+                fail_on_sequence=fail_on_broker_sequence,
+                fail_mode=fail_mode,
+                failure_exception=failure_exception,
+                fail_response=fail_response,
+            )
+
         result = self.dispatch_core.dispatch(plan)
         return SimulationRunRecord(
             dispatch_result=result,
