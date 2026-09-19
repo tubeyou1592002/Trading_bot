@@ -307,6 +307,11 @@ class SimulationRunRecord:
     broker: SimulationBroker
     provider: SimulationInstrumentProvider
     plan: ExecutionPlan
+    # Optional multi-broker view (Task 9.5): name -> broker / provider, both
+    # resolved through the REAL BrokerManager. Single-broker scenarios
+    # (Tasks 9.1-9.4) leave these unset.
+    brokers: Optional[Dict[str, SimulationBroker]] = None
+    providers: Optional[Dict[str, SimulationInstrumentProvider]] = None
 
     @property
     def success(self) -> bool:
@@ -626,6 +631,119 @@ class SimulationHarness:
             plan=plan,
         )
 
+    # -- multi-broker isolation scenario runner (Task 9.5) ---------------------
+
+    def multi_broker_plan(
+        self,
+        volume: int = 8,
+        plan_id: str = "task9.5-multi-broker-plan",
+        broker_a_name: str = "SIM-A",
+        broker_b_name: str = "SIM-B",
+    ) -> ExecutionPlan:
+        """
+        Build ONE ``ExecutionPlan`` that interleaves two accounts across two
+        distinct instruments AND two distinct brokers, on the REAL Block 1
+        planner and the existing Block 6 binding / Block 7 routing
+        architecture (Task 9.5):
+
+            odd  sequences -> ACC-SIM-1 -> STOCK-A -> SIM-A
+            even sequences -> ACC-SIM-2 -> STOCK-B -> SIM-B
+
+        Prices/quantities/balances are deliberately distinct per path so
+        any account/broker/instrument swap is detectable from the real
+        broker trails alone (M6-D passes ``account.tradable_balance_t1``
+        as ``fund``). Deterministic.
+        """
+        if not isinstance(volume, int) or isinstance(volume, bool) or volume < 1:
+            raise ValueError("volume must be a positive integer")
+
+        # Same local-import convention as the other scenario builders: the
+        # real project planner, no new architecture.
+        from core.execution_planner import (
+            ExecutionPlanner,
+            LogicalOrderInstruction,
+            PlannedOrder,
+        )
+
+        acc1 = make_simulation_account(
+            "ACC-SIM-1", tradable_balance_t1=1_000_000_000
+        )
+        acc2 = make_simulation_account(
+            "ACC-SIM-2", tradable_balance_t1=2_000_000_000
+        )
+
+        planned = []
+        for sequence in range(1, volume + 1):
+            if sequence % 2 == 1:
+                account, ins_code, broker_name = acc1, "STOCK-A", broker_a_name
+                price, quantity = 10_000 + sequence, 100 + sequence
+            else:
+                account, ins_code, broker_name = acc2, "STOCK-B", broker_b_name
+                price, quantity = 20_000 + sequence, 200 + sequence
+            planned.append(
+                PlannedOrder(
+                    order=make_simulation_order(
+                        ins_code=ins_code,
+                        side=1,  # BUY (single-side: multi-side is out of scope)
+                        price=price,
+                        quantity=quantity,
+                    ),
+                    account_id=account.account_id,
+                    broker_name=broker_name,
+                    sequence=sequence,
+                )
+            )
+
+        plan = ExecutionPlanner().build_plan(
+            LogicalOrderInstruction(plan_id=plan_id, orders=planned)
+        )
+        # Attach the resolved Account objects exactly like the Task 9.1 base
+        # scenario (integration-layer convention).
+        plan.accounts = [acc1, acc2]
+        return plan
+
+    def run_multi_broker_scenario(
+        self,
+        volume: int = 8,
+        plan_id: str = "task9.5-multi-broker-plan",
+        broker_a_name: str = "SIM-A",
+        broker_b_name: str = "SIM-B",
+    ) -> SimulationRunRecord:
+        """
+        Run one Multi-Broker Isolation scenario (Task 9.5) on the REAL
+        dispatch path:
+
+            ExecutionPlanner -> ExecutionPlan -> DispatchCore.dispatch()
+                -> BrokerManager (per-sequence broker + provider resolution)
+                -> OrderEngine -> SimulationBroker A / SimulationBroker B
+                -> DispatchResult
+
+        The broker/provider pairs recorded on the run are resolved through
+        the REAL manager seam (``get`` / ``get_instrument_provider``), not
+        stashed in parallel attributes.
+        """
+        plan = self.multi_broker_plan(
+            volume,
+            plan_id=plan_id,
+            broker_a_name=broker_a_name,
+            broker_b_name=broker_b_name,
+        )
+        result = self.dispatch_core.dispatch(plan)
+        return SimulationRunRecord(
+            dispatch_result=result,
+            broker=self.broker,
+            provider=self.provider,
+            plan=plan,
+            brokers={
+                name: self.manager.get(name)
+                for name in (broker_a_name, broker_b_name)
+            },
+            providers={
+                name: self.manager.get_instrument_provider(name)
+                for name in (broker_a_name, broker_b_name)
+            },
+        )
+
     # -- burst scenario runner (Task 9.3) --------------------------------------
 
     def run_burst_scenario(
@@ -655,3 +773,39 @@ class SimulationHarness:
             provider=self.provider,
             plan=plan,
         )
+
+
+def build_dual_broker_harness(
+    broker_a_name: str = "SIM-A",
+    broker_b_name: str = "SIM-B",
+    ins_codes: Tuple[str, ...] = ("STOCK-A", "STOCK-B"),
+) -> SimulationHarness:
+    """
+    Task 9.5 test-environment factory (still NO production code touched).
+
+    Returns a ``SimulationHarness`` whose private BrokerManager registers
+    TWO independent simulation pairs — (SIM-A broker, its own provider
+    class) and (SIM-B broker, its own provider class) — through the
+    EXISTING ``BrokerManager.register()`` seam: the exact Block 7
+    registration path production uses for multiple brokers. Both providers
+    are managed entirely by the real BrokerManager: each is an independent
+    instance built by the manager from the registered provider class,
+    bound to that broker's own instance, and cached per broker name in
+    ``manager.providers``. Their materialization timing is per-broker,
+    exactly as the existing seam behaves: SIM-A's provider is already
+    resolved at factory exit (the harness constructor resolves it via
+    ``get_instrument_provider``), while SIM-B's provider is built on its
+    first ``get_instrument_provider(broker_b_name)`` call (as DispatchCore
+    does on the dispatch path). Provider isolation therefore follows from
+    the existing architecture, not from any new wiring.
+    """
+    harness = SimulationHarness(
+        broker_name=broker_a_name,
+        catalog=build_simulation_catalog(ins_codes=ins_codes),
+    )
+    broker_b = SimulationBroker(name=broker_b_name, catalog=harness.catalog)
+    # Existing Block 7 seam — no new registration mechanism:
+    harness.manager.register(
+        broker_b_name, broker_b, SimulationInstrumentProvider
+    )
+    return harness
