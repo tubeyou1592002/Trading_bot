@@ -1931,6 +1931,27 @@ Real Trading must remain disabled during this block.
 * Do not modify production dispatch behavior.
 * This task establishes the foundation for all later Block 9 stress scenarios.
 
+**Task 9.1 — Status: COMPLETED**
+
+* Status: `COMPLETED`
+* Commit: `19fbe50`
+* Files added:
+  * `core/simulation_harness.py` — offline `SimulationBroker` + `SimulationInstrumentProvider` + `SimulationHarness` (the only substituted components; registered in a private `BrokerManager`).
+  * `test_block9_task9_1.py` — Task 9.1 offline tests.
+* Execution mode: fully offline and deterministic (no sleeps, no randomness, no network, no credentials).
+* Real path exercised: `ExecutionPlan → DispatchCore.dispatch() → BrokerManager → OrderEngine → Simulation Broker → DispatchResult`.
+* Real `DispatchCore` and real `OrderEngine` used (no re-implementation, no subclass, no parallel dispatch path).
+* M6-A through M6-E remain intact and active on the real path.
+* No production dispatch behavior changed; no production file modified.
+* No real broker, no credentials, no real order, no network used (proven via mock/patch of `AgaahBroker`/`AgaahInstrumentProvider` and socket blocking; the real network was never touched).
+* `live_trading_enabled` never enabled.
+* Task 9.1 tests: `14/14 PASS`.
+* Full regression after Task 9.1: `547/547 PASS`.
+* `git diff --check`: clean.
+* Commit/Push: completed (`19fbe50`).
+
+**Task 9.1 boundary (explicitly NOT included):** Task 9.1 only establishes the Simulation Harness foundation. It did NOT implement High Volume, Severe Burst, Multi-Account Stress, Multi-Broker Stress, Failure Injection, Timeout / Retry, Concurrency, or Performance Optimization. Those remain for Tasks 9.2–9.7.
+
 **Task 9.2 — High Volume**
 
 * Use the Task 9.1 harness to test increasing execution volumes.
