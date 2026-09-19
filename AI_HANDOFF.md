@@ -2166,6 +2166,80 @@ This task must specify:
 
 **Status:** NOT STARTED
 
+#### Task 10.1 Deliverable — Live Execution Contract
+
+Documentation-only contract, derived from the code as it exists today (no new architecture, no gate implemented, no live order, no Python/test file changed). It is the rulebook Task 10.2 (Safety Gate) and Task 10.3 (Controlled Live Dispatch) must implement against. Task 10.1 status stays as declared above until independent review.
+
+**Current reality (verified in code, pre-10.2/10.3):** every dispatch is Dry Run. `DispatchCore` sets `live_trading_enabled = False` at construction ("Block 10 owns that switch"), `_dispatch()` hard-codes `live=False` in every `BrokerDispatchRequest` ("dry-run always, until Block 10"), `SimulationHarness` mirrors production with `live_trading_enabled = False`, and no real broker is ever constructed in the Block 9 path.
+
+##### 1. Definitions
+
+**Dry Run (system default, unchanged):** a dispatch in which every `BrokerDispatchRequest` is built with `live=False`. Consequences on the real path:
+- `OrderEngine.execute_by_ins_code(..., live=False)` calls `broker.place_order(order, live=False)`, which returns `{"mode": "DRY_RUN", "sent": False, "payload": ...}` — nothing is submitted.
+- Per-order results carry `sent=False`; the aggregate `DispatchResult` carries `sent=False`.
+- All M6-A … M6-E gates still run normally inside `OrderEngine.prepare()`.
+- No public API signature changes; Dry Run remains the default for every caller.
+
+**Live:** a dispatch in which, for at least one order, the `BrokerDispatchRequest` carries `live=True` AND the resolved broker instance itself has `live_trading_enabled=True`, so that `broker.place_order(order, live=True)` proceeds past both existing guards and submits through the broker's real session (`session.post(...)`).
+
+**What makes a dispatch "real":** per order, at the broker boundary: `place_order(order, live=True)` reached with `live_trading_enabled == True` on that same broker instance. Both conditions are required; missing either one is not live:
+- envelope `live=True` + broker flag `False` → the engine guard returns `mode="BLOCKED"` fail-closed and the broker is never called live;
+- even if that guard were bypassed, the broker's own lock raises `RuntimeError` when `live_trading_enabled` is `False` (independent second lock).
+
+There is exactly one live path — the existing one. No parallel live path exists and none may be created.
+
+##### 2. Live Prerequisites (ALL must hold before Live is allowed)
+
+1. **Block 9 complete and validated.** Block 9 is `COMPLETED` — Task 9.7 Acceptance & Closure passed (Block 9 focused tests `85/85 PASS`, full regression `618/618 PASS`) and the Block 9 status, including the Roadmap Summary row, reads `COMPLETED`.
+2. **M6-A … M6-E valid and active** on the real engine path (they execute inside `OrderEngine.prepare()`; any BLOCKED/UNVERIFIED verdict aborts the order).
+3. **Valid Account** for the sequence: resolvable from `plan.accounts` via `plan.conditions["binding"][sequence]["account_id"]` (DispatchCore `_plan_account`, fail-closed on missing/invalid).
+4. **Valid, usable Broker:** resolvable via the existing `BrokerManager.get(broker_name)` with its `get_instrument_provider(broker_name)` provider (Block 7 seam).
+5. **Valid Account/Broker binding:** `plan.conditions["binding"][sequence]["broker_name"]` and `plan.account_routes` consistent with Block 6 semantics.
+6. **Architect review** of the controlled-live implementation completed.
+7. **Explicit human approval** — recorded, dispatch-scoped, revocable; its absence forbids Live unconditionally.
+
+Additional conditions observed as genuinely necessary from the existing code (not invented):
+
+8. `DispatchCore.live_trading_enabled == True` (the instance flag that already exists, deliberately `False`; Block 10 owns it).
+9. For every broker that would receive live orders: that broker instance's `live_trading_enabled == True`.
+10. The instrument resolves through the broker's own provider (M6-A identity depends on it).
+
+##### 3. Live Prohibition Conditions (Live MUST be forbidden when)
+
+- Any prerequisite of §2 is missing, invalid, or unverifiable.
+- Any M6 gate returns `BLOCKED` or `UNVERIFIED`.
+- The Account or Broker is unknown/invalid (unresolvable from the plan).
+- The Account/Broker binding is invalid or inconsistent with `plan.account_routes`.
+- Human approval is absent.
+- The Live status is unknown or ambiguous (flag states unreadable) — treated as not-live.
+
+General rule: **Unknown / Invalid / Unverified → Live forbidden.**
+
+##### 4. Dry Run / Live Boundary (single switch point)
+
+- The boundary is the construction of `BrokerDispatchRequest` inside `DispatchCore._dispatch()` (Block 2 routing stage). Today it is hard-coded `live=False`.
+- Contract: `live=False` → Dry Run (system default). `live=True` may appear in the envelope **only** as the output of the Task 10.2 Safety Gate evaluating §2/§3 at this exact point. No other component may set `live=True`.
+- Defense in depth already present and to be preserved: envelope flag → engine guard (`execute_by_ins_code` checks the broker flag) → broker lock (`place_order` + `live_trading_enabled`).
+- This task defines the location and rules only; the gate itself is Task 10.2 scope.
+
+##### 5. Fail-Closed Behavior (contract level)
+
+- Any precondition that cannot be verified leaves `live=False` — the dispatch continues as Dry Run or is blocked; failures surface as `mode="BLOCKED"` per the existing engine/core fail-closed contracts. Never fail-open.
+
+##### 6. Relation to M6-A … M6-E
+
+The contract never bypasses them. Live requires the same real engine path `execute_by_ins_code → prepare() (M6-A … M6-E) → broker.place_order`. M6 verdicts are an input condition of Live permission, not an alternative to it.
+
+##### 7. Relation to Account/Broker Binding (Blocks 6 & 7)
+
+Live respects the same per-sequence binding (`plan.conditions["binding"]` + `plan.account_routes`) and Block 7 broker/provider resolution; no routing is invented. The Safety Gate verifies binding validity as a prerequisite (§2.5, §3).
+
+##### 8. What Remains for Later Tasks
+
+- **Task 10.2:** implement the independent Safety Gate at the §4 boundary — evaluate §2/§3, produce `live=True` only on a full pass, otherwise block with `mode="BLOCKED"` and `live` effectively `False`.
+- **Task 10.3:** enable the single controlled live dispatch path on top of the gate (no redesign of Blocks 5–9).
+- **Task 10.4:** final verification suite proving Dry Run stays non-real and Live fires only under this contract.
+
 #### Task 10.2 — Safety Gate
 
 Add a final, independent Safety Gate that prevents a real order from being dispatched when the Live conditions of Task 10.1 are not satisfied.
