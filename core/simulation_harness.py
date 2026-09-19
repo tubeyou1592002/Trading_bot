@@ -428,3 +428,98 @@ class SimulationHarness:
             provider=self.provider,
             plan=plan,
         )
+
+    # -- volume scenario runner (Task 9.2) ------------------------------------
+
+    def volume_order_fields(self, sequence: int) -> Tuple[str, int, int]:
+        """
+        Deterministic (ins_code, price, quantity) for the order bound to
+        ``sequence`` in a volume plan (Task 9.2).
+
+        Every order is uniquely identifiable (distinct price) so any lost,
+        duplicated, swapped, or cross-routed execution is detectable on the
+        real dispatch path. All values stay inside the simulation catalog's
+        M6-B validator bounds and the broker capacity.
+        """
+        return (
+            next(iter(self.catalog)),
+            1_000 + sequence,
+            10 + (sequence % 10),
+        )
+
+    def build_volume_plan(
+        self,
+        volume: int,
+        plan_id: str = "task9.2-volume-plan",
+    ) -> ExecutionPlan:
+        """
+        Build ONE ``ExecutionPlan`` carrying ``volume`` planned orders
+        (sequences 1..volume) through the REAL Block 1 planner (Task 9.2).
+
+        Reuses the exact Task 9.1 components: the same simulation catalog,
+        the same single simulation account, the same broker binding. One
+        account -> one broker, so the existing Block 6 binding / Block 7
+        routing contracts hold unchanged. Sequences are unique by
+        construction and the planner rejects duplicates fail-closed.
+        """
+        if not isinstance(volume, int) or isinstance(volume, bool) or volume < 1:
+            raise ValueError("volume must be a positive integer")
+
+        # Same local import convention as ``run_basic_scenario``: the real
+        # project planner, no new architecture.
+        from core.execution_planner import (
+            ExecutionPlanner,
+            LogicalOrderInstruction,
+            PlannedOrder,
+        )
+
+        account = make_simulation_account()
+        planned = []
+        for sequence in range(1, volume + 1):
+            ins_code, price, quantity = self.volume_order_fields(sequence)
+            planned.append(
+                PlannedOrder(
+                    order=make_simulation_order(
+                        ins_code=ins_code,
+                        side=1,  # BUY (single-side: multi-side/multi-account is later tasks)
+                        price=price,
+                        quantity=quantity,
+                    ),
+                    account_id=account.account_id,
+                    broker_name=self.broker_name,
+                    sequence=sequence,
+                )
+            )
+
+        plan = ExecutionPlanner().build_plan(
+            LogicalOrderInstruction(plan_id=plan_id, orders=planned)
+        )
+        # Attach the resolved Account object exactly like the Task 9.1 base
+        # scenario (integration-layer convention).
+        plan.accounts = [account]
+        return plan
+
+    def run_volume_scenario(
+        self,
+        volume: int,
+        plan_id: str = "task9.2-volume-plan",
+    ) -> SimulationRunRecord:
+        """
+        Run one High Volume scenario (Task 9.2) on the REAL dispatch path:
+
+            ExecutionPlanner -> ExecutionPlan -> DispatchCore.dispatch()
+                -> BrokerManager -> OrderEngine -> SimulationBroker
+                -> DispatchResult
+
+        No shortcut is taken: the plan is dispatched through the same real
+        ``DispatchCore`` entry point as the base scenario; the only
+        substituted components remain the Task 9.1 simulation pair.
+        """
+        plan = self.build_volume_plan(volume, plan_id=plan_id)
+        result = self.dispatch_core.dispatch(plan)
+        return SimulationRunRecord(
+            dispatch_result=result,
+            broker=self.broker,
+            provider=self.provider,
+            plan=plan,
+        )
