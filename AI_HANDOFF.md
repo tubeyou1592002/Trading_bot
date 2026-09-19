@@ -1919,7 +1919,7 @@ Real Trading must remain disabled during this block.
 
 **Dependencies:** Block 8
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS
 
 ### Block 9 Task Roadmap
 
@@ -1989,6 +1989,15 @@ Real Trading must remain disabled during this block.
 * Verify that burst conditions do not corrupt sequence identity, results, or state.
 * Keep real trading disabled and keep the scenario fully simulated.
 
+**Task 9.3 — Status: COMPLETED**
+
+* Status: `COMPLETED`
+* Commit: `fa68c63`
+* Files added/changed: `core/simulation_harness.py` (added `run_burst_scenario`; deterministic burst volume 250, larger than every Task 9.2 volume) and `test_block9_task9_3.py`.
+* Burst is severity, not concurrency: many orders in ONE `ExecutionPlan`, ONE `dispatch()` call, executed sequentially by the real engine.
+* Fully offline and deterministic; sequence completeness/uniqueness, no lost/duplicated execution, consecutive-burst state isolation, and deterministic rerun proven.
+* Task 9.3 tests: `10/10 PASS`; full regression after Task 9.3: `572/572 PASS`.
+
 **Task 9.4 — Multi-Account Isolation**
 
 * Simulate multiple accounts processing different orders at the same time.
@@ -1997,6 +2006,14 @@ Real Trading must remain disabled during this block.
   `Account 1 → Stock A`
   `Account 2 → Stock B`
 * No account may receive another account's order, state, instrument, or result.
+
+**Task 9.4 — Status: COMPLETED**
+
+* Status: `COMPLETED` (Multi-Account Isolation)
+* Files added/changed: `core/simulation_harness.py` (added `multi_account_plan` / `run_multi_account_scenario`; interleaved `ACC-SIM-1 → STOCK-A` / `ACC-SIM-2 → STOCK-B`) and `test_block9_task9_4.py`.
+* Isolation proven via exact `(sequence, account, instrument)` integrity, distinct account balances observable in the real M6-D `fund` trail, and consecutive-run state isolation.
+* Fully offline and deterministic; no production code changed.
+* Task 9.4 tests: `13/13 PASS`.
 
 **Task 9.5 — Multi-Broker Isolation**
 
@@ -2007,12 +2024,40 @@ Real Trading must remain disabled during this block.
   `Account 2 → Broker B`
 * No broker-specific state or result may cross into another broker path.
 
+**Task 9.5 — Status: COMPLETED**
+
+* Status: `COMPLETED`
+* Commit: `b56623c`
+* Files added/changed: `core/simulation_harness.py` (added `build_dual_broker_harness` on the existing Block 7 `register()` seam, plus `multi_broker_plan` / `run_multi_broker_scenario`) and `test_block9_task9_5.py`.
+* Proven end-to-end: `ACC-SIM-1 → STOCK-A → SIM-A` and `ACC-SIM-2 → STOCK-B → SIM-B` (interleaved, one plan, one dispatch) with per-broker provider isolation and no cross-contamination.
+* Fully offline and deterministic; no production code changed.
+* Task 9.5 tests: `13/13 PASS`.
+
 **Task 9.6 — Failure Injection**
 
 * Simulate controlled Broker/API/network failures.
 * Cover failure categories such as exception, timeout, failed response, and missing response where the existing architecture can represent them.
 * Verify fail-closed behavior and preservation of existing safety gates.
 * Do not perform real network or real broker failure testing in this Block.
+
+**Task 9.6 — Status: COMPLETED**
+
+* Status: `COMPLETED`
+* Commit: `2f6ada7`
+* Failure injection implemented ONLY in `SimulationBroker` (`configure_failure` / `clear_failure`, one-shot and identity-scoped); no production component changed.
+* Real path preserved: `ExecutionPlanner → ExecutionPlan → DispatchCore.dispatch() → BrokerManager → OrderEngine → SimulationBroker → DispatchResult`.
+* Implemented failure modes:
+  1. `exception` — controlled exception inside the real `place_order` call; the engine's own handling produces the per-order result and the aggregate verdict fail-closes to `BLOCKED` while the remaining independent orders still execute.
+  2. `failed response` — broker returns a failure envelope in the shape the current path already carries (observable at the broker seam; per the current contract the aggregate verdict stays `ALL_PROCESSED`).
+  3. simulated `timeout` — a fully simulated `TimeoutError` (no socket, no real network, no sleep).
+* Missing/no-response was NOT implemented due to the current contract (the broker path has no representable "no response" state); it must NOT be treated as an existing capability.
+* Failures are deterministic and offline; failure position, sequence, account, broker, instrument, and outcome are not random.
+* No real broker, no real credential, no real network, and no real/live order used; `live_trading_enabled` stays `False` and the live refusal still wins fail-closed.
+* M6-A through M6-E remain intact, active, and NOT bypassed on the injected path.
+* Isolation and state isolation tested (failure isolation between accounts/brokers/instruments; consecutive failure/healthy runs with no leakage of failure, identity, or counters).
+* Task 9.6 tests: `13` focused tests PASS.
+* Full regression after Task 9.6: `611/611 PASS`.
+* Commit/Push: completed (`2f6ada7`).
 
 **Task 9.7 — Acceptance & Closure**
 
@@ -2109,7 +2154,7 @@ Block 0 → Block 1 → Block 2
 | 6 | Multi-Account Execution | Block 5 | COMPLETED |
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
-| 9 | Stress / Simulation | Block 8 | NOT STARTED |
+| 9 | Stress / Simulation | Block 8 | IN PROGRESS |
 | 10 | Controlled Live Execution | Block 9 | NOT STARTED |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
