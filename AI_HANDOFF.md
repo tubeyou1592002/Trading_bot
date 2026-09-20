@@ -2150,7 +2150,7 @@ Each later task depends on the simulation foundation established by Task 9.1.
 
 **Dependencies:** Block 9 — Stress / Simulation
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS — Tasks 10.1, 10.2, and 10.3 are `COMPLETED`; Task 10.4 (Final Live Verification) is `NOT STARTED`. No real order has been executed, and none may be executed, before Task 10.4 completion and explicit human approval.
 
 #### Task 10.1 — Live Execution Contract
 
@@ -2164,11 +2164,11 @@ This task must specify:
 
 **Output:** A formal Live Execution Contract (conditions + gate rules + Dry-Run/Live boundary).
 
-**Status:** NOT STARTED
+**Status:** COMPLETED — commit `ff253e7` (`docs: define Block 10 Task 10.1 live execution contract`)
 
 #### Task 10.1 Deliverable — Live Execution Contract
 
-Documentation-only contract, derived from the code as it exists today (no new architecture, no gate implemented, no live order, no Python/test file changed). It is the rulebook Task 10.2 (Safety Gate) and Task 10.3 (Controlled Live Dispatch) must implement against. Task 10.1 status stays as declared above until independent review.
+Documentation-only contract, derived from the code as it exists today (no new architecture, no gate implemented, no live order, no Python/test file changed). It is the rulebook Task 10.2 (Safety Gate) and Task 10.3 (Controlled Live Dispatch) must implement against. Task 10.1 status has been updated above to `COMPLETED` (commit `ff253e7`).
 
 **Current reality (verified in code, pre-10.2/10.3):** every dispatch is Dry Run. `DispatchCore` sets `live_trading_enabled = False` at construction ("Block 10 owns that switch"), `_dispatch()` hard-codes `live=False` in every `BrokerDispatchRequest` ("dry-run always, until Block 10"), `SimulationHarness` mirrors production with `live_trading_enabled = False`, and no real broker is ever constructed in the Block 9 path.
 
@@ -2248,7 +2248,7 @@ This task focuses on control and prevention. It MUST NOT redesign the existing D
 
 **Output:** A Safety Gate (guard) that is evaluated at the Live Dispatch boundary; fail-closed: any unmet condition blocks dispatch with `mode="BLOCKED"` and `live` effectively `False`.
 
-**Status:** NOT STARTED
+**Status:** COMPLETED — commit `79fc94c` (`feat: add Block 10 safety gate`). 11 focused tests PASS; full regression 629/629 PASS.
 
 #### Task 10.3 — Controlled Live Dispatch
 
@@ -2260,7 +2260,7 @@ This task MUST NOT redesign Multi-Account, Multi-Broker, Execution Tracking, or 
 
 **Output:** A gated Live Dispatch path that reuses Block 6 (account binding), Block 7 (broker routing), Block 5 (tracking), and Block 2/4 (Dispatch Core), adding only the Live enablement layer on top.
 
-**Status:** NOT STARTED
+**Status:** COMPLETED — commit `6cabcad` (`feat: add controlled live dispatch bridge`). 8 focused tests PASS; full regression 637/637 PASS. No real live execution was performed.
 
 #### Task 10.4 — Final Live Verification
 
@@ -2341,7 +2341,7 @@ Block 0 → Block 1 → Block 2
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
-| 10 | Controlled Live Execution | Block 9 | NOT STARTED (4 tasks defined) |
+| 10 | Controlled Live Execution | Block 9 | IN PROGRESS (10.1–10.3 COMPLETED; 10.4 remaining) |
 | UI | User Interface | Block 10 | NOT STARTED |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
