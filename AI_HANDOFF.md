@@ -2499,6 +2499,14 @@ User Application در آینده اطلاعات لازم را به Central Serve
 * Test / Diagnostic Mode
 * ساختار پایه UI
 
+**Status:** IMPLEMENTED (awaiting independent review — not committed)
+
+* **Files added:** `ui/__init__.py`, `ui/app.py`, `ui/main_window.py`, `ui/__main__.py`, `test_ui1_application_foundation.py`; `DECISIONS.md` Decision 023 (independent `ui/` package).
+* **What was implemented:** PySide6 `MainWindow` shell (`Trading Bot — User Application`) با centralWidget، layout اصلی و دو ناحیهٔ مشخص Navigation / Content؛ Navigation فقط سه placeholder (Home / Accounts / Settings) با نمایش صفحهٔ placeholder؛ Content ناحیهٔ طراحی‌شده برای صفحات واقعی UI-2 تا UI-8؛ `ApplicationMode` با state و ساختار `NORMAL` (پیش‌فرض) / `DIAGNOSTIC` (بدون قابلیت Diagnostic واقعی — مربوط به UI-6)؛ entry point تمیز (`ui.app.create_app` / `ui.app.main`) و اجرای مستقل با `python -m ui` که `main.py` / `SymbolSearchWindow` را اجرا یا import نمی‌کند.
+* **Compatibility:** `main.py`، `SymbolSearchWindow`، `test_main_order_workflow.py` و کل `core/` / `brokers/` / `market/` / `models/` تغییر نکردند؛ `ui/` هیچ ماژول معاملاتی را import نمی‌کند و هیچ broker/TSETMC/credential/network access ندارد (اثبات‌شده با subprocess پاک و سکوت socket).
+* **Tests:** `test_ui1_application_foundation.py` 13/13 PASS (کاملاً offline؛ ۱۱ قرارداد + قرارداد `create_app`)؛ `test_main_order_workflow.py` 7/7 PASS؛ full regression 653/653 PASS؛ `python -m ui` با `QT_QPA_PLATFORM=offscreen` smoke-test شد (event loop سالم شروع شد).
+* **Known issues:** هیچ. Navigation و صفحات Content عمداً placeholder هستند؛ قابلیت واقعی از UI-2 شروع می‌شود.
+
 #### UI-2 — Account & Broker Management
 
 * افزودن Account

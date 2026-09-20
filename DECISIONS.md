@@ -981,3 +981,38 @@ The Dispatch Engine roadmap (Block 0 through Block 10) requires a stable, broker
 * This decision is a contract definition only; no code is implemented yet.
 * Block 2 status remains NOT STARTED.
 * All existing tests (123+) remain unchanged.
+
+---
+
+## Decision 023 — Independent `ui/` Package for the User Application
+
+**Status:** Implemented — UI-1 Foundation reviewed and approved.
+
+**Decision:**
+
+The User Application has its own top-level package `ui/`:
+
+```text
+ui/
+    __init__.py
+    app.py          # QApplication creation / run entry point
+    main_window.py  # Main Window (navigation + content area + mode)
+    __main__.py     # `python -m ui` entry point
+```
+
+**Points:**
+
+* The current `main.py` (legacy `SymbolSearchWindow` application) is preserved unchanged for compatibility. The new User Application does not import it and does not replace it.
+* The new UI Foundation must not bypass the existing Core. OrderEngine, DispatchCore, SafetyGate and M6-A…M6-E remain the only authoritative execution path; the UI layer creates no trading logic.
+* `ui/` imports nothing from `core/`, `brokers/`, `market/`, `models/` or `main.py` and performs no broker, TSETMC, credential or network access on its own. Any future trading capability is reached only through the existing Core seams (UI-2 … UI-8 per the documented User Application roadmap in `AI_HANDOFF.md`).
+* This decision concerns only UI structure. It introduces no change to the execution architecture (Blocks 0–10 unchanged).
+
+**Reason:**
+
+The User Application roadmap (UI-1 → UI-8) requires a dedicated application shell separate from the legacy single-window prototype in `main.py`. A clean `ui/` package keeps the new shell isolated from the legacy entry point, allows incremental migration without breaking existing workflows, and makes the UI/Core boundary explicit and testable.
+
+**Evidence:**
+
+* `ui/` package (UI-1 Application Foundation).
+* `test_ui1_application_foundation.py` — foundation tests, fully offline.
+* `main.py`, `SymbolSearchWindow` and `test_main_order_workflow.py` unchanged.
