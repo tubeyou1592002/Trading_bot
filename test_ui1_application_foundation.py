@@ -9,12 +9,13 @@ Contract coverage:
     Test 2  — MainWindow is constructible.
     Test 3  — Navigation contains exactly Home / Accounts / Settings.
     Test 4  — Home is the initial page.
-    Test 5  — Navigation switches between the placeholders.
+    Test 5  — Navigation switches between the pages.
     Test 6  — Default mode is NORMAL.
     Test 7  — Mode can change to DIAGNOSTIC.
     Test 8  — Invalid mode values are rejected.
-    Test 9  — Constructing MainWindow imports NO core/brokers/market/models/
-              main module.
+    Test 9  — Constructing MainWindow imports NO core/brokers/market/main
+              module (models is allowed only via the whitelisted
+              models.account.Account reuse of UI-2.1).
     Test 10 — Constructing the UI performs no network/API/login operation
               (no socket, no urllib/requests/httpx import).
     Test 11 — The new User Application does not use main.py /
@@ -22,6 +23,11 @@ Contract coverage:
 
     Extra   — create_app() contract: succeeds with no QApplication,
               RuntimeError when one already exists.
+
+UI-2.1 note: the Accounts page is now the real AccountsPage (see
+ test_ui2_1_account_management.py); Home and Settings remain placeholders.
+ Home is still the initial page and the navigation/mode contracts are
+ unchanged.
 
 These tests are fully offline:
   - no network
@@ -108,7 +114,10 @@ def test_3_navigation_placeholders_exact(qapp):
 
     assert window.navigation_area is not None
     assert set(window.nav_buttons) == {"Home", "Accounts", "Settings"}
-    assert set(window.placeholder_pages) == {"Home", "Accounts", "Settings"}
+    # pages: all three entries; placeholders: Home/Settings only
+    # (Accounts is the real AccountsPage since UI-2.1)
+    assert set(window.pages) == {"Home", "Accounts", "Settings"}
+    assert set(window.placeholder_pages) == {"Home", "Settings"}
 
 
 # ============================================================
@@ -133,7 +142,7 @@ def test_5_navigation_switching_works(qapp):
     window.nav_buttons["Settings"].click()
     assert window.content_area.currentWidget() is window.placeholder_pages["Settings"]
     window.nav_buttons["Accounts"].click()
-    assert window.content_area.currentWidget() is window.placeholder_pages["Accounts"]
+    assert window.content_area.currentWidget() is window.accounts_page
     window.nav_buttons["Home"].click()
     assert window.content_area.currentWidget() is window.placeholder_pages["Home"]
 
@@ -195,9 +204,13 @@ def test_9_construction_imports_no_trading_module():
             "from ui.main_window import MainWindow",
             "app = ui_app.create_app([])",
             "window = MainWindow()",
-            "banned = ('brokers', 'market', 'core', 'models', 'main')",
+            "banned = ('brokers', 'market', 'core', 'main')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
             "assert not leaked, f'UI foundation imported trading modules: {leaked}'",
+            "# UI-2.1: only the Account model may be reused from models/",
+            "allowed = {m for m in sys.modules if m.split('.')[0] == 'models'}",
+            "assert allowed <= {'models', 'models.account'}, ("
+            "f'unexpected models modules imported: {allowed - {\'models\', \'models.account\'}}')",
             "assert not hasattr(window, 'broker_manager')",
             "assert not hasattr(window, 'order_engine')",
             "print('NO_TRADING_MODULE_OK')",
@@ -285,7 +298,7 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
     """
     import ast
 
-    banned_top = {"main", "brokers", "market", "core", "models"}
+    banned_top = {"main", "brokers", "market", "core"}
 
     for module_name in ("__init__", "app", "main_window", "__main__"):
         path = os.path.join(REPO_ROOT, "ui", f"{module_name}.py")

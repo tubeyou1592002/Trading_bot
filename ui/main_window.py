@@ -1,23 +1,32 @@
 """
-ui/main_window.py — UI-1 Main Window of the User Application.
+ui/main_window.py — Main Window of the User Application.
 
 PySide6 main window shell with:
 
-    * a designated Navigation area (Home / Accounts / Settings placeholders),
-    * a designated, extensible Content area where the real pages of
-      UI-2 ... UI-8 will later be placed,
+    * a designated Navigation area (Home / Accounts / Settings),
+    * a designated Content area holding the current page,
     * an explicit Application Mode (NORMAL / DIAGNOSTIC).
 
-Foundation scope only (UI-1):
+Page architecture (since UI-2.1):
 
-    * Navigation entries display placeholder pages only — no Account
-      Management, Broker Management, Settings, Symbol Search or Order
-      functionality exists.
+    pages                — all pages of the application
+        Home             — placeholder (real Home arrives in a later task)
+        Accounts         — the real AccountsPage (UI-2.1: in-memory account
+                           management via ui.account_store.AccountStore)
+        Settings         — placeholder (real Settings arrives later)
+
+    placeholder_pages    — only the placeholder pages (Home / Settings)
+
+    * Navigation, Content structure and ``select_page`` are the single,
+      unchanged navigation mechanism of UI-1.
+    * The Accounts page performs no broker instantiation, no
+      BrokerManager usage and no network/login/credential access; it only
+      mirrors the in-memory AccountStore (Decision 024).
     * Only the mode STATE and STRUCTURE exist; real Diagnostic capabilities
       (Trace ID, Latency, Execution details, Core/Broker/M6 diagnostics)
       belong to UI-6.
-    * No core/, brokers/, market/, models/ or main.py import; no network,
-      login, credential, broker API or TSETMC access of any kind.
+    * No brokers/, market/ or main.py import and no network, login,
+      credential, broker API or TSETMC access of any kind.
 """
 
 from enum import Enum
@@ -33,6 +42,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.account_store import AccountStore
+from ui.accounts_page import AccountsPage
+
 
 class ApplicationMode(Enum):
     """
@@ -46,8 +58,12 @@ class ApplicationMode(Enum):
     DIAGNOSTIC = "DIAGNOSTIC"
 
 
-# Navigation placeholders (UI-1). No real functionality behind them yet.
+# Navigation entries of the User Application (order = navigation order).
 NAVIGATION_ITEMS = ("Home", "Accounts", "Settings")
+
+# Entries whose page is still a placeholder (Home/Settings). Accounts is a
+# real page since UI-2.1.
+PLACEHOLDER_ITEMS = ("Home", "Settings")
 
 
 class MainWindow(QMainWindow):
@@ -59,14 +75,14 @@ class MainWindow(QMainWindow):
         + ------------------------------------------------- +
         | navigation panel  |  content area (current page)  |
         |  Home             |                               |
-        |  Accounts         |   designated, extensible      |
-        |  Settings         |   area for the real pages of  |
-        |                   |   UI-2 ... UI-8               |
+        |  Accounts         |   AccountsPage (real, UI-2.1) |
+        |  Settings         |   + placeholder pages         |
+        |                   |   (later UI-2 ... UI-8 pages) |
         + ------------------------------------------------- +
 
-    The window is a pure presentation shell: constructing it performs no
-    network, login, credential, broker API or TSETMC access and imports no
-    trading module.
+    The window is presentation only: constructing it performs no network,
+    login, credential, broker API or TSETMC access and instantiates no
+    broker.
     """
 
     def __init__(self, mode=ApplicationMode.NORMAL):
@@ -79,6 +95,12 @@ class MainWindow(QMainWindow):
                 "or ApplicationMode.DIAGNOSTIC)"
             )
         self.mode = mode
+
+        # ---------------------------------------------
+        # In-memory application state (UI-2.1)
+        # ---------------------------------------------
+
+        self.account_store = AccountStore()
 
         # ---------------------------------------------
         # Window identity / initial logical size
@@ -106,11 +128,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central_widget)
 
         # ---------------------------------------------
-        # Navigation placeholders (Home / Accounts / Settings)
+        # Navigation buttons (Home / Accounts / Settings)
         # ---------------------------------------------
 
         self.nav_buttons = {}
-        self.placeholder_pages = {}
 
         for name in NAVIGATION_ITEMS:
             button = QPushButton(name, self.navigation_area)
@@ -123,15 +144,27 @@ class MainWindow(QMainWindow):
 
         navigation_layout.addStretch(1)
 
-        for name in NAVIGATION_ITEMS:
+        # ---------------------------------------------
+        # Pages — Accounts is real (UI-2.1); Home/Settings are placeholders
+        # ---------------------------------------------
+
+        self.pages = {}
+        self.placeholder_pages = {}
+
+        for name in PLACEHOLDER_ITEMS:
             page = QLabel(
                 f"{name}\n\n(placeholder \u2014 implemented in a later UI task)",
                 self.content_area,
             )
             page.setAlignment(Qt.AlignCenter)
             page.setWordWrap(True)
+            self.pages[name] = page
             self.placeholder_pages[name] = page
             self.content_area.addWidget(page)
+
+        self.accounts_page = AccountsPage(self.account_store, self.content_area)
+        self.pages["Accounts"] = self.accounts_page
+        self.content_area.addWidget(self.accounts_page)
 
         self.select_page(NAVIGATION_ITEMS[0])
 
@@ -144,12 +177,12 @@ class MainWindow(QMainWindow):
         self._update_mode_label()
 
     # ---------------------------------------------------------
-    # Navigation (placeholder display only)
+    # Navigation (single navigation mechanism, unchanged)
     # ---------------------------------------------------------
 
     def select_page(self, name):
-        """Show the placeholder page of a navigation entry (no-op if unknown)."""
-        page = self.placeholder_pages.get(name)
+        """Show the page of a navigation entry (no-op if unknown)."""
+        page = self.pages.get(name)
         if page is None:
             return
         self.content_area.setCurrentWidget(page)

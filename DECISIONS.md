@@ -1016,3 +1016,38 @@ The User Application roadmap (UI-1 → UI-8) requires a dedicated application sh
 * `ui/` package (UI-1 Application Foundation).
 * `test_ui1_application_foundation.py` — foundation tests, fully offline.
 * `main.py`, `SymbolSearchWindow` and `test_main_order_workflow.py` unchanged.
+
+---
+
+## Decision 024 — UI Account View Uses the Existing Account Domain Model
+
+**Status:** Implemented — UI-2.1 (pending user review).
+
+**Decision:**
+
+The User Application displays and manages accounts using the existing
+domain model `models.account.Account`:
+
+```text
+AccountRecord (ui/account_store.py)
+    ├── account: models.account.Account   # the account's own identity
+    └── broker_name: str                  # application-layer association
+```
+
+**Points:**
+
+* The UI reuses the existing `models.account.Account` model unchanged; account identity validation stays exactly the model's own rule — the UI never relaxes or redefines it.
+* The broker association is NOT stored on the Account model. It lives only on `AccountRecord.broker_name` in the application layer (`ui/account_store.py`).
+* The UI does not connect to BrokerManager or any Broker API for account management; no broker is instantiated by the UI. The broker selector currently offers only the one broker implemented in the repository (`آگاه`).
+* `AccountStore` is purely in-memory (no persistence); there is no active account until the user explicitly selects one, and at most one account is active.
+* This decision introduces no change to the execution architecture (Blocks 0–10, DispatchCore, OrderEngine, SafetyGate and M6-A…M6-E unchanged).
+
+**Reason:**
+
+Account identity already exists as a validated domain concept (Task 6.1). Duplicating or modifying it for the UI would create two competing definitions of account identity, and storing a UI concern (broker association) inside the domain model would blur the Block 6 / Block 7 binding architecture. Keeping the association in a thin application-layer record preserves the domain model, keeps the UI/Core boundary explicit, and lets later UI tasks evolve without touching execution architecture.
+
+**Evidence:**
+
+* `ui/account_store.py` (`AccountRecord`, `AccountStore`), `ui/accounts_page.py` (`AccountsPage`).
+* `test_ui2_1_account_management.py` — 13 contracts, fully offline.
+* `models/account.py`, `core/`, `brokers/`, `market/` unchanged.
