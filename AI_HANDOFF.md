@@ -2150,7 +2150,7 @@ Each later task depends on the simulation foundation established by Task 9.1.
 
 **Dependencies:** Block 9 — Stress / Simulation
 
-**Status:** IN PROGRESS — Tasks 10.1, 10.2, and 10.3 are `COMPLETED`; Task 10.4 (Final Live Verification) is `NOT STARTED`. No real order has been executed, and none may be executed, before Task 10.4 completion and explicit human approval.
+**Status:** COMPLETED — Tasks 10.1, 10.2, 10.3, and 10.4 are all `COMPLETED` (Task 10.4: commit `5164fda`, `test: add Block 10 final live verification`; 3/3 focused acceptance tests PASS; full regression 640/640 PASS). No real order was ever sent during Block 10 — no real credentials, network, or broker API were used — and entry into actual Live trading still requires the Task 10.1 prerequisites, including explicit human approval.
 
 #### Task 10.1 — Live Execution Contract
 
@@ -2276,7 +2276,7 @@ Minimum verifications:
 
 **Output:** Final verification suite proving Controlled Live Execution is safe and that Live never fires unintentionally.
 
-**Status:** NOT STARTED
+**Status:** COMPLETED — commit `5164fda` (`test: add Block 10 final live verification`). 3/3 focused acceptance tests PASS; full regression 640/640 PASS. Verified: the fail-closed prerequisite matrix at the real dispatch level (no gate, every prerequisite missing/invalid, raising gate, invalid decision → Dry Run `live=False`); Account/Broker identity preserved on the controlled Live path at the broker boundary; M6-A … M6-E remain authoritative and block even after `SafetyGate = ALLOW`; no unintended production Live path exists; no real order sent; no real credentials/network/API used.
 
 #### Block 10 — Task Summary
 
@@ -2341,7 +2341,7 @@ Block 0 → Block 1 → Block 2
 | 7 | Multi-Broker Execution | Block 6 | COMPLETED |
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
-| 10 | Controlled Live Execution | Block 9 | IN PROGRESS (10.1–10.3 COMPLETED; 10.4 remaining) |
+| 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
 | UI | User Interface | Block 10 | NOT STARTED |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
