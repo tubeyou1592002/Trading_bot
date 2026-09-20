@@ -2512,12 +2512,16 @@ Next step: UI-2 — Account & Broker Management
 
 #### UI-2 — Account & Broker Management
 
-* افزودن Account
-* نمایش Accountها
-* انتخاب Account فعال
-* ارتباط Account با Broker
-* حفظ Account/Broker identity
-* عدم حدس یا جابه‌جایی Account/Broker توسط UI
+**Status:** IMPLEMENTED — reviewed and approved; committed as 283f58
+**Commit:** `283f58`
+
+* **Files added:** `ui/account_store.py`, `ui/accounts_page.py`, `test_ui2_1_account_management.py`; `DECISIONS.md` Decision 024 (Account/Broker identity at application layer).
+* **What was implemented:** `AccountStore` (in-memory registry with single-active selection), `AccountsPage` (Add Account form, Account list with Account ID | Broker | Active columns, explicit Set Active action), and integration into `MainWindow` (Accounts is a real page since UI-2.1). Account identity is validated by the existing `models.account.Account` model; broker association is kept as explicit `broker_name` on `AccountRecord` (not on the Account model).
+* **Compatibility:** `main.py`، `SymbolSearchWindow`، `core/` / `brokers/` / `market/` / `models/` تغییر نکردند؛ `ui/` هیچ broker object یا BrokerManager ایجاد نمی‌کند، هیچ network/login/credential/TSETMC access ندارد، و هیچ persistence (SQLite/JSON/config) ندارد.
+* **Tests:** `test_ui2_1_account_management.py` 14/14 PASS (کاملاً offline).
+* **Known issues:** هیچ. Account/Broker اطلاعات فقط در حافظه باقی می‌ماند و تا UI-3 حفظ می‌شود؛ persistence در UI-2.1 پیاده‌سازی نشده است.
+
+Next step: UI-2.2 — Order Configuration
 
 #### UI-3 — Order Configuration
 
