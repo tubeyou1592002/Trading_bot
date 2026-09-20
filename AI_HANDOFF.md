@@ -2482,6 +2482,115 @@ User Application در آینده اطلاعات لازم را به Central Serve
 
 ### Roadmap
 
+#### Detailed User Application Implementation Roadmap
+
+ترتیب رسمی اجرای User Application این است:
+
+`UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8`
+
+پس از تکمیل UI-8، User Application وارد مرحله بعدی Roadmap یعنی Central Server می‌شود.
+
+#### UI-1 — Application Foundation
+
+* اسکلت اصلی User Application
+* Main Window
+* Navigation
+* Normal Mode
+* Test / Diagnostic Mode
+* ساختار پایه UI
+
+#### UI-2 — Account & Broker Management
+
+* افزودن Account
+* نمایش Accountها
+* انتخاب Account فعال
+* ارتباط Account با Broker
+* حفظ Account/Broker identity
+* عدم حدس یا جابه‌جایی Account/Broker توسط UI
+
+#### UI-3 — Order Configuration
+
+* انتخاب Symbol
+* نمایش Symbol Status
+* Buy / Sell
+* Price
+* Quantity
+* Fee
+* محاسبه مبلغ نهایی
+* Broker Calculator در صورت نیاز
+
+#### UI-4 — Order Queue
+
+* آماده‌سازی سفارش مستقل برای هر Account
+* افزودن سفارش به Queue
+* نمایش سفارش‌های آماده
+* حفظ استقلال سفارش‌ها
+* حفظ Account/Broker identity
+
+#### UI-5 — Test & User Logs
+
+* Test Button
+* اجرای آزمایشی
+* بدون ارسال سفارش واقعی
+* نمایش نتیجه هر سفارش
+* User-facing Logs
+
+#### UI-6 — Test / Diagnostic Mode
+
+* Trace ID
+* مراحل اجرای سفارش
+* Latency موجود Block 8
+* Execution Details
+* Error Details
+* نقاط توقف Core
+* اطلاعات فنی فقط در Diagnostic Mode
+* عدم ایجاد مکانیزم جدید برای Latency
+
+#### UI-7 — Schedule & Countdown
+
+* Start Time
+* End Time
+* Interval
+* Apply Schedule
+* Countdown
+* غیرفعال شدن کنترل‌های تغییر سفارش بعد از شروع
+* اجرای سفارش از مسیر Core موجود
+
+#### UI-8 — End-to-End Integration & Acceptance
+
+* تست کامل UI تا Broker boundary
+* تست چند Account
+* تست چند Broker
+* تست Fail-Closed
+* تست M6-A تا M6-E
+* تست Test Mode
+* تست Diagnostic Mode
+* تست Latency
+* بررسی عدم bypass شدن Core / SafetyGate / M6
+* بررسی حفظ Account/Broker identity
+
+#### اصول ثابت
+
+* UI منطق معاملاتی جدید ایجاد نمی‌کند.
+* UI نباید Core موجود را bypass کند.
+* Safety Gate و M6 همچنان authoritative هستند.
+* Test به معنی Live Trading نیست.
+* Diagnostic Mode برای توسعه و تست است و نباید جزئیات فنی را به کاربر عادی تحمیل کند.
+* Latency باید از زیرساخت موجود Block 8 استفاده کند.
+* Account/Broker identity باید در تمام مسیر حفظ شود.
+* Central Server و Admin Panel در این مرحله پیاده‌سازی نمی‌شوند.
+
+#### محدودیت‌ها
+
+* هیچ فایل Python یا کد دیگری تغییر نده.
+* هیچ UI را پیاده‌سازی نکن.
+* هیچ Framework یا کتابخانه جدیدی اضافه نکن.
+* Central Server را پیاده‌سازی نکن.
+* Admin Panel را پیاده‌سازی نکن.
+* License/Activation واقعی را پیاده‌سازی نکن.
+* Commit نکن.
+* Push نکن.
+
 1. طراحی و پیاده‌سازی User Application
 2. تست کامل User Application توسط تیم/مالک پروژه
 3. طراحی و پیاده‌سازی Central Server
