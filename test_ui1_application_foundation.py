@@ -14,8 +14,8 @@ Contract coverage:
     Test 7  — Mode can change to DIAGNOSTIC.
     Test 8  — Invalid mode values are rejected.
     Test 9  — Constructing MainWindow imports NO core/brokers/market/main
-              module (models is allowed only via the whitelisted
-              models.account.Account reuse of UI-2.1).
+              module (models is allowed only via the whitelisted reuse of
+              domain models: Account, Order side BUY/SELL, Instrument).
     Test 10 — Constructing the UI performs no network/API/login operation
               (no socket, no urllib/requests/httpx import).
     Test 11 — The new User Application does not use main.py /
@@ -101,7 +101,8 @@ def test_2_main_window_is_constructible(qapp):
     assert window.size().height() >= 560
     # designated, extensible content area exists
     assert window.content_area is not None
-    assert window.content_area.count() == 3
+    # pages: Home, Accounts, Order Configuration, Settings
+    assert window.content_area.count() == 4
 
 
 # ============================================================
@@ -113,10 +114,17 @@ def test_3_navigation_placeholders_exact(qapp):
     window = MainWindow()
 
     assert window.navigation_area is not None
-    assert set(window.nav_buttons) == {"Home", "Accounts", "Settings"}
-    # pages: all three entries; placeholders: Home/Settings only
-    # (Accounts is the real AccountsPage since UI-2.1)
-    assert set(window.pages) == {"Home", "Accounts", "Settings"}
+    # navigation: Home/Accounts/Settings plus Order Configuration
+    # (added by UI-3.1); placeholders: Home/Settings only
+    # (Accounts real since UI-2.1, Order Configuration since UI-3.1)
+    assert set(window.nav_buttons) == {
+        "Home", "Accounts", "Order Configuration", "Settings",
+    }
+    # pages: all four entries; placeholders: Home/Settings only
+    # (Accounts real since UI-2.1, Order Configuration since UI-3.1)
+    assert set(window.pages) == {
+        "Home", "Accounts", "Order Configuration", "Settings",
+    }
     assert set(window.placeholder_pages) == {"Home", "Settings"}
 
 
@@ -132,7 +140,7 @@ def test_4_home_is_initial_page(qapp):
 
 
 # ============================================================
-# Test 5 — Navigation switching works between placeholders
+# Test 5 — Navigation switching works between pages
 # ============================================================
 
 
@@ -207,10 +215,11 @@ def test_9_construction_imports_no_trading_module():
             "banned = ('brokers', 'market', 'core', 'main')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
             "assert not leaked, f'UI foundation imported trading modules: {leaked}'",
-            "# UI-2.1: only the Account model may be reused from models/",
+            "# UI-2.1/UI-3.1: only whitelisted model constants are reused",
             "allowed = {m for m in sys.modules if m.split('.')[0] == 'models'}",
-            "assert allowed <= {'models', 'models.account'}, ("
-            "f'unexpected models modules imported: {allowed - {\'models\', \'models.account\'}}')",
+            "whitelist = {'models', 'models.account', 'models.order', 'models.instrument'}",
+            "assert allowed <= whitelist, ("
+            "f'unexpected models modules imported: {allowed - whitelist}')",
             "assert not hasattr(window, 'broker_manager')",
             "assert not hasattr(window, 'order_engine')",
             "print('NO_TRADING_MODULE_OK')",

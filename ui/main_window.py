@@ -44,6 +44,8 @@ from PySide6.QtWidgets import (
 
 from ui.account_store import AccountStore
 from ui.accounts_page import AccountsPage
+from ui.order_config_state import OrderConfiguration
+from ui.order_configuration_page import OrderConfigurationPage
 
 
 class ApplicationMode(Enum):
@@ -59,10 +61,12 @@ class ApplicationMode(Enum):
 
 
 # Navigation entries of the User Application (order = navigation order).
-NAVIGATION_ITEMS = ("Home", "Accounts", "Settings")
+# "Order Configuration" was added by UI-3.1 after the existing entries;
+# the original UI-1 order is preserved.
+NAVIGATION_ITEMS = ("Home", "Accounts", "Order Configuration", "Settings")
 
 # Entries whose page is still a placeholder (Home/Settings). Accounts is a
-# real page since UI-2.1.
+# real page since UI-2.1; Order Configuration is real since UI-3.1.
 PLACEHOLDER_ITEMS = ("Home", "Settings")
 
 
@@ -76,7 +80,8 @@ class MainWindow(QMainWindow):
         | navigation panel  |  content area (current page)  |
         |  Home             |                               |
         |  Accounts         |   AccountsPage (real, UI-2.1) |
-        |  Settings         |   + placeholder pages         |
+        |  Order Config.    |   OrderConfigurationPage      |
+        |  Settings         |   (UI-3.1) + placeholders     |
         |                   |   (later UI-2 ... UI-8 pages) |
         + ------------------------------------------------- +
 
@@ -166,6 +171,17 @@ class MainWindow(QMainWindow):
         self.pages["Accounts"] = self.accounts_page
         self.content_area.addWidget(self.accounts_page)
 
+        # Order Configuration (UI-3.1): form/state only — no execution,
+        # no Order object, no Core/Broker/TSETMC access.
+        self.order_config = OrderConfiguration()
+        self.order_configuration_page = OrderConfigurationPage(
+            self.account_store,
+            config=self.order_config,
+            parent=self.content_area,
+        )
+        self.pages["Order Configuration"] = self.order_configuration_page
+        self.content_area.addWidget(self.order_configuration_page)
+
         self.select_page(NAVIGATION_ITEMS[0])
 
         # ---------------------------------------------
@@ -185,6 +201,12 @@ class MainWindow(QMainWindow):
         page = self.pages.get(name)
         if page is None:
             return
+        # UI-3.1: re-read live state when re-entering a page. The Order
+        # Configuration page re-mirrors the active account verbatim from
+        # the shared UI-2.1 AccountStore — never guessed from an index,
+        # symbol or broker.
+        if name == "Order Configuration":
+            self.order_configuration_page.refresh_active_account()
         self.content_area.setCurrentWidget(page)
         for entry_name, button in self.nav_buttons.items():
             button.setChecked(entry_name == name)
