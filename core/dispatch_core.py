@@ -44,8 +44,10 @@ Key responsibilities (Block 2 contract):
       M6-A (identity + trading state), M6-B (price/quantity), M6-C
       (BUY capacity), M6-D (SELL capacity), and M6-E (unified capacity)
       all still run unchanged.
-    - Stay dry-run by default: ``live`` is always False here; live trading
-      remains disabled until Block 10 and explicit human approval.
+    - Stay dry-run by default: ``live`` is False unless the Task 10.2
+      ``SafetyGate`` explicitly allows Live (Task 10.3 controlled bridge).
+      Live trading remains disabled until Block 10 and explicit human
+      approval.
     - Fail closed: any exception during dispatch produces
       ``DispatchResult(success=False, mode="BLOCKED", ...)``.
     - Record base timestamps (dispatch start/end) for Block 8 latency
@@ -74,6 +76,24 @@ Explicitly NOT implemented here (deferred to their blocks):
 
 The Dispatch Core does NOT touch ``core/dispatch_contracts.py`` and does
 NOT modify M6-A … M6-E or any Broker implementation.
+
+Task 10.3 — Controlled Live Dispatch (this module's only Block 10 change):
+
+The Task 10.2 ``SafetyGate`` is consumed here, at the exact boundary the
+Task 10.1 contract designated (the construction of ``BrokerDispatchRequest``
+inside ``_dispatch()``). ``DispatchCore`` is only the BRIDGE: it forwards
+the gate's decision to the ``live`` flag of the envelope. It does not
+duplicate gate logic, does not invent another permission system, and never
+independently decides that Live is allowed:
+
+    SafetyGate BLOCKED / missing / raising / invalid  →  live=False
+    SafetyGateDecision.allowed == True                →  live=True permitted
+
+A successful gate decision is NOT an execution: the envelope still travels
+the one existing path, so OrderEngine ``prepare()`` (M6-A … M6-E), the
+engine live guard, and the broker's own ``live_trading_enabled`` lock all
+still apply, unchanged and independently. With no gate supplied (or a
+gate that blocks), every dispatch remains exactly the pre-10.3 Dry Run.
 """
 
 from __future__ import annotations
@@ -102,6 +122,7 @@ from core.latency_instrumentation import (
     measure_broker_call,
 )
 from core.order_engine import OrderEngine
+from core.safety_gate import SafetyGate, SafetyGateDecision
 from models.account import Account
 
 
@@ -150,6 +171,7 @@ class DispatchCore:
         broker_manager: Optional[BrokerManager] = None,
         latency_clock: Optional["Callable[[], int]"] = None,
         broker_clock: Optional["Callable[[], int]"] = None,
+        safety_gate: Optional[SafetyGate] = None,
     ):
         self.broker_manager = broker_manager or BrokerManager()
         self.order_engine = OrderEngine()
@@ -157,6 +179,13 @@ class DispatchCore:
         # always False. This instance flag exists so callers can never
         # accidentally enable live dispatch (Block 10 owns that switch).
         self.live_trading_enabled = False
+        # Task 10.3: the ONLY source of a ``live=True`` envelope. The
+        # default ``None`` gate means no permission authority exists, so
+        # every envelope stays ``live=False`` (Dry Run default, fail-closed).
+        # The gate is consulted at the envelope boundary in ``_dispatch``;
+        # it never dispatches, never resolves components, and its decision
+        # is forwarded verbatim — never overridden here.
+        self.safety_gate = safety_gate
         # Task 8.2: injectable monotonic clock (defaults to
         # ``time.perf_counter_ns``) for the dispatch/stage layer. Only used by
         # ``dispatch_with_latency``; ``dispatch`` never creates a collector
@@ -178,7 +207,8 @@ class DispatchCore:
 
         Guards:
         - Fail-closed: any unexpected exception -> success=False, mode=BLOCKED.
-        - Dry-run only: ``live`` is always False.
+        - Dry-run by default: ``live`` is False unless the attached Safety
+          Gate explicitly allows Live (Task 10.3 controlled bridge).
         - No broker payload construction happens in this core.
 
         Returns a ``DispatchResult`` describing the overall attempt.
@@ -347,12 +377,16 @@ class DispatchCore:
                 # Normalized envelope (Block 0 contract). It is the real
                 # conduit of the dispatch path: routing builds it, the
                 # execution stage (`_execute_single_order`) consumes it.
+                #
+                # Task 10.3 — the single controlled live point: the final
+                # ``live`` value is assigned ONLY here, from the Task 10.2
+                # SafetyGate decision (fail-closed; Dry Run by default).
                 dispatch_request = BrokerDispatchRequest(
                     broker_name=broker_name,
                     order=order,
                     account=account,
                     instrument=instrument,
-                    live=False,  # dry-run always, until Block 10
+                    live=self._live_flag_for(sequence=sequence),
                     trace_id=trace_id,
                 )
 
@@ -408,6 +442,66 @@ class DispatchCore:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _live_flag_for(self, sequence: int) -> bool:
+        """
+        Task 10.3 — the single controlled producer of the envelope's
+        ``live`` flag, evaluated per sequence at the Dry Run → Live
+        boundary (the ``BrokerDispatchRequest`` construction point).
+
+        The rule is exactly the Task 10.1 contract, forwarded verbatim
+        from the Task 10.2 ``SafetyGate`` decision:
+
+            gate allowed (``SafetyGateDecision.allowed == True``)
+                    → ``True``  (live MAY be produced; the envelope then
+                      still passes the engine guard and the broker lock,
+                      which remain the authoritative executors of Live
+                      safety — a gate decision is NOT an execution);
+            gate BLOCKED / missing / decision invalid / exception
+                    → ``False`` (Dry Run; fail-closed, never fail-open).
+
+        This method decides nothing itself: it consumes the gate's
+        decision. No other component writes ``live=True`` into an
+        envelope, and ``live=True`` is never a default.
+        """
+        gate = self.safety_gate
+        if gate is None:
+            # No permission authority wired: Dry Run, fail-closed.
+            return False
+
+        try:
+            decision = gate.evaluate()
+        except Exception as exc:
+            # The gate itself never raises, but the contract forbids
+            # failing open even if a supplied gate misbehaves.
+            logger.warning(
+                "Safety gate raised during live evaluation "
+                "(trace sequence=%s); forcing live=False: %r",
+                sequence,
+                exc,
+            )
+            return False
+
+        if not isinstance(decision, SafetyGateDecision):
+            # Invalid decision shape = unverifiable permission → Dry Run.
+            logger.warning(
+                "Safety gate returned an invalid decision object "
+                "(trace sequence=%s); forcing live=False.",
+                sequence,
+            )
+            return False
+
+        if decision.allowed is not True:
+            logger.info(
+                "Safety gate blocked live dispatch (sequence=%s "
+                "blocked_by=%s reason=%s); live=False.",
+                sequence,
+                decision.blocked_by,
+                decision.reason,
+            )
+            return False
+
+        return True
 
     def _measure(
         self,
@@ -617,7 +711,7 @@ class DispatchCore:
             "ins_code": dispatch_request.order.nsc_id,
             "order": dispatch_request.order,
             "account": dispatch_request.account,
-            "live": dispatch_request.live,  # always False in Block 2
+            "live": dispatch_request.live,  # live comes from the BrokerDispatchRequest envelope; set ONLY by the Task 10.3 controlled SafetyGate bridge; Dry Run stays the default.
         }
         if broker_timing is not None:
             # Task 8.3: the measurement keyword is supplied ONLY when
