@@ -12,8 +12,9 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from unittest.mock import patch, MagicMock
-from models.trading_state import UNVERIFIED
+from models.trading_state import UNVERIFIED, TradingStateUnavailable
 from brokers.agaah.broker import AgaahBroker
+import requests
 
 
 class _StubBrokerInstrument:
@@ -32,7 +33,7 @@ class _StubTsetmc:
     def get_trading_state(self, ins_code):
         self.last_ins_code = ins_code
         if self._raise_error:
-            raise ConnectionError("network error")
+            raise requests.ConnectionError("network error")
         return self._states if self._states else []
 
 
@@ -134,9 +135,13 @@ def test_missing_cEtaval_blocks_order():
 
 
 def test_network_error_blocks_order():
-    result = _make_broker_and_patch(raise_error=True)
-    assert result.is_order_entry_allowed is False
-    assert result == UNVERIFIED
+    """Network error -> TradingStateUnavailable (fail-closed at query layer)."""
+    try:
+        _make_broker_and_patch(raise_error=True)
+    except TradingStateUnavailable as e:
+        assert "network error" in str(e)
+        return
+    assert False, "Expected TradingStateUnavailable to be raised"
 
 
 def test_invalid_response_blocks_order():
@@ -187,16 +192,20 @@ def test_missing_tse_id_returns_unverified():
     assert result == UNVERIFIED
 
 
-def test_get_instrument_failure_returns_unverified():
-    """If get_instrument fails, UNVERIFIED."""
+def test_get_instrument_failure_raises_trading_state_unavailable():
+    """If get_instrument fails with a source exception, TradingStateUnavailable is raised."""
     broker = AgaahBroker()
     with patch.object(
         broker,
         "get_instrument",
-        side_effect=Exception("lookup failed"),
+        side_effect=requests.ConnectionError("lookup failed"),
     ):
-        result = broker.get_trading_state("IRO1TEST0001")
-    assert result == UNVERIFIED
+        try:
+            broker.get_trading_state("IRO1TEST0001")
+        except TradingStateUnavailable as e:
+            assert "lookup failed" in str(e)
+            return
+    assert False, "Expected TradingStateUnavailable to be raised"
 
 
 if __name__ == "__main__":
@@ -216,7 +225,7 @@ if __name__ == "__main__":
         test_nsc_id_resolved_to_tse_id_for_tsetmc,
         test_ins_code_mismatch_blocks_order,
         test_missing_tse_id_returns_unverified,
-        test_get_instrument_failure_returns_unverified,
+        test_get_instrument_failure_raises_trading_state_unavailable,
     ]
     for test in tests:
         test()

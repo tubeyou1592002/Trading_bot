@@ -3,7 +3,7 @@ from typing import Optional, Tuple
 
 from models.broker_instrument import BrokerInstrument
 from models.instrument import Instrument
-from models.trading_state import TradingState
+from models.trading_state import TradingState, TradingStateUnavailable
 
 
 class InstrumentLookupError(Exception):
@@ -49,13 +49,22 @@ class Broker(ABC):
         """
         وضعیت معاملاتی نماد.
 
-        پیاده‌سازی این متد صریحاً به عهده هر broker است.
-        هیچ پیش‌فرض خاموشی در این لایه وجود ندارد؛
-        brokerای که منبع معتبری ندارد، باید صریحاً
-        `models.trading_state.UNVERIFIED` برگرداند یا
-        `models.trading_state.TradingStateUnavailable`
-        پرتاب کند. موتور سفارش، حالت UNVERIFIED یا
-        استثنای منبع را به‌صورت ایمن بلاک می‌کند.
+        Contract:
+        - موفقیت (منبع معتبر موجود و پاسخ‌دهی می‌کند) → ``TradingState``
+          با ``is_verified=True`` یا ``is_verified=False`` (منبع موجود ولی
+          وضعیت ناشناخته/مجاز نیست).
+        - منبع واقعی وضعیت معاملاتی در دسترس نیست (خطای شبکه،
+          قطعی سرویس، پاسخ نامعتبر، timeout) → پرتاب
+          ``TradingStateUnavailable``.
+          این استثنا *فقط* برایfailureهای واقعی runtime منبع است.
+        - Programming errors (``TypeError``، ``AttributeError``،
+          ``NotImplementedError``، ...) → **propagate** (catch نمی‌شوند).
+          Blِعیدن این خطاها باعث پنهان ماندن باگ‌ها می‌شود.
+
+        پیاده‌سازی باید این contract را رعایت کند.
+        موتور سفارش (OrderEngine/TradingStateQuery) فقط
+        ``TradingStateUnavailable`` را catch می‌کند و به ``UNVERIFIED``
+        تبدیل می‌کند. سایر exceptionها propagate می‌شوند.
         """
         pass
 

@@ -5,7 +5,7 @@ import requests
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
 from models.order import Order
-from models.trading_state import UNVERIFIED, TradingState
+from models.trading_state import UNVERIFIED, TradingState, TradingStateUnavailable
 from market.tsetmc import TSETMC
 
 from ..base import Broker
@@ -95,6 +95,16 @@ class AgaahBroker(Broker):
         وضعیت‌های `A ` و `AR` اجازه ارسال سفارش دارند.
         سایر وضعیت‌ها و هر وضعیت ناشناخته/خطا باعث
         Block شدن می‌شوند.
+
+        Contract:
+        - موفقیت (منبع معتبر موجود و پاسخ‌دهی می‌کند) → ``TradingState``
+          با ``is_verified=True`` یا ``is_verified=False`` (منبع موجود ولی
+          وضعیت ناشناخته/مجاز نیست).
+        - منبع واقعی وضعیت معاملاتی در دسترس نیست (خطای شبکه،
+          قطعی سرویس، پاسخ نامعتبر، timeout) → پرتاب
+          ``TradingStateUnavailable``.
+        - Programming errors (``TypeError``، ``AttributeError``،
+          ``NotImplementedError``، ...) → **propagate**.
         """
 
         if not nsc_id:
@@ -104,8 +114,10 @@ class AgaahBroker(Broker):
 
         try:
             broker_instrument = self.get_instrument(nsc_id)
-        except Exception:
-            return UNVERIFIED
+        except requests.RequestException as exc:
+            raise TradingStateUnavailable(
+                f"Failed to resolve instrument for nsc_id={nsc_id}: {exc}"
+            ) from exc
 
         ins_code = getattr(broker_instrument, "tse_id", None)
 
@@ -116,8 +128,10 @@ class AgaahBroker(Broker):
 
         try:
             states = tsetmc.get_trading_state(ins_code)
-        except Exception:
-            return UNVERIFIED
+        except requests.RequestException as exc:
+            raise TradingStateUnavailable(
+                f"Failed to get trading state for ins_code={ins_code}: {exc}"
+            ) from exc
 
         if not isinstance(states, list) or not states:
             return UNVERIFIED
