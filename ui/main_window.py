@@ -171,13 +171,18 @@ class MainWindow(QMainWindow):
         self.pages["Accounts"] = self.accounts_page
         self.content_area.addWidget(self.accounts_page)
 
-        # Order Configuration (UI-3.1): form/state only — no execution,
-        # no Order object, no Core/Broker/TSETMC access.
+        # Order Configuration (UI-3.1/3.2A): form/state + REAL symbol
+        # search through the existing market.SymbolResolver — resolved
+        # lazily via the factory below, so construction stays offline.
+        # No execution, no Order object, no Core/Broker access.
         self.order_config = OrderConfiguration()
         self.order_configuration_page = OrderConfigurationPage(
             self.account_store,
             config=self.order_config,
             parent=self.content_area,
+        )
+        self.order_configuration_page.set_resolver_factory(
+            self._real_symbol_resolver
         )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
@@ -195,6 +200,19 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------
     # Navigation (single navigation mechanism, unchanged)
     # ---------------------------------------------------------
+
+    def _real_symbol_resolver(self):
+        """
+        Lazily build the REAL repository resolver (market.SymbolResolver).
+
+        Called on the worker thread right before an actual search/resolve,
+        so MainWindow construction itself never imports market/
+        requests/TSETMC (offline contracts of UI-1..UI-3.1 preserved).
+        The resolver is REUSED — never copied or re-implemented.
+        """
+        from market.symbol_resolver import SymbolResolver
+
+        return SymbolResolver()
 
     def select_page(self, name):
         """Show the page of a navigation entry (no-op if unknown)."""

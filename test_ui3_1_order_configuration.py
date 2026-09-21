@@ -117,10 +117,17 @@ def test_2_symbol_state_exists(qapp, store):
     config.select_instrument(real)
     assert config.selected_instrument is real
 
-    # typing a symbol only mirrors text state — no resolution happens
+    # typing a symbol mirrors text state; per UI-3.2A §8 the previous
+    # selection is dropped EXPLICITLY and deterministically when new text
+    # is typed — typed text must never masquerade as the previously
+    # selected instrument until a real result is picked again.
     page.symbol_input.setCurrentText("آکو")
     assert page.symbol_text == "آکو"
-    assert config.selected_instrument is real  # untouched by typing
+    assert config.selected_instrument is None  # cleared on new typing
+
+    # a real selection can be (re)stored after picking a result
+    config.select_instrument(real)
+    assert config.selected_instrument is real
 
     # a non-instrument object is rejected — no fake instrument is created
     with pytest.raises(OrderConfigError):
@@ -435,10 +442,44 @@ def test_13_page_construction_performs_no_network_or_broker_operation():
 
 
 def test_14_ui_does_not_use_legacy_main():
-    """AST check: no ui/ module may import main/brokers/market/core."""
+    """
+    AST check: no ui/ module may import main/brokers/core or market
+    directly.
+
+    UI-3.2A seam: ``market.symbol_resolver`` is the ONE allowed import —
+    and only inside a function body (a lazy, per-search construction of
+    the real repository SymbolResolver handed to the background worker;
+    plain import-time / construction time stays offline). Any other
+    market.* import (e.g. market.tsetmc) remains banned — the UI never
+    touches TSETMC directly, only through the resolver.
+    """
     import ast
 
-    banned_top = {"main", "brokers", "market", "core"}
+    banned_top = {"main", "brokers", "core"}
+    allowed_market = {"market.symbol_resolver"}
+
+    def _check_import(module_name, node):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                assert root not in banned_top, (
+                    f"ui/{module_name} imports '{alias.name}'"
+                )
+                if root == "market":
+                    assert alias.name in allowed_market, (
+                        f"ui/{module_name} imports '{alias.name}' — only "
+                        f"{sorted(allowed_market)} is the allowed seam"
+                    )
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            assert root not in banned_top, (
+                f"ui/{module_name} imports from '{node.module}'"
+            )
+            if root == "market":
+                assert node.module in allowed_market, (
+                    f"ui/{module_name} imports from '{node.module}' — only "
+                    f"{sorted(allowed_market)} is the allowed seam"
+                )
 
     ui_dir = os.path.join(REPO_ROOT, "ui")
     for file_name in sorted(os.listdir(ui_dir)):
@@ -446,18 +487,27 @@ def test_14_ui_does_not_use_legacy_main():
             continue
         path = os.path.join(ui_dir, file_name)
         tree = ast.parse(open(path, encoding="utf-8").read())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    root = alias.name.split(".")[0]
-                    assert root not in banned_top, (
-                        f"ui/{file_name} imports '{alias.name}'"
-                    )
-            elif isinstance(node, ast.ImportFrom):
-                root = (node.module or "").split(".")[0]
-                assert root not in banned_top, (
-                    f"ui/{file_name} imports from '{node.module}'"
+        # market.symbol_resolver must be imported lazily — inside a
+        # function body, never at module import time.
+        for node in tree.body:  # module-level statements only
+            if isinstance(node, ast.ImportFrom) and node.module == (
+                "market.symbol_resolver"
+            ):
+                raise AssertionError(
+                    f"ui/{file_name} imports market.symbol_resolver at "
+                    "module level — the seam must stay lazy/offline"
                 )
+            if isinstance(node, ast.Import) and any(
+                alias.name == "market.symbol_resolver"
+                for alias in node.names
+            ):
+                raise AssertionError(
+                    f"ui/{file_name} imports market.symbol_resolver at "
+                    "module level — the seam must stay lazy/offline"
+                )
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                _check_import(file_name, node)
 
     import ui.main_window
 

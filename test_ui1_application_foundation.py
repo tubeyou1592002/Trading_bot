@@ -307,7 +307,12 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
     """
     import ast
 
-    banned_top = {"main", "brokers", "market", "core"}
+    banned_top = {"main", "brokers", "core"}
+    # UI-3.2A seam: ui/main_window.py imports the real repository
+    # resolver (market.symbol_resolver) LAZILY — inside a function, at
+    # actual search time — keeping construction offline. No other
+    # market.* import (e.g. market.tsetmc) is allowed anywhere in ui/.
+    allowed_market = {"market.symbol_resolver"}
 
     for module_name in ("__init__", "app", "main_window", "__main__"):
         path = os.path.join(REPO_ROOT, "ui", f"{module_name}.py")
@@ -319,11 +324,21 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
                     assert root not in banned_top, (
                         f"ui/{module_name}.py imports '{alias.name}'"
                     )
+                    if root == "market":
+                        assert alias.name in allowed_market, (
+                            f"ui/{module_name}.py imports '{alias.name}' — "
+                            f"only {sorted(allowed_market)} is allowed"
+                        )
             elif isinstance(node, ast.ImportFrom):
                 root = (node.module or "").split(".")[0]
                 assert root not in banned_top, (
                     f"ui/{module_name}.py imports from '{node.module}'"
                 )
+                if root == "market":
+                    assert node.module in allowed_market, (
+                        f"ui/{module_name}.py imports from '{node.module}' — "
+                        f"only {sorted(allowed_market)} is allowed"
+                    )
 
     import ui.main_window
 
