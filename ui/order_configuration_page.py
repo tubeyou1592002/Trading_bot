@@ -19,6 +19,19 @@ Presentation of the order-configuration form:
                      verified source; NEVER shown as tradable/permitted
                      (real trading state is a LATER task — never touched
                      here).
+    * Trading State — UI-3.2B: after a REAL instrument selection the
+                     status is read from the EXISTING project path
+                     (core.trading_state_query.TradingStateQuery →
+                     provider.get_instrument → broker.get_trading_state
+                     → TradingState) on a background QThread and
+                     rendered ONLY from the returned ``TradingState``:
+                     قابل معامله / غیرقابل معامله / نامشخص. Fail-closed:
+                     TradingStateUnavailable and UNVERIFIED are shown as
+                     نامشخص — never a crash, never "tradable". The raw
+                     broker status mapping is never duplicated in the UI;
+                     the state is never guessed from the symbol text,
+                     and a changed/cleared symbol always drops the
+                     previous instrument's state.
     * Side         — Buy / Sell radio pair bound to the real project
                      constants models.order.BUY / models.order.SELL
     * Price        — numeric input (basic input-level validation only)
@@ -36,13 +49,19 @@ Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
 update the results list — an older, late-finishing result is discarded.
 
-Boundaries: no OrderEngine, DispatchCore, SafetyGate, BrokerManager,
-InstrumentProvider, Broker API or direct TSETMC access from the UI; the
-only market seam is the real ``SymbolResolver`` (search/resolve) run on
-a background thread. No Order object is created; no ``nsc_id`` exists.
+Boundaries: no OrderEngine, DispatchCore, SafetyGate, BrokerManager
+run for ordering, no InstrumentProvider call, no Broker API and no
+direct TSETMC access from the UI; the only market seam is the real
+``SymbolResolver`` (search/resolve) run on a background thread, and the
+only state seam is the real ``TradingStateQuery`` (read-only) on a
+background thread. No Order object is created; no ``nsc_id`` exists.
 """
 
 from models.order import BUY, SELL
+from models.trading_state import (
+    TradingState,
+    TradingStateUnavailable,
+)
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -71,6 +90,7 @@ from ui.symbol_search_worker import (
     SymbolResolveWorker,
     SymbolSearchWorker,
 )
+from ui.trading_state_worker import TradingStateWorker
 
 # User-facing side labels — mapped 1:1 to the real project constants.
 SIDE_LABELS = ((BUY, "خرید"), (SELL, "فروش"))
@@ -88,6 +108,19 @@ RESULT_SEQUENCE_ROLE = Qt.UserRole + 1
 SEARCH_STATE_IDLE = ""
 SEARCH_STATE_SEARCHING = "Searching…"
 SEARCH_STATE_NO_RESULTS = "No symbols found"
+
+# UI-3.2B — user-facing trading-state labels, rendered ONLY from the
+# real ``TradingState`` the existing project path returned. The status
+# is never guessed from the symbol text and the raw broker mapping
+# stays inside the Core/broker path (Decision 020) — the UI renders
+# only the three verdicts below. Fail-closed: an unavailable/unverified
+# state is ALWAYS shown as unknown, never as tradable.
+STATUS_LABEL_TRADABLE = "قابل معامله"
+STATUS_LABEL_NOT_TRADABLE = "غیرقابل معامله"
+STATUS_LABEL_UNKNOWN = "نامشخص"
+
+# The status display before any query ran for the current selection.
+STATUS_PENDING_LABEL = "در حال دریافت…"
 
 
 class OrderConfigurationPage(QWidget):
@@ -117,6 +150,13 @@ class OrderConfigurationPage(QWidget):
         self._resolve_thread = None
         self._resolve_worker = None
 
+        # --- UI-3.2B: real trading-state display state -----------------
+        self._trading_state_factory = None  # set via set_trading_state_query_factory()
+        self._trading_state_thread = None
+        self._trading_state_worker = None
+        self._trading_state_instrument = None  # ins_code the shown state belongs to
+        self._trading_state_shown = None       # last TradingState actually rendered
+
         root_layout = QVBoxLayout(self)
 
         # ---------------------------------------------
@@ -142,7 +182,7 @@ class OrderConfigurationPage(QWidget):
         self.symbol_input = QComboBox(form_group)
         self.symbol_input.setEditable(True)
         self.symbol_input.lineEdit().setPlaceholderText(
-            "e.g. \u0622\u06a9\u0648 \u2014 resolved by the Core in a later task"
+            "e.g. \u0622\u06a9\u0648 — resolved by the Core in a later task"
         )
         self.symbol_input.lineEdit().textChanged.connect(self._on_symbol_edited)
         form_grid.addWidget(self.symbol_input, 0, 1)
@@ -175,7 +215,7 @@ class OrderConfigurationPage(QWidget):
         # --- Price ---------------------------------------------
         form_grid.addWidget(QLabel("Price:", form_group), 2, 0)
         self.price_input = QLineEdit(form_group)
-        self.price_input.setPlaceholderText("Rial \u2014 numeric")
+        self.price_input.setPlaceholderText("Rial — numeric")
         self.price_input.editingFinished.connect(self._on_price_changed)
         form_grid.addWidget(self.price_input, 2, 1)
 
@@ -195,12 +235,14 @@ class OrderConfigurationPage(QWidget):
         info_group = QGroupBox("Symbol Information", self)
         info_form = QFormLayout(info_group)
 
-        self.symbol_name_label = QLabel("\u2014", info_group)
+        self.symbol_name_label = QLabel("—", info_group)
         self.symbol_status_label = QLabel(
             f"Status: {SYMBOL_STATUS_NOT_AVAILABLE}", info_group
         )
+        self.trading_state_label = QLabel("—", info_group)
         info_form.addRow("Name:", self.symbol_name_label)
         info_form.addRow("Status:", self.symbol_status_label)
+        info_form.addRow("Trading State:", self.trading_state_label)
 
         root_layout.addWidget(info_group)
 
@@ -211,7 +253,7 @@ class OrderConfigurationPage(QWidget):
         amounts_group = QGroupBox("Amounts", self)
         amounts_form = QFormLayout(amounts_group)
 
-        self.base_amount_label = QLabel("\u2014", amounts_group)
+        self.base_amount_label = QLabel("—", amounts_group)
         self.fee_label = QLabel("Not available", amounts_group)
         self.final_amount_label = QLabel("Not available", amounts_group)
 
@@ -240,6 +282,19 @@ class OrderConfigurationPage(QWidget):
         thread, immediately before each real search/resolve.
         """
         self._resolver_factory = factory
+
+    def set_trading_state_query_factory(self, factory):
+        """
+        Provide the factory that builds the REAL trading-state query
+        seam (``core.trading_state_query.TradingStateQuery`` backed by
+        the real broker/provider pair).
+
+        Production hands in ``None`` (the lazily created repository
+        query is used); tests may inject a stub factory so no network is
+        ever touched. The factory is called on the worker thread,
+        immediately before a real state query runs.
+        """
+        self._trading_state_factory = factory
 
     def _on_symbol_edited(self, text):
         """
@@ -274,14 +329,18 @@ class OrderConfigurationPage(QWidget):
             self._debounce_timer.stop()
             self._set_search_status(SEARCH_STATE_IDLE)
             self.config.select_instrument(None)
+            self._clear_trading_state()
             self._refresh_symbol_info()
             return
 
         # New text invalidates the previous selection explicitly: typed
         # text must never be treated as the previously selected
-        # instrument until a real result is picked.
+        # instrument until a real result is picked. The previous
+        # trading state also belongs to the OLD instrument and must
+        # never be attributed to the new text (UI-3.2B).
         self._set_search_status(SEARCH_STATE_IDLE)
         self.config.select_instrument(None)
+        self._clear_trading_state()
         self._refresh_symbol_info()
 
         # Whitespace-only input never triggers a search.
@@ -361,7 +420,7 @@ class OrderConfigurationPage(QWidget):
             return
         for index, result in enumerate(results):
             item = QListWidgetItem(
-                f"{result.get('symbol') or ''} \u2014 {result.get('name') or ''}",
+                f"{result.get('symbol') or ''} — {result.get('name') or ''}",
                 self.results_list,
             )
             # The result's identity travels as the INDEX into the page's
@@ -463,6 +522,7 @@ class OrderConfigurationPage(QWidget):
             return
         self._set_search_status(SEARCH_STATE_IDLE)
         self._refresh_symbol_info()
+        self._start_trading_state_query(instrument)
 
     def _on_resolve_failed(self, sequence, message):
         """Resolve failure: previous selection stays, nothing fabricated."""
@@ -471,19 +531,163 @@ class OrderConfigurationPage(QWidget):
         self._set_search_status(f"Resolve failed: {message}")
 
     # ---------------------------------------------------------
+    # Trading state display (UI-3.2B — read-only, fail-closed)
+    # ---------------------------------------------------------
+
+    def _clear_trading_state(self):
+        """
+        Drop the displayed trading state of the PREVIOUS instrument.
+
+        The old status must never survive a symbol change or be
+        attributed to the new typed text: the in-flight query for the
+        old instrument is invalidated (its ins_code can no longer match
+        the shown selection) and the display is reset.
+        """
+        self._trading_state_instrument = None
+        self._trading_state_shown = None
+        self._cancel_trading_state_query()
+        self.trading_state_label.setText("\u2014")
+
+    def _cancel_trading_state_query(self):
+        """
+        Invalidate any in-flight state query.
+
+        The running worker finishes on its own (its result is discarded
+        as stale by _on_trading_state_succeeded/failed) — no thread is
+        killed, and the worker is reaped by its own finished-cleanup.
+        """
+        self._trading_state_worker = None
+        self._trading_state_thread = None
+
+    def _start_trading_state_query(self, instrument):
+        """
+        After a REAL instrument selection, read its trading state from
+        the EXISTING project path on a background thread:
+
+            TradingStateQuery(ins_code)
+                → provider.get_instrument
+                → broker.get_trading_state(nsc_id)
+                → TradingState
+
+        The status is rendered ONLY from the returned ``TradingState``;
+        it is never guessed from the symbol text and the raw broker
+        mapping is never duplicated here — the UI renders only the
+        verdict the existing project path already decided. Any expected
+        failure is shown as unknown — never a crash, never "tradable".
+        """
+        self._clear_trading_state()
+        if instrument is None:
+            return
+
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code:
+            # No real identity → nothing to query; fail-closed display.
+            self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
+            return
+
+        self._trading_state_instrument = ins_code
+        self.trading_state_label.setText(STATUS_PENDING_LABEL)
+
+        worker = TradingStateWorker(
+            ins_code,
+            query_factory=self._trading_state_factory,
+            parent=self,
+        )
+        self._trading_state_worker = worker
+        self._trading_state_thread = worker
+        worker.state_succeeded.connect(self._on_trading_state_succeeded)
+        worker.state_failed.connect(self._on_trading_state_failed)
+        # Lifecycle: the worker forgets ITSELF the moment run() returns
+        # (same self-reaping pattern as the search/resolve workers).
+        worker.finished.connect(
+            lambda w=worker: self._forget_trading_state_worker(w)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _forget_trading_state_worker(self, worker):
+        """Drop one finished trading-state worker (all paths)."""
+        if self._trading_state_thread is worker:
+            self._trading_state_thread = None
+            self._trading_state_worker = None
+
+    def wait_for_trading_state_workers(self, timeout_ms=5000):
+        """
+        Wait (bounded) for the background state query thread to finish.
+        Used by tests for deterministic teardown; production never needs
+        to call this.
+        """
+        thread = self._trading_state_thread
+        if thread is not None and not thread.wait(timeout_ms):
+            raise TimeoutError("trading-state worker thread did not finish")
+
+    def _on_trading_state_succeeded(self, ins_code, state):
+        """
+        Render the returned ``TradingState`` — but ONLY if it still
+        belongs to the currently selected instrument.
+
+        A late result for a symbol the user already replaced is
+        discarded: the old status can never be attributed to the new
+        symbol or to bare typed text.
+        """
+        if ins_code != self._trading_state_instrument:
+            return  # stale query — discarded deterministically
+        if not isinstance(state, TradingState):
+            # Anything unexpected from the seam is unknown (fail-closed).
+            self._render_trading_state(STATUS_LABEL_UNKNOWN)
+            return
+        self._trading_state_shown = state
+        self._render_trading_state(self._trading_state_text(state))
+
+    def _on_trading_state_failed(self, ins_code, message):
+        """
+        The query seam reported a failure (e.g. the expected
+        TradingStateUnavailable path): the UI must not crash and the
+        status is shown as unknown — never tradable, never fabricated.
+        """
+        if ins_code != self._trading_state_instrument:
+            return  # stale query — discarded deterministically
+        self._trading_state_shown = None
+        self._render_trading_state(STATUS_LABEL_UNKNOWN)
+
+    @staticmethod
+    def _trading_state_text(state):
+        """
+        Map a REAL ``TradingState`` to its user-facing label.
+
+        Exactly the three fail-closed branches the project contract
+        defines — no new vocabulary is invented here, and anything that
+        is not a real ``TradingState`` is unknown (fail-closed):
+
+            is_verified and allowed      → قابل معامله
+            is_verified and not allowed  → غیرقابل معامله
+            anything else (UNVERIFIED,
+            unknown source, ...)         → نامشخص
+        """
+        if isinstance(state, TradingState):
+            if state.is_verified and state.is_order_entry_allowed:
+                return STATUS_LABEL_TRADABLE
+            if state.is_verified:
+                return STATUS_LABEL_NOT_TRADABLE
+        return STATUS_LABEL_UNKNOWN
+
+    def _render_trading_state(self, text):
+        self.trading_state_label.setText(text)
+
+    # ---------------------------------------------------------
     # Symbol info / status display
     # ---------------------------------------------------------
 
     def _refresh_symbol_info(self):
         instrument = self.config.selected_instrument
         if instrument is None:
-            self.symbol_name_label.setText("\u2014")
+            self.symbol_name_label.setText("—")
         else:
             # Display comes from the REAL Instrument object only.
             market = getattr(instrument, "market", None)
             market_part = f" ({market})" if market else ""
             self.symbol_name_label.setText(
-                f"{getattr(instrument, 'symbol', '')} \u2014 "
+                f"{getattr(instrument, 'symbol', '')} — "
                 f"{getattr(instrument, 'name', '')}{market_part}"
             )
         # Fail-closed display: without a verified source this is never
@@ -541,7 +745,7 @@ class OrderConfigurationPage(QWidget):
         # base is an int (price * quantity, both int per the Core Order
         # contract) — format it as a plain integer, no scientific notation.
         self.base_amount_label.setText(
-            "\u2014" if base is None else f"{base:,}".replace(",", "\u066c")
+            "—" if base is None else f"{base:,}".replace(",", "\u066c")
         )
         # Fee / Final Amount: no contract exists — never fabricated.
         self.fee_label.setText("Not available")
@@ -555,7 +759,7 @@ class OrderConfigurationPage(QWidget):
         active_id = self.store.active_account_id()
         if active_id is None:
             # No fallback to accounts[0]/first/default — shown transparently.
-            return "No active account \u2014 select one on the Accounts page"
+            return "No active account — select one on the Accounts page"
         record = self.store.get(active_id)
         return f"{record.account_id} → {record.broker_name}"
 

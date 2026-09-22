@@ -184,6 +184,13 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_resolver_factory(
             self._real_symbol_resolver
         )
+        # UI-3.2B: the trading-state display reads the status through the
+        # EXISTING read-only TradingStateQuery seam, built lazily (only
+        # when a real state is actually queried) so construction stays
+        # offline. No Order, no submission path, no ordering call.
+        self.order_configuration_page.set_trading_state_query_factory(
+            self._real_trading_state_query
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 
@@ -213,6 +220,26 @@ class MainWindow(QMainWindow):
         from market.symbol_resolver import SymbolResolver
 
         return SymbolResolver()
+
+    def _real_trading_state_query(self):
+        """
+        Lazily build the REAL read-only trading-state query seam
+        (core.trading_state_query.TradingStateQuery) backed by the real
+        BrokerManager broker/provider pair — the same path the Core
+        already uses; nothing new is implemented here.
+
+        Called on the worker thread right before an actual state query,
+        so MainWindow construction never imports brokers/core (offline
+        contracts of UI-1..UI-3.1 preserved). Read-only: it never
+        creates, submits or dispatches an Order.
+        """
+        from brokers.manager import BrokerManager
+        from core.trading_state_query import TradingStateQuery
+
+        manager = BrokerManager()
+        broker = manager.get("آگاه")
+        provider = manager.get_instrument_provider("آگاه")
+        return TradingStateQuery(broker, provider)
 
     def select_page(self, name):
         """Show the page of a navigation entry (no-op if unknown)."""

@@ -600,7 +600,20 @@ def test_17_no_real_network_in_tests_or_page():
             "                          name=result['name'],",
             "                          ins_code=result['ins_code'])",
             "",
+            # The instrument selection below also triggers the UI-3.2B
+            # trading-state display path. TradingState is NOT what this
+            # test is about — inject the page's EXISTING stub seam so the
+            # selection starts a stub-backed TradingStateWorker (pure
+            # in-memory, no Broker seam) instead of the real one. The
+            # thread is still joined before the process exits, so shutdown
+            # stays clean (0xC0000409 came from a live worker at exit).
+            "class _StubQuery:",
+            "    def get_trading_state(self, ins_code):",
+            "        from models.trading_state import TradingStateUnavailable",
+            "        raise TradingStateUnavailable('not part of test 17')",
+            "",
             "page.set_resolver_factory(lambda: _Stub())",
+            "page.set_trading_state_query_factory(lambda: _StubQuery())",
             "page.symbol_input.setCurrentText('آکو')",
             "page._debounce_timer.stop()",
             "page._start_symbol_search()",
@@ -609,9 +622,24 @@ def test_17_no_real_network_in_tests_or_page():
             "assert page.results_list.count() == 1",
             "page._on_result_selected(page.results_list.item(0))",
             "page.wait_for_workers(10000)",
+            # Join the stub-backed trading-state thread before exit so
+            # the child never tears down a live QThread at shutdown.
+            "page.wait_for_trading_state_workers(10000)",
             "app.processEvents()",
             "assert page.config.selected_instrument is not None",
             "assert page.config.selected_instrument.symbol == 'آکو'",
+            # Deterministic Qt teardown BEFORE interpreter exit: finished
+            # workers' deleteLater is processed and the page/app C++
+            # objects are destroyed explicitly, so finalization never has
+            # to destroy live/pending Qt objects (that race was the
+            # source of the flaky 0xC0000409 at child shutdown).
+            "page.deleteLater()",
+            "app.processEvents()",
+            "del page",
+            "app.quit()",
+            "del app",
+            "import gc",
+            "gc.collect()",
             "print('NO_NETWORK_OK')",
         ]
     )
@@ -651,18 +679,71 @@ def test_18_tsetmc_trading_state_never_called(qapp, store):
     assert page.config.symbol_status() == "Not available"
     assert "Status: Not available" in page.symbol_status_label.text()
     assert "tradable" not in page.symbol_status_label.text().lower()
-    # the page never imports or calls TSETMC/TradingState
-    import sys as _sys
-
-    assert "market.tsetmc" not in _sys.modules or True  # subprocess check below
+    # The UI never touches TSETMC itself: no import of market.tsetmc,
+    # no code reference to it, and no mapping of the raw TSETMC fields
+    # (cEtaval / cEtavalTitle). The ONLY trading-state path the page may
+    # use is the EXISTING read-only TradingStateQuery seam via
+    # TradingStateWorker (UI-3.2B) — so consuming TradingState /
+    # TradingStateWorker / TradingStateQuery / get_trading_state is
+    # allowed; the boundary tested here is ONLY direct TSETMC access
+    # and direct raw-field mapping. The seam contract itself is
+    # asserted in test_ui3_2b_trading_state_display.py.
+    import ast
     import inspect
 
     import ui.order_configuration_page as mod
 
     src = inspect.getsource(mod)
-    assert "get_trading_state" not in src
-    assert "TradingState" not in src
+    tree = ast.parse(src)
+
+    # Docstrings are documentation (they legitimately describe the
+    # boundary) — they are excluded; every real CODE reference counts.
+    docstring_values = set()
+    for node in ast.walk(tree):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            first = node.body[0] if node.body else None
+            if (
+                isinstance(first, ast.Expr)
+                and isinstance(first.value, ast.Constant)
+                and isinstance(first.value.value, str)
+            ):
+                docstring_values.add(id(first.value))
+
+    offenders = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders += [
+                f"import {alias.name}"
+                for alias in node.names
+                if "tsetmc" in alias.name.lower()
+            ]
+        elif isinstance(node, ast.ImportFrom):
+            if "tsetmc" in (node.module or "").lower():
+                offenders.append(f"from {node.module} import ...")
+        elif isinstance(node, ast.Attribute) and "tsetmc" in node.attr.lower():
+            offenders.append(f"attribute .{node.attr}")
+        elif isinstance(node, ast.Name) and "tsetmc" in node.id.lower():
+            offenders.append(f"name {node.id}")
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstring_values
+            and "tsetmc" in node.value.lower()
+        ):
+            offenders.append(f"string {node.value!r}")
+
+    assert not offenders, (
+        "ui.order_configuration_page touches TSETMC directly: "
+        + ", ".join(offenders)
+    )
+
+    # The raw TSETMC field mapping never leaks into the UI — the verdict
+    # comes from the seam's TradingState, never from the broker's raw
+    # payload fields.
     assert "cEtaval" not in src
+    assert "cEtavalTitle" not in src
 
 
 # ============================================================
