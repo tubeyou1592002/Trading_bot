@@ -2534,6 +2534,14 @@ Next step: UI-2.2 — Order Configuration
 * محاسبه مبلغ نهایی
 * Broker Calculator در صورت نیاز
 
+#### UI-3.2B — Trading State Display
+
+**Status:** COMPLETED — reviewed and approved; committed as `a614597`; changes pushed to `origin/master`.
+**Commit:** `a614597`
+**Commit message:** `feat: add trading state display to order configuration`
+
+* **Tests:** UI-3.2A tests: 30/30 passed (`test_ui3_2a_symbol_search.py`)؛ UI-3.2B tests: 12/12 passed (`test_ui3_2b_trading_state_display.py`).
+
 #### UI-4 — Order Queue
 
 * آماده‌سازی سفارش مستقل برای هر Account
