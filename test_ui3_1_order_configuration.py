@@ -22,7 +22,7 @@ Contract coverage:
     Test 13 — Constructing the page performs no network/API/TSETMC/Broker
               operation (socket silence in a clean subprocess).
     Test 14 — main.py / SymbolSearchWindow stay untouched (AST import
-              check over ui/).
+              check over ui/; UI-3.2A/3.2B lazy seams allowed).
     Test 15 — UI-1 and UI-2.1 regression contracts preserved
               (navigation, mode, placeholders, account store behavior).
 
@@ -452,33 +452,61 @@ def test_14_ui_does_not_use_legacy_main():
     plain import-time / construction time stays offline). Any other
     market.* import (e.g. market.tsetmc) remains banned — the UI never
     touches TSETMC directly, only through the resolver.
+    UI-3.2B seam: ``brokers.manager`` + ``core.trading_state_query`` are
+    allowed only as the lazy factory path that builds the EXISTING
+    read-only TradingStateQuery (offline construction preserved); any
+    other brokers.* / core.* import remains banned.
     """
     import ast
 
     banned_top = {"main", "brokers", "core"}
     allowed_market = {"market.symbol_resolver"}
+    allowed_brokers = {"brokers.manager"}
+    allowed_core = {"core.trading_state_query"}
 
     def _check_import(module_name, node):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]
-                assert root not in banned_top, (
-                    f"ui/{module_name} imports '{alias.name}'"
-                )
                 if root == "market":
                     assert alias.name in allowed_market, (
                         f"ui/{module_name} imports '{alias.name}' — only "
                         f"{sorted(allowed_market)} is the allowed seam"
                     )
+                elif root == "brokers":
+                    assert alias.name in allowed_brokers, (
+                        f"ui/{module_name} imports '{alias.name}' — only "
+                        f"{sorted(allowed_brokers)} is the allowed seam"
+                    )
+                elif root == "core":
+                    assert alias.name in allowed_core, (
+                        f"ui/{module_name} imports '{alias.name}' — only "
+                        f"{sorted(allowed_core)} is the allowed seam"
+                    )
+                else:
+                    assert root not in banned_top, (
+                        f"ui/{module_name} imports '{alias.name}'"
+                    )
         elif isinstance(node, ast.ImportFrom):
             root = (node.module or "").split(".")[0]
-            assert root not in banned_top, (
-                f"ui/{module_name} imports from '{node.module}'"
-            )
             if root == "market":
                 assert node.module in allowed_market, (
                     f"ui/{module_name} imports from '{node.module}' — only "
                     f"{sorted(allowed_market)} is the allowed seam"
+                )
+            elif root == "brokers":
+                assert node.module in allowed_brokers, (
+                    f"ui/{module_name} imports from '{node.module}' — only "
+                    f"{sorted(allowed_brokers)} is the allowed seam"
+                )
+            elif root == "core":
+                assert node.module in allowed_core, (
+                    f"ui/{module_name} imports from '{node.module}' — only "
+                    f"{sorted(allowed_core)} is the allowed seam"
+                )
+            else:
+                assert root not in banned_top, (
+                    f"ui/{module_name} imports from '{node.module}'"
                 )
 
     ui_dir = os.path.join(REPO_ROOT, "ui")

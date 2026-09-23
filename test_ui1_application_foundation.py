@@ -14,6 +14,8 @@ Contract coverage:
     Test 7  — Mode can change to DIAGNOSTIC.
     Test 8  — Invalid mode values are rejected.
     Test 9  — Constructing MainWindow imports NO core/brokers/market/main
+              (models: Account / Order side / Instrument / TradingState
+              whitelisted domain reuse only).
               module (models is allowed only via the whitelisted reuse of
               domain models: Account, Order side BUY/SELL, Instrument).
     Test 10 — Constructing the UI performs no network/API/login operation
@@ -215,9 +217,9 @@ def test_9_construction_imports_no_trading_module():
             "banned = ('brokers', 'market', 'core', 'main')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
             "assert not leaked, f'UI foundation imported trading modules: {leaked}'",
-            "# UI-2.1/UI-3.1: only whitelisted model constants are reused",
+            "# UI-2.1/UI-3.1/UI-3.2B: only whitelisted model modules",
             "allowed = {m for m in sys.modules if m.split('.')[0] == 'models'}",
-            "whitelist = {'models', 'models.account', 'models.order', 'models.instrument'}",
+            "whitelist = {'models', 'models.account', 'models.order', 'models.instrument', 'models.trading_state'}",
             "assert allowed <= whitelist, ("
             "f'unexpected models modules imported: {allowed - whitelist}')",
             "assert not hasattr(window, 'broker_manager')",
@@ -304,6 +306,8 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
 
     Checked via AST: no real `import main` / `from main import ...` node
     may exist in any ui/ module (docstring mentions are harmless).
+    UI-3.2A/3.2B: only the documented lazy seams (market.symbol_resolver,
+    brokers.manager, core.trading_state_query) are allowed.
     """
     import ast
 
@@ -313,6 +317,12 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
     # actual search time — keeping construction offline. No other
     # market.* import (e.g. market.tsetmc) is allowed anywhere in ui/.
     allowed_market = {"market.symbol_resolver"}
+    # UI-3.2B seam: the trading-state display builds the EXISTING
+    # read-only TradingStateQuery path LAZILY (inside the factory
+    # function), so construction stays offline — same pattern as the
+    # UI-3.2A resolver. No other brokers.* / core.* import is allowed.
+    allowed_brokers = {"brokers.manager"}
+    allowed_core = {"core.trading_state_query"}
 
     for module_name in ("__init__", "app", "main_window", "__main__"):
         path = os.path.join(REPO_ROOT, "ui", f"{module_name}.py")
@@ -321,23 +331,45 @@ def test_11_new_ui_does_not_use_legacy_main(qapp):
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".")[0]
-                    assert root not in banned_top, (
-                        f"ui/{module_name}.py imports '{alias.name}'"
-                    )
                     if root == "market":
                         assert alias.name in allowed_market, (
                             f"ui/{module_name}.py imports '{alias.name}' — "
                             f"only {sorted(allowed_market)} is allowed"
                         )
+                    elif root == "brokers":
+                        assert alias.name in allowed_brokers, (
+                            f"ui/{module_name}.py imports '{alias.name}' — "
+                            f"only {sorted(allowed_brokers)} is allowed"
+                        )
+                    elif root == "core":
+                        assert alias.name in allowed_core, (
+                            f"ui/{module_name}.py imports '{alias.name}' — "
+                            f"only {sorted(allowed_core)} is allowed"
+                        )
+                    else:
+                        assert root not in banned_top, (
+                            f"ui/{module_name}.py imports '{alias.name}'"
+                        )
             elif isinstance(node, ast.ImportFrom):
                 root = (node.module or "").split(".")[0]
-                assert root not in banned_top, (
-                    f"ui/{module_name}.py imports from '{node.module}'"
-                )
                 if root == "market":
                     assert node.module in allowed_market, (
                         f"ui/{module_name}.py imports from '{node.module}' — "
                         f"only {sorted(allowed_market)} is allowed"
+                    )
+                elif root == "brokers":
+                    assert node.module in allowed_brokers, (
+                        f"ui/{module_name}.py imports from '{node.module}' — "
+                        f"only {sorted(allowed_brokers)} is allowed"
+                    )
+                elif root == "core":
+                    assert node.module in allowed_core, (
+                        f"ui/{module_name}.py imports from '{node.module}' — "
+                        f"only {sorted(allowed_core)} is allowed"
+                    )
+                else:
+                    assert root not in banned_top, (
+                        f"ui/{module_name}.py imports from '{node.module}'"
                     )
 
     import ui.main_window
