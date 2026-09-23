@@ -2342,7 +2342,7 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| UI | User Interface | Block 10 | NOT STARTED |
+| UI | User Interface | Block 10 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
 
@@ -2536,11 +2536,26 @@ Next step: UI-2.2 — Order Configuration
 
 #### UI-3.2B — Trading State Display
 
-**Status:** COMPLETED — reviewed and approved; committed as `a614597`; changes pushed to `origin/master`.
-**Commit:** `a614597`
-**Commit message:** `feat: add trading state display to order configuration`
+**Status:** COMPLETED — reviewed and approved; implementation committed as `a614597` (pushed to `origin/master`); documentation / test-contract follow-up committed as `4fc49e3`.
+**Commit (implementation):** `a614597` — `feat: add trading state display to order configuration`
+**Commit (test-contract follow-up):** `4fc49e3` — `test: update UI import contracts for trading state`
 
-* **Tests:** UI-3.2A tests: 30/30 passed (`test_ui3_2a_symbol_search.py`)؛ UI-3.2B tests: 12/12 passed (`test_ui3_2b_trading_state_display.py`).
+* **Files added (implementation, `a614597`):** `ui/trading_state_worker.py`, `test_ui3_2b_trading_state_display.py`; `ui/order_configuration_page.py` (display row + fail-closed rendering) and `ui/main_window.py` (lazy real query factory wiring) extended.
+* **Files changed (follow-up, `4fc49e3`):** `test_ui1_application_foundation.py`, `test_ui3_1_order_configuration.py` — **test contracts only**. The allowlist / AST import contracts of the UI-1 and UI-3.1 suites were updated to recognize the existing lazy UI-3.2B seams (`brokers.manager`, `core.trading_state_query`, `models.trading_state`), exactly like UI-3.2A did for `market.symbol_resolver`. **No production code was changed** by `4fc49e3`.
+* **Preserved architecture (unchanged):**
+
+```text
+UI → TradingStateWorker → core.trading_state_query.TradingStateQuery
+    → BrokerManager / InstrumentProvider → Agah Broker → TSETMC
+```
+
+  TSETMC remains the authoritative source of Trading State (per Decision 020). The UI never calls TSETMC directly and never interprets the raw `cEtaval` / `cEtavalTitle` fields — the mapping stays exactly where the project already defines it (`brokers/agaah/broker.py`, Decision 020). `core/trading_state_query.py` is reused as-is as the existing read-only seam; **no** new `market/trading_state.py` or `market/trading_state_query.py` is part of the architecture.
+* **Behavioral contract covered:** verified tradable → «قابل معامله»؛ verified blocked → «غیرقابل معامله»؛ unverified, unavailable, and any query error → fail-closed «نامشخص» (never tradable, never a crash). Changing or clearing the symbol drops the previous instrument's state — the old status is never attributed to the new text. The Trading State path creates, submits, or dispatches no Order (no OrderEngine / DispatchCore / SafetyGate / BrokerManager-for-order usage).
+* **Production impact:** none — the implementation did not change the production architecture (`core/`, `brokers/`, `market/`, `models/`, `OrderEngine` and the real order execution path untouched).
+* **Tests:** UI-3.2B `12/12` (`test_ui3_2b_trading_state_display.py`)؛ UI-3.2A `30/30` (`test_ui3_2a_symbol_search.py`)؛ `test_trading_state_query.py` `29/29`؛ `test_ui1_application_foundation.py` `13/13`؛ UI-3.1 suite passing (its price/quantity dialog tests require an interactive Qt platform — pre-existing UI-3.1 characteristic, not related to UI-3.2B). Final targeted run after `4fc49e3`: **84 passed**.
+* **Known issues:** هیچ. (The pre-existing offscreen `QMessageBox` behavior of the UI-3.1 price/quantity inputs is unrelated to this task.)
+
+Next step: UI-4 — Order Queue
 
 #### UI-4 — Order Queue
 
@@ -2623,7 +2638,7 @@ Next step: UI-2.2 — Order Configuration
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — IN PROGRESS (UI-1 completed)`
+`UI / User Application — IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed)`
 
 ---
 

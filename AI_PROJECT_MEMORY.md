@@ -2135,6 +2135,14 @@ The following are explicitly **not** part of M6-E:
 - **M6 preflight core complete: M6-A through M6-E all implemented.**
 - **M6-F / Order Splitting: Deferred / Future Development** — out of scope per Architect decision; no implementation planned at this stage.
 
+### User Application (UI) Status
+- UI-1 Application Foundation: **COMPLETED** (`d73f3e0`)
+- UI-2 / UI-2.1 Account & Broker Management: **COMPLETED** (`283f58`)
+- UI-3 Order Configuration: **COMPLETED** — UI-3.1 (`97283c5`), UI-3.2A Symbol Search (`d14a8d2`), UI-3.2B Trading State Display (`a614597`)
+- UI-3.2B follow-up (`4fc49e3`): **test-contract only** — updated the UI-1 / UI-3.1 import allowlists for the existing lazy UI-3.2B seams (`brokers.manager`, `core.trading_state_query`, `models.trading_state`); **no production code changed**. Final targeted tests: **84 passed**.
+- Trading State display path (unchanged, read-only): `UI → TradingStateWorker → core.trading_state_query.TradingStateQuery → BrokerManager / InstrumentProvider → Agah Broker → TSETMC`. TSETMC stays the authoritative source (Decision 020); the UI never calls TSETMC directly and never interprets raw `cEtaval` / `cEtavalTitle`. Unverified / unavailable / error states are fail-closed «نامشخص»; the path creates, submits, or dispatches no Order.
+- Next roadmap step: **UI-4 — Order Queue**. Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
+
 
 
 \---
