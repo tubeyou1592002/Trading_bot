@@ -44,26 +44,44 @@ Presentation of the order-configuration form:
     * Active account — read verbatim from the existing AccountStore
                      (UI-2.1); never guessed from an index/symbol/broker;
                      clearly shown when no account is active.
+    * Order Queue  — UI-4: a real "Add to Queue" action that prepares ONE
+                      models.order.Order (real nsc_id resolved through the
+                      broker provider off the GUI thread) and appends it
+                      to the EXISTING core.order_queue.OrderQueue together
+                      with the active account/broker binding — plus a
+                      visible queue list rendered ONLY from
+                      ``OrderQueue.list_pending()`` (the exact queued
+                      objects, never clones).
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
 update the results list — an older, late-finishing result is discarded.
 
+Stale-result protection (UI-4): a resolved nsc_id belongs to one
+(ins_code, broker_name) pair only — a symbol change or an account
+switch always drops it (fail-closed) and never binds another broker's
+identity to the new selection.
+
 Boundaries: no OrderEngine, DispatchCore, SafetyGate, BrokerManager
-run for ordering, no InstrumentProvider call, no Broker API and no
-direct TSETMC access from the UI; the only market seam is the real
-``SymbolResolver`` (search/resolve) run on a background thread, and the
-only state seam is the real ``TradingStateQuery`` (read-only) on a
-background thread. No Order object is created; no ``nsc_id`` exists.
+run for ordering, no Broker API call from the UI, and no direct TSETMC
+access from the UI; the only market seam is the real ``SymbolResolver``
+(search/resolve) run on a background thread, the only state seam is the
+real ``TradingStateQuery`` (read-only) on a background thread, the only
+identity seam is the broker ``InstrumentProvider.get_nsc_id(ins_code)``
+(read-only, background thread) and the only holder is the existing
+``OrderQueue`` (lazy — the first queue access, never at construction).
+The UI creates an ``Order`` ONLY on the explicit Add-to-Queue action,
+always fail-closed: without a selected Instrument, side, price,
+quantity, resolved nsc_id and an active account nothing is queued.
 """
 
-from models.order import BUY, SELL
+from models.order import BUY, SELL, Order
 from models.trading_state import (
     TradingState,
     TradingStateUnavailable,
 )
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -75,6 +93,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPushButton,
     QRadioButton,
     QVBoxLayout,
     QWidget,
@@ -122,13 +141,107 @@ STATUS_LABEL_UNKNOWN = "نامشخص"
 # The status display before any query ran for the current selection.
 STATUS_PENDING_LABEL = "در حال دریافت…"
 
+# UI-4 — the visible queue row's data role carries the EXACT
+# QueueEntry object; the display is never parsed back into an identity
+# and the order is never reconstructed for rendering.
+QUEUE_ENTRY_ROLE = Qt.UserRole + 2
+
+# UI-4 — user-facing queue feedback. Status is plain text rendered on
+# the page (no message box on a path that must stay fail-closed and
+# deterministic offscreen).
+QUEUE_STATUS_EMPTY = "No order queued yet — configure the form and click \"Add to Queue\""
+QUEUE_STATUS_NO_ACCOUNT = "Cannot queue: no active account — select one on the Accounts page"
+QUEUE_STATUS_NO_SYMBOL = "Cannot queue: no symbol selected"
+QUEUE_STATUS_INCOMPLETE = "Cannot queue: complete side, price and quantity"
+QUEUE_STATUS_NO_IDENTITY = "Cannot queue: the symbol's order identity is not resolved yet — reselect the symbol"
+QUEUE_STATUS_BROKER_STALE = "Cannot queue: the order identity belongs to a different broker — reselect the symbol"
+QUEUE_STATUS_QUEUED = "Order queued"
+
+
+def _default_order_identity_resolver(account_store):
+    """
+    Lazily build the REAL broker ``InstrumentProvider`` that maps a
+    TSETMC ``ins_code`` to a broker ``nscId``.
+
+    The provider of the ACTIVE account's broker is used — the binding is
+    never guessed and never fabricated. Nothing is built when no account
+    is active (fail-closed: the caller treats it as "no identity"). The
+    import is deferred so every page construction stays fully offline;
+    the provider itself performs no network call here.
+    """
+    from brokers.manager import BrokerManager
+
+    if account_store is None:
+        return None
+    active_id = account_store.active_account_id()
+    if not active_id:
+        return None
+    try:
+        record = account_store.get(active_id)
+    except ValueError:  # AccountStoreError — never guess an identity
+        return None
+    return BrokerManager().get_instrument_provider(record.broker_name)
+
+
+class _OrderIdentityWorker(QThread):
+    """
+    Resolves the broker ``nscId`` of one selected Instrument on a
+    background thread, through the EXISTING read-only provider seam
+    (``InstrumentProvider.get_nsc_id(ins_code)``).
+
+    ``resolver_factory()`` must return the real provider (production) or
+    a stub provider (tests). Plain ``run()`` thread: finishes by itself,
+    fully deterministic. Anything unexpected — a failing factory, a
+    missing resolver or a provider without a mapping — is reported as a
+    failure; the string result is never fabricated in the UI.
+    """
+
+    # (ins_code, nsc_id) — the nsc_id string travels as ``object`` so it
+    # is passed BY REFERENCE (no marshalling/copying of identity).
+    identity_succeeded = Signal(str, object)
+    # (ins_code, message) — resolution failed (no identity available).
+    identity_failed = Signal(str, str)
+
+    def __init__(self, ins_code, resolver_factory, parent=None):
+        super().__init__(parent)
+        self.ins_code = ins_code
+        self._resolver_factory = resolver_factory
+
+    def run(self):
+        try:
+            resolver = self._resolver_factory()
+        except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
+            self.identity_failed.emit(self.ins_code, str(exc))
+            return
+        if resolver is None:
+            # Fail-closed: no real identity source (e.g. no active
+            # account → no broker). Nothing may be guessed/emitted.
+            self.identity_failed.emit(
+                self.ins_code, "no broker identity resolver available"
+            )
+            return
+        try:
+            nsc_id = resolver.get_nsc_id(self.ins_code)
+        except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
+            self.identity_failed.emit(self.ins_code, str(exc))
+            return
+        if not isinstance(nsc_id, str) or not nsc_id:
+            nsc_id = None
+        self.identity_succeeded.emit(self.ins_code, nsc_id)
+
 
 class OrderConfigurationPage(QWidget):
     """
     Order Configuration page (form and state only — no execution).
     """
 
-    def __init__(self, account_store, config=None, parent=None):
+    def __init__(
+        self,
+        account_store,
+        config=None,
+        order_queue=None,
+        parent=None,
+    ):
         super().__init__(parent)
 
         self.store = account_store
@@ -156,6 +269,23 @@ class OrderConfigurationPage(QWidget):
         self._trading_state_worker = None
         self._trading_state_instrument = None  # ins_code the shown state belongs to
         self._trading_state_shown = None       # last TradingState actually rendered
+
+        # --- UI-4: queue + order-identity state ------------------------
+        # The EXISTING core OrderQueue is injected by tests (constructor
+        # seams, like the resolver/query factories); production keeps
+        # ``None`` and the page lazily builds the real queue on the FIRST
+        # real Add-to-Queue action (never at construction — offline).
+        self._injected_order_queue = order_queue
+        self._default_queue = None
+        # The nsc_id resolved for the CURRENT (ins_code, broker_name)
+        # pair — captured OFF the GUI thread at selection time, so the
+        # Add-to-Queue action itself never touches the network.
+        self._order_identity_factory = None  # set via set_order_identity_factory()
+        self._order_identity_thread = None
+        self._order_identity_worker = None
+        self._order_identity_instrument = None  # ins_code the nsc_id belongs to
+        self._order_identity_broker = None      # broker the nsc_id belongs to
+        self._order_nsc_id = None               # the resolved broker nscId
 
         root_layout = QVBoxLayout(self)
 
@@ -226,6 +356,13 @@ class OrderConfigurationPage(QWidget):
         self.quantity_input.editingFinished.connect(self._on_quantity_changed)
         form_grid.addWidget(self.quantity_input, 3, 1)
 
+        # --- Add to Queue (UI-4) --------------------------------
+        # Prepares ONE real Order (via the resolved nsc_id + the active
+        # account binding) and appends it to the EXISTING OrderQueue.
+        self.add_to_queue_button = QPushButton("Add to Queue", form_group)
+        self.add_to_queue_button.clicked.connect(self._on_add_to_queue)
+        form_grid.addWidget(self.add_to_queue_button, 4, 0, 1, 2)
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -263,6 +400,28 @@ class OrderConfigurationPage(QWidget):
 
         root_layout.addWidget(amounts_group)
 
+        # ---------------------------------------------
+        # Order Queue display (UI-4)
+        # ---------------------------------------------
+
+        queue_group = QGroupBox("Order Queue", self)
+        queue_layout = QVBoxLayout(queue_group)
+
+        self.queue_status_label = QLabel(QUEUE_STATUS_EMPTY, queue_group)
+        queue_layout.addWidget(self.queue_status_label)
+
+        # Visible pending-orders list — rendered ONLY from the existing
+        # ``OrderQueue.list_pending()`` at refresh time; left untouched
+        # at construction so no queue/core import ever runs offline.
+        self.queue_list = QListWidget(queue_group)
+        self.queue_list.setMaximumHeight(140)
+        queue_layout.addWidget(self.queue_list)
+
+        self.queue_count_label = QLabel("0 order(s) in queue", queue_group)
+        queue_layout.addWidget(self.queue_count_label)
+
+        root_layout.addWidget(queue_group)
+
         root_layout.addStretch(1)
 
         self._refresh_amounts()
@@ -295,6 +454,47 @@ class OrderConfigurationPage(QWidget):
         immediately before a real state query runs.
         """
         self._trading_state_factory = factory
+
+    def set_order_identity_factory(self, factory):
+        """
+        Provide the factory that builds the REAL order-identity resolver
+        (the broker ``InstrumentProvider`` exposing
+        ``get_nsc_id(ins_code)``).
+
+        Production hands in ``None`` (the lazily created provider for
+        the ACTIVE account's broker is used); tests may inject a stub
+        factory so no network is ever touched. The factory is called on
+        the worker thread, immediately before a real resolution runs.
+        """
+        self._order_identity_factory = factory
+
+    # ---------------------------------------------------------
+    # UI-4: the existing core OrderQueue (lazy, never at construction)
+    # ---------------------------------------------------------
+
+    @property
+    def order_queue(self):
+        """
+        The EXISTING ``core.order_queue.OrderQueue`` this page prepares
+        orders into.
+
+        Tests inject one through the constructor seam; production leaves
+        it to the lazy default below. Accessing the queue for the first
+        time imports ``core.order_queue`` — which happens on the first
+        real Add-to-Queue action, NEVER at construction (the offline
+        construction contracts stay intact).
+        """
+        if self._injected_order_queue is not None:
+            return self._injected_order_queue
+        return self._default_order_queue()
+
+    def _default_order_queue(self):
+        """Build the REAL repository queue once, lazily (on first use)."""
+        if self._default_queue is None:
+            from core.order_queue import OrderQueue
+
+            self._default_queue = OrderQueue()
+        return self._default_queue
 
     def _on_symbol_edited(self, text):
         """
@@ -330,6 +530,7 @@ class OrderConfigurationPage(QWidget):
             self._set_search_status(SEARCH_STATE_IDLE)
             self.config.select_instrument(None)
             self._clear_trading_state()
+            self._clear_order_identity()
             self._refresh_symbol_info()
             return
 
@@ -341,6 +542,7 @@ class OrderConfigurationPage(QWidget):
         self._set_search_status(SEARCH_STATE_IDLE)
         self.config.select_instrument(None)
         self._clear_trading_state()
+        self._clear_order_identity()
         self._refresh_symbol_info()
 
         # Whitespace-only input never triggers a search.
@@ -523,6 +725,9 @@ class OrderConfigurationPage(QWidget):
         self._set_search_status(SEARCH_STATE_IDLE)
         self._refresh_symbol_info()
         self._start_trading_state_query(instrument)
+        # UI-4: capture the broker nscId of THIS instrument off the GUI
+        # thread now, so Add-to-Queue never performs a network call.
+        self._start_order_identity_resolution(instrument)
 
     def _on_resolve_failed(self, sequence, message):
         """Resolve failure: previous selection stays, nothing fabricated."""
@@ -675,6 +880,228 @@ class OrderConfigurationPage(QWidget):
         self.trading_state_label.setText(text)
 
     # ---------------------------------------------------------
+    # Order identity (UI-4): broker nscId for the selected Instrument
+    # ---------------------------------------------------------
+
+    def _clear_order_identity(self):
+        """
+        Drop the resolved nscId of the PREVIOUS instrument/broker pair.
+
+        An identity is scoped to one (ins_code, broker_name) — a symbol
+        change or an account switch always drops it (its in-flight
+        worker keeps running and its result is discarded as stale by the
+        guards below). Never bound to a different selection.
+
+        The running worker reference is deliberately KEPT (not cleared):
+        the worker reaps ITSELF on ``finished``, and keeping the
+        reference lets tests (and the page) wait on it deterministically.
+        """
+        self._order_identity_instrument = None
+        self._order_identity_broker = None
+        self._order_nsc_id = None
+
+    def _start_order_identity_resolution(self, instrument):
+        """
+        Resolve the broker ``nscId`` of a REAL instrument selection on a
+        background thread, through the EXISTING read-only seam:
+
+            InstrumentProvider.get_nsc_id(ins_code)
+
+        The result is stored ONLY for the (ins_code, broker_name) pair
+        captured here; a late result for a replaced symbol or a changed
+        account is never used (fail-closed).
+        """
+        if instrument is None:
+            return
+
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code:
+            # No real identity → nothing to resolve; fail-closed.
+            self._clear_order_identity()
+            return
+
+        broker_name = self._active_broker_name()
+
+        # A resolution for the SAME (ins_code, broker_name) pair is
+        # already in flight — do not start a duplicate worker.
+        if (
+            self._order_identity_thread is not None
+            and not self._order_identity_thread.isFinished()
+            and self._order_identity_instrument == ins_code
+            and self._order_identity_broker == broker_name
+        ):
+            return
+
+        self._clear_order_identity()
+        self._order_identity_instrument = ins_code
+        self._order_identity_broker = broker_name
+
+        factory = (
+            self._order_identity_factory
+            if self._order_identity_factory is not None
+            else lambda: _default_order_identity_resolver(self.store)
+        )
+
+        worker = _OrderIdentityWorker(ins_code, factory, parent=self)
+        self._order_identity_worker = worker
+        self._order_identity_thread = worker
+        worker.identity_succeeded.connect(self._on_order_identity_succeeded)
+        worker.identity_failed.connect(self._on_order_identity_failed)
+        # Lifecycle: the worker forgets ITSELF the moment run() returns
+        # (same self-reaping pattern as the other workers).
+        worker.finished.connect(
+            lambda w=worker: self._forget_order_identity_worker(w)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _forget_order_identity_worker(self, worker):
+        """Drop one finished identity worker (all paths)."""
+        if self._order_identity_thread is worker:
+            self._order_identity_thread = None
+            self._order_identity_worker = None
+
+    def wait_for_order_identity_workers(self, timeout_ms=5000):
+        """
+        Wait (bounded) for the background identity-resolution thread to
+        finish. Used by tests for deterministic teardown; production
+        never needs to call this.
+        """
+        thread = self._order_identity_thread
+        if thread is not None and not thread.wait(timeout_ms):
+            raise TimeoutError("order-identity worker thread did not finish")
+
+    def _on_order_identity_succeeded(self, ins_code, nsc_id):
+        """
+        Store the resolved broker nscId — but ONLY if it still belongs
+        to the currently selected (ins_code, broker_name) pair.
+
+        A late resolution for a symbol the user already replaced, or for
+        an account the user already switched, is discarded (fail-closed:
+        an identity is never attached to a different selection).
+        """
+        if ins_code != self._order_identity_instrument:
+            return  # stale resolution — discarded deterministically
+        if self._order_identity_broker != self._active_broker_name():
+            # The active broker changed mid-resolution: this nscId
+            # belongs to the OLD broker — never bind it to the new one.
+            self._order_nsc_id = None
+            return
+        self._order_nsc_id = (
+            nsc_id if isinstance(nsc_id, str) and nsc_id else None
+        )
+
+    def _on_order_identity_failed(self, ins_code, message):
+        """A failed resolution leaves the identity unresolved (closed)."""
+        if ins_code != self._order_identity_instrument:
+            return  # stale failure — discarded deterministically
+        self._order_nsc_id = None
+
+    # ---------------------------------------------------------
+    # Add to Queue (UI-4): prepare ONE real Order, enqueue it
+    # ---------------------------------------------------------
+
+    def _on_add_to_queue(self):
+        """
+        Prepare ONE ``models.order.Order`` from the current form state
+        and append it to the EXISTING ``OrderQueue`` with the active
+        account/broker binding.
+
+        Strictly fail-closed — nothing is queued unless EVERY element is
+        real and bound coherently:
+          * an active account (its broker is the identity's broker),
+          * a selected real Instrument,
+          * side, price and quantity,
+          * a resolved broker nscId for exactly (ins_code, broker_name).
+
+        No dispatch, no broker call, no network happens here: the nscId
+        was already captured off the GUI thread at selection time.
+
+        Returns True when an order was queued, False otherwise (the
+        queue is left untouched).
+        """
+        record = self._active_account_record()
+        if record is None:
+            self._show_queue_status(QUEUE_STATUS_NO_ACCOUNT)
+            return False
+
+        instrument = self.config.selected_instrument
+        if instrument is None:
+            self._show_queue_status(QUEUE_STATUS_NO_SYMBOL)
+            return False
+
+        side = self.config.side
+        price = self.config.price
+        quantity = self.config.quantity
+        if side is None or price is None or quantity is None:
+            self._show_queue_status(QUEUE_STATUS_INCOMPLETE)
+            return False
+
+        ins_code = getattr(instrument, "ins_code", None)
+        if ins_code != self._order_identity_instrument:
+            # The identity belongs to a different (or no) selection.
+            self._show_queue_status(QUEUE_STATUS_NO_IDENTITY)
+            return False
+        if self._order_identity_broker != record.broker_name:
+            # The nscId was resolved for ANOTHER broker — never bind it
+            # to the current account. A reselect resolves it afresh.
+            self._show_queue_status(QUEUE_STATUS_BROKER_STALE)
+            return False
+        nsc_id = self._order_nsc_id
+        if not nsc_id:
+            self._show_queue_status(QUEUE_STATUS_NO_IDENTITY)
+            return False
+
+        # One real Order (the Core model) — identity came from the
+        # EXISTING provider seam, never guessed or fabricated.
+        order = Order(
+            nsc_id=nsc_id,
+            side=side,
+            price=price,
+            quantity=quantity,
+        )
+        self.order_queue.enqueue(
+            order,
+            account_id=record.account_id,
+            broker_name=record.broker_name,
+        )
+        self._show_queue_status(QUEUE_STATUS_QUEUED)
+        self._refresh_queue_display()
+        return True
+
+    def _refresh_queue_display(self):
+        """
+        Re-render the visible queue list ONLY from the exact entries the
+        EXISTING ``OrderQueue.list_pending()`` returned.
+
+        The entry (and hence the exact queued Order object) is carried in
+        the row's data role — orders are never cloned/rebuild for display,
+        and display text is never parsed back into identity.
+        """
+        self.queue_list.clear()
+        pending = self.order_queue.list_pending()
+        for entry in pending:
+            order = entry.order
+            side_label = dict(SIDE_LABELS).get(
+                getattr(order, "side", None),
+                str(getattr(order, "side", "")),
+            )
+            text = (
+                f"{getattr(order, 'nsc_id', '')} | {side_label} | "
+                f"{getattr(order, 'price', '')} | "
+                f"{getattr(order, 'quantity', '')} | "
+                f"{entry.account_id} → {entry.broker_name}"
+            )
+            item = QListWidgetItem(text, self.queue_list)
+            item.setData(QUEUE_ENTRY_ROLE, entry)
+        self.queue_count_label.setText(
+            f"{len(pending)} order(s) in queue"
+        )
+
+    def _show_queue_status(self, text):
+        self.queue_status_label.setText(text)
+
+    # ---------------------------------------------------------
     # Symbol info / status display
     # ---------------------------------------------------------
 
@@ -766,3 +1193,43 @@ class OrderConfigurationPage(QWidget):
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""
         self.active_account_label.setText(self._active_account_text())
+        # UI-4: an account switch invalidates the resolved identity (it is
+        # broker-scoped). Re-resolve for the current selection if stale.
+        self._restart_order_identity_if_stale()
+
+    def _active_account_record(self):
+        """
+        The active AccountRecord, or ``None`` while nothing is active.
+        Fail-closed: an unknown/removed id yields ``None`` (never guessed).
+        """
+        active_id = self.store.active_account_id()
+        if active_id is None:
+                return None
+        try:
+                return self.store.get(active_id)
+        except ValueError:  # AccountStoreError of the UI-2.1 store
+                return None
+
+    def _active_broker_name(self):
+        """The active account's broker name, or ``None`` while inactive."""
+        record = self._active_account_record()
+        if record is None:
+                return None
+        return record.broker_name
+
+    def _restart_order_identity_if_stale(self):
+        """
+        Re-resolve the selected instrument's order identity when selecting
+        an account made it available (or the broker changed) — so the
+        realistic "choose account → pick symbol" order of operations still
+        leads to a working Add-to-Queue.
+        """
+        instrument = self.config.selected_instrument
+        if instrument is None:
+                return
+        if (
+                self._order_nsc_id
+                and self._order_identity_broker == self._active_broker_name()
+        ):
+                return  # still coherent — nothing to do
+        self._start_order_identity_resolution(instrument)

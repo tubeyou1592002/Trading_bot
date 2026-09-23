@@ -456,13 +456,15 @@ def test_14_ui_does_not_use_legacy_main():
     allowed only as the lazy factory path that builds the EXISTING
     read-only TradingStateQuery (offline construction preserved); any
     other brokers.* / core.* import remains banned.
+    UI-4 seam: ``core.order_queue`` is the lazy (first Add-to-Queue,
+    never construction) holder the page prepares orders into.
     """
     import ast
 
     banned_top = {"main", "brokers", "core"}
     allowed_market = {"market.symbol_resolver"}
     allowed_brokers = {"brokers.manager"}
-    allowed_core = {"core.trading_state_query"}
+    allowed_core = {"core.trading_state_query", "core.order_queue"}
 
     def _check_import(module_name, node):
         if isinstance(node, ast.Import):

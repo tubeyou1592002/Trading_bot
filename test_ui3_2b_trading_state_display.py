@@ -182,6 +182,9 @@ def _drain(qapp, page):
     qapp.processEvents()
     page.wait_for_workers(timeout_ms=10000)
     page.wait_for_trading_state_workers(timeout_ms=10000)
+    # UI-4: selection also starts the order-identity worker — it is
+    # reaped the same way (no lingering thread on any path).
+    page.wait_for_order_identity_workers(timeout_ms=10000)
     for _ in range(30):  # fixed bounded wakeups for queued deliveries
         qapp.processEvents()
         time.sleep(0.005)
@@ -688,6 +691,10 @@ def test_extra_full_flow_search_select_state_offline():
             "for _ in range(30):",
             "    app.processEvents()",
             "    time.sleep(0.01)",
+            # UI-4: the selection (delivered above) also started the
+            # order-identity worker — join it before exiting so no
+            # QThread is destroyed mid-run at process shutdown.
+            "page.wait_for_order_identity_workers(10000)",
             "",
             "assert page.config.selected_instrument is instrument",
             "assert page.trading_state_label.text() == 'قابل معامله'",
