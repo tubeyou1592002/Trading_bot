@@ -28,9 +28,10 @@ introducing keys here would be a guess.
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, Tuple
 
-from core.dispatch_contracts import ExecutionPlan
+from core.block5_task4 import DispatchIntegration
+from core.dispatch_contracts import DispatchResult, ExecutionPlan
 from core.execution_planner import (
     ExecutionPlanner,
     LogicalOrderInstruction,
@@ -216,3 +217,61 @@ def build_execution_plan_from_selected_entries(
 
     planner = ExecutionPlanner()
     return planner.build_plan(instruction)
+
+
+def dispatch_selected_entries(
+    entries: List[QueueEntry],
+    dispatch_integration: DispatchIntegration,
+    account_id: str,
+    broker_name: str,
+    plan_id: str,
+) -> Tuple[ExecutionPlan, str, DispatchResult]:
+    """
+    Build ONE ``ExecutionPlan`` from selected ``QueueEntry``\\ s and dispatch
+    it through the existing ``DispatchIntegration``.
+
+    Real path enforced by this bridge:
+
+        selected QueueEntry
+            -> build_execution_plan_from_selected_entries()  (Task 7 adapter)
+            -> ExecutionPlan                                  (Block 0 contract)
+            -> DispatchIntegration.dispatch(plan)             (Block 5 connector)
+            -> DispatchResult
+
+    The dispatch is issued with NO caller-supplied ``execution_id`` so the
+    integration itself owns the execution identity. Immediately after the
+    dispatch, ``dispatch_integration.last_execution_id`` is read and the
+    exactly three values are returned, unchanged:
+
+        (plan, execution_id, result)
+
+    ``plan_id`` is NEVER used as an execution id, and no execution id is
+    generated here. Any lasting ``execution_id`` -> entries relationship is
+    the caller's responsibility; nothing is recorded or persisted by this
+    bridge.
+
+    Fail-closed: if the dispatch did not issue an execution (a guard /
+    Stop Signal bypassed it, so ``dispatch_integration.last_execution_id``
+    is ``None``), ``ValueError`` is raised and no id is fabricated.
+
+    No queue mutation, no tracker writes, and no broker / network / UI work
+    is performed here beyond the dispatch itself.
+    """
+    plan = build_execution_plan_from_selected_entries(
+        entries,
+        account_id=account_id,
+        broker_name=broker_name,
+        plan_id=plan_id,
+    )
+
+    result = dispatch_integration.dispatch(plan)
+
+    execution_id = dispatch_integration.last_execution_id
+    if execution_id is None:
+        raise ValueError(
+            "dispatch did not issue an execution "
+            "(dispatch_integration.last_execution_id is None); "
+            "plan.plan_id is never used as an execution id"
+        )
+
+    return plan, execution_id, result
