@@ -48,9 +48,11 @@ class OrderQueue:
     """
     Independent FIFO queue of orders waiting to be dispatched.
 
-    Only two operations are exposed (the minimal contract):
+    Operations exposed (the minimal contract):
       * ``enqueue(order, account_id, broker_name)`` — append one entry;
-      * ``list_pending()`` — return all entries in insertion order.
+      * ``list_pending()`` — return all entries in insertion order;
+      * ``remove(entry)`` — remove the exact ``QueueEntry`` from the queue;
+      * ``is_pending(order)`` — True if that exact order object is queued.
     """
 
     def __init__(self) -> None:
@@ -73,6 +75,32 @@ class OrderQueue:
                 broker_name=broker_name,
             )
         )
+
+    def remove(self, entry: QueueEntry) -> None:
+        """
+        Remove the exact ``QueueEntry`` from the queue (identity-based).
+
+        FIFO order of the remaining entries is preserved. No status is set
+        and nothing else is touched: the entry simply leaves the pending set.
+
+        Raises:
+            ValueError: if ``entry`` is not in the queue.
+        """
+        for index, queued in enumerate(self._entries):
+            if queued is entry:
+                del self._entries[index]
+                return
+        raise ValueError("entry is not in the queue")
+
+    def is_pending(self, order: Any) -> bool:
+        """
+        Return True if the exact ``order`` object is still pending.
+
+        Comparison is by object identity (``is``), never equality, so a
+        distinct order object with the same fields is NOT considered
+        pending.
+        """
+        return any(entry.order is order for entry in self._entries)
 
     def list_pending(self) -> List[QueueEntry]:
         """
