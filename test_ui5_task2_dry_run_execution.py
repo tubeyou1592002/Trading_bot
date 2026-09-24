@@ -62,6 +62,15 @@ Contract coverage:
                 inference, no broker/network resolution).
       Test 16c — a queue whose entries do not match the active account /
                 broker never reaches the runner (fail-closed).
+      Test 16d — the page passes the EXPLICITLY selected account: the
+                runner receives exactly ``store.active_account_id()``'s
+                Account object — never another registered account, never a
+                global/hidden/default/fallback account, never an unrelated
+                configuration value (substitution is impossible even when
+                other accounts exist).
+      Test 16e — with NO account selected, the Test action never executes:
+                the runner is never reached, nothing is tracked, and the
+                previous run contract is left untouched.
 
     Offline subprocess:
       Test 17 — the full Test action (UI click -> runner -> chain) performs
@@ -726,6 +735,144 @@ def test_16c_page_rejects_entries_mismatching_the_active_account(qapp, store):
     assert entry.order is order
     assert entry.account_id == "ACC-001"
     assert entry.broker_name == "OTHER-BROKER"
+
+
+def test_16d_page_passes_the_explicitly_selected_account(qapp):
+    """
+    Task 2 core contract: the runner receives EXACTLY the explicitly
+    selected account — the ``Account`` object of
+    ``store.active_account_id()`` — and nothing else can be substituted:
+
+      * not another registered account of the store (a second account
+        exists and stays inactive the whole time),
+      * not a global/hidden/default/fallback account (the page holds no
+        such state; the only account source is the active selection),
+      * not an unrelated configuration value (the page's form config is
+        never consulted for the account).
+
+    The page passes the account explicitly, by keyword, as
+    ``runner.run(entries, account=account)``.
+    """
+    BROKER = "\u0622\u06af\u0627\u0647"
+    store = AccountStore()
+    store.add("ACC-001", BROKER)
+    store.add("ACC-002", BROKER)     # a DIFFERENT registered account
+    store.set_active("ACC-001")      # the explicit selection
+
+    queue = OrderQueue()
+    runner = StubRunner()
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.set_test_runner_factory(lambda: runner)
+    page.config.select_instrument(
+        Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
+    )
+    order = make_order(nsc_id="NSC-16D")
+    queue.enqueue(order, account_id="ACC-001", broker_name=BROKER)
+    page._refresh_test_button_state()
+    assert page.test_button.isEnabled()
+
+    other_account = store.get("ACC-002").account  # must NEVER be substituted
+
+    page.test_button.click()   # one intentional Test action
+
+    assert runner.calls == 1
+    captured_account = runner.captured_accounts[0]
+
+    # Exactly the ACTIVE selection's Account object — verbatim.
+    active_record = store.get(store.active_account_id())
+    assert store.active_account_id() == "ACC-001"
+    assert captured_account is active_record.account
+    assert captured_account is store.get("ACC-001").account
+    assert captured_account.account_id == "ACC-001"
+
+    # A different/implicit account is never substituted.
+    assert captured_account is not other_account
+    assert captured_account.account_id != "ACC-002"
+
+    # The stored run contract stays consistent with that same account.
+    assert page._last_test_run is not None
+    assert page._last_test_entries[0].account_id == "ACC-001"
+    assert page._last_test_error is None
+
+
+def test_16e_page_never_executes_without_a_selected_account(qapp):
+    """
+    Fail-closed: with NO account selected on the store, the Test action
+    never executes — the runner is never reached, the queue is untouched
+    and no run/error contract is written (the previous UI behavior of the
+    pure toggle is preserved).
+    """
+    BROKER = "\u0622\u06af\u0627\u0647"
+    store = AccountStore()
+    store.add("ACC-001", BROKER)
+    # deliberately NO set_active(...) — nothing is selected
+    assert store.active_account_id() is None
+
+    queue = OrderQueue()
+    runner = StubRunner()
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.set_test_runner_factory(lambda: runner)
+    page.config.select_instrument(
+        Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
+    )
+    order = make_order(nsc_id="NSC-16E")
+    queue.enqueue(order, account_id="ACC-001", broker_name=BROKER)
+    page._refresh_test_button_state()
+
+    # Preserved UI behavior: without a selected account the Test button
+    # stays disabled, so a plain click cannot start a pass.
+    assert page.test_button.isEnabled() is False
+    assert runner.calls == 0
+
+    # Even a forced Test action (the ON-state path) never executes:
+    page._run_test_pass()
+    assert runner.calls == 0            # never reached the runner
+    assert page._last_test_run is None  # nothing tracked
+    assert page._last_test_entries is None
+    assert page._last_test_error is None
+    assert queue.list_pending()[0].order is order  # queue untouched
+
+
+def test_16f_switching_the_active_account_switches_the_pass_account(qapp):
+    """
+    The account is read from the live selection at Test-action time —
+    never cached: after the user selects a different account, the next
+    pass carries THAT account, and the stored run contract reflects it.
+    """
+    BROKER = "\u0622\u06af\u0627\u0647"
+    store = AccountStore()
+    store.add("ACC-001", BROKER)
+    store.add("ACC-002", BROKER)
+    store.set_active("ACC-001")
+
+    queue = OrderQueue()
+    runner = StubRunner()
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.set_test_runner_factory(lambda: runner)
+    page.config.select_instrument(
+        Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
+    )
+    order = make_order(nsc_id="NSC-16F")
+    queue.enqueue(order, account_id="ACC-001", broker_name=BROKER)
+    page._refresh_test_button_state()
+    assert page.test_button.isEnabled()
+
+    page.test_button.click()    # pass 1 — ACC-001
+    page.test_button.click()    # OFF
+    store.set_active("ACC-002")  # the user selects the other account (live selection)
+    # the queue is re-bound to the newly selected account, as the real
+    # re-queue flow would do (entries must match the active account)
+    queue.remove(queue.list_pending()[0])
+    queue.enqueue(
+        make_order(nsc_id="NSC-16F-2"), account_id="ACC-002", broker_name=BROKER
+    )
+    page._refresh_test_button_state()
+    page.test_button.click()    # pass 2 — ACC-002
+
+    assert runner.calls == 2
+    assert runner.captured_accounts[0] is store.get("ACC-001").account
+    assert runner.captured_accounts[1] is store.get("ACC-002").account
+    assert page._last_test_entries[0].account_id == "ACC-002"
 
 
 # ===========================================================================
