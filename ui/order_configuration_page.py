@@ -52,6 +52,15 @@ Presentation of the order-configuration form:
                       visible queue list rendered ONLY from
                       ``OrderQueue.list_pending()`` (the exact queued
                       objects, never clones).
+    * Test Button  — UI-5 Task 1: a UI-ONLY toggle next to the queue
+                      controls. OFF -> "Test", ON -> "Test (On)". It holds
+                      ONE UI-local boolean (Test Mode, default OFF) and is
+                      disabled while the queue is empty or the required
+                      active account / selected instrument is missing. It
+                      must NEVER execute, dispatch, or submit an order —
+                      no DispatchIntegration/DispatchCore/OrderEngine, no
+                      broker call, no network activity (Task 2 owns
+                      execution).
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
@@ -363,6 +372,21 @@ class OrderConfigurationPage(QWidget):
         self.add_to_queue_button.clicked.connect(self._on_add_to_queue)
         form_grid.addWidget(self.add_to_queue_button, 4, 0, 1, 2)
 
+        # --- Test Button (UI-5 Task 1) ------------------------------
+        # UI-only toggle: OFF -> "Test", ON -> "Test (On)".
+        # No execution, no dispatch, no broker/network activity.
+        # Starts DISABLED: at construction there is nothing queued yet
+        # (the lazy core.queue import must never run at construction).
+        # The enable/disable refresh runs only on real UI flows.
+        self.test_button = QPushButton("Test", form_group)
+        self.test_button.setCheckable(True)
+        self.test_button.setEnabled(False)
+        self.test_button.clicked.connect(self._on_test_toggled)
+        form_grid.addWidget(self.test_button, 4, 2)
+
+        # Internal Test Mode state — UI-local only, initialized OFF.
+        self._test_mode = False
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -532,6 +556,7 @@ class OrderConfigurationPage(QWidget):
             self._clear_trading_state()
             self._clear_order_identity()
             self._refresh_symbol_info()
+            self._refresh_test_button_state()
             return
 
         # New text invalidates the previous selection explicitly: typed
@@ -728,6 +753,7 @@ class OrderConfigurationPage(QWidget):
         # UI-4: capture the broker nscId of THIS instrument off the GUI
         # thread now, so Add-to-Queue never performs a network call.
         self._start_order_identity_resolution(instrument)
+        self._refresh_test_button_state()
 
     def _on_resolve_failed(self, sequence, message):
         """Resolve failure: previous selection stays, nothing fabricated."""
@@ -1067,6 +1093,7 @@ class OrderConfigurationPage(QWidget):
         )
         self._show_queue_status(QUEUE_STATUS_QUEUED)
         self._refresh_queue_display()
+        self._refresh_test_button_state()
         return True
 
     def _refresh_queue_display(self):
@@ -1100,6 +1127,48 @@ class OrderConfigurationPage(QWidget):
 
     def _show_queue_status(self, text):
         self.queue_status_label.setText(text)
+
+    # ---------------------------------------------------------
+    # UI-5 Task 1: Test Button / Test Mode (UI-only toggle)
+    # ---------------------------------------------------------
+
+    def _on_test_toggled(self, checked):
+        """
+        Toggle the UI-only Test Mode state.
+
+        This is a PURE UI state toggle — no execution, no dispatch,
+        no broker call, no network activity of any kind. The button
+        label reflects the state: OFF -> "Test", ON -> "Test (On)".
+        """
+        self._test_mode = bool(checked)
+        self.test_button.setText("Test (On)" if self._test_mode else "Test")
+
+    def _refresh_test_button_state(self):
+        """
+        Update the Test button enabled/disabled state based on UI conditions.
+
+        The Test button is disabled when:
+          * the queue is empty, OR
+          * the required selected account is missing, OR
+          * the required selected instrument is missing.
+
+        It becomes enabled only when all three conditions are valid.
+
+        The queue is consulted only when one actually exists (an injected
+        queue or a lazily built one) — an untouched page is trivially
+        empty, so the lazy ``core.order_queue`` import is never forced on
+        a plain navigation or refresh.
+        """
+        has_queue = False
+        if (
+            self._injected_order_queue is not None
+            or self._default_queue is not None
+        ):
+            has_queue = len(self.order_queue.list_pending()) > 0
+        has_account = self._active_account_record() is not None
+        has_instrument = self.config.selected_instrument is not None
+
+        self.test_button.setEnabled(has_queue and has_account and has_instrument)
 
     # ---------------------------------------------------------
     # Symbol info / status display
@@ -1196,6 +1265,7 @@ class OrderConfigurationPage(QWidget):
         # UI-4: an account switch invalidates the resolved identity (it is
         # broker-scoped). Re-resolve for the current selection if stale.
         self._restart_order_identity_if_stale()
+        self._refresh_test_button_state()
 
     def _active_account_record(self):
         """

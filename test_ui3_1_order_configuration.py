@@ -709,3 +709,272 @@ def test_extra_active_account_refreshed_on_page_reentry(qapp):
     label = window.order_configuration_page.active_account_label.text()
     assert "ACC-002" in label
     assert "ACC-001" not in label
+
+
+# ============================================================
+# UI-5 Task 1 — Test Button / Test Mode (UI-only toggle)
+# ============================================================
+
+from core.order_queue import OrderQueue
+from models.order import Order as CoreOrder
+
+TEST_BUTTON_LABEL_OFF = "Test"
+TEST_BUTTON_LABEL_ON = "Test (On)"
+
+
+def _make_valid_page(qapp, store, queue):
+    """
+    Build a page whose Test button conditions are fully valid:
+    active account, selected instrument and one queued order.
+    """
+    store.add("ACC-001", "آگاه")
+    store.set_active("ACC-001")
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.config.select_instrument(
+        Instrument(symbol="آکو", name="آکو", ins_code="60235881999727383")
+    )
+    order = CoreOrder(nsc_id="NSC-1", side=BUY, price=15000, quantity=500)
+    queue.enqueue(order, account_id="ACC-001", broker_name="آگاه")
+    page._refresh_test_button_state()
+    return page, order
+
+
+# ------------------------------------------------------------
+# Test 1 — Test button exists
+# ------------------------------------------------------------
+
+
+def test_ui5t1_test_button_exists(qapp, store):
+    page = OrderConfigurationPage(store)
+    from PySide6.QtWidgets import QPushButton
+
+    assert isinstance(page.test_button, QPushButton)
+    assert page.test_button.text() == TEST_BUTTON_LABEL_OFF
+
+
+# ------------------------------------------------------------
+# Test 2 — Initial Test Mode state is OFF
+# ------------------------------------------------------------
+
+
+def test_ui5t1_initial_test_mode_off(qapp, store):
+    page = OrderConfigurationPage(store)
+    assert page._test_mode is False
+
+
+# ------------------------------------------------------------
+# Test 3 — Initial label represents OFF
+# ------------------------------------------------------------
+
+
+def test_ui5t1_initial_label_off(qapp, store):
+    page = OrderConfigurationPage(store)
+    assert page.test_button.text() == TEST_BUTTON_LABEL_OFF
+
+
+# ------------------------------------------------------------
+# Test 4 — Clicking once changes state OFF -> ON
+# ------------------------------------------------------------
+
+
+def test_ui5t1_click_once_off_to_on(qapp, store):
+    page, _ = _make_valid_page(qapp, store, OrderQueue())
+    page.test_button.click()
+    assert page._test_mode is True
+
+
+# ------------------------------------------------------------
+# Test 5 — Label changes to ON representation
+# ------------------------------------------------------------
+
+
+def test_ui5t1_label_changes_to_on(qapp, store):
+    page, _ = _make_valid_page(qapp, store, OrderQueue())
+    page.test_button.click()
+    assert page.test_button.text() == TEST_BUTTON_LABEL_ON
+
+
+# ------------------------------------------------------------
+# Test 6 — Clicking again changes state ON -> OFF
+# ------------------------------------------------------------
+
+
+def test_ui5t1_click_again_on_to_off(qapp, store):
+    page, _ = _make_valid_page(qapp, store, OrderQueue())
+    page.test_button.click()
+    assert page._test_mode is True
+    page.test_button.click()
+    assert page._test_mode is False
+    assert page.test_button.text() == TEST_BUTTON_LABEL_OFF
+
+
+# ------------------------------------------------------------
+# Test 7 — Button disabled when queue is empty
+# ------------------------------------------------------------
+
+
+def test_ui5t1_disabled_when_queue_empty(qapp, store):
+    store.add("ACC-001", "آگاه")
+    store.set_active("ACC-001")
+    page = OrderConfigurationPage(store, order_queue=OrderQueue())
+    page.config.select_instrument(
+        Instrument(symbol="آکو", name="آکو", ins_code="1")
+    )
+    page._refresh_test_button_state()
+    assert page._active_account_record() is not None
+    assert page.config.selected_instrument is not None
+    assert len(page.order_queue.list_pending()) == 0
+    assert page.test_button.isEnabled() is False
+
+
+# ------------------------------------------------------------
+# Test 8 — Button disabled when required account is missing
+# ------------------------------------------------------------
+
+
+def test_ui5t1_disabled_when_account_missing(qapp, store):
+    queue = OrderQueue()
+    order = CoreOrder(nsc_id="NSC-1", side=BUY, price=15000, quantity=500)
+    queue.enqueue(order, account_id="ACC-001", broker_name="آگاه")
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.config.select_instrument(
+        Instrument(symbol="آکو", name="آکو", ins_code="1")
+    )
+    page._refresh_test_button_state()
+    assert store.active_account_id() is None
+    assert len(page.order_queue.list_pending()) == 1
+    assert page.config.selected_instrument is not None
+    assert page.test_button.isEnabled() is False
+
+
+# ------------------------------------------------------------
+# Test 9 — Button disabled when required instrument is missing
+# ------------------------------------------------------------
+
+
+def test_ui5t1_disabled_when_instrument_missing(qapp, store):
+    store.add("ACC-001", "آگاه")
+    store.set_active("ACC-001")
+    queue = OrderQueue()
+    order = CoreOrder(nsc_id="NSC-1", side=BUY, price=15000, quantity=500)
+    queue.enqueue(order, account_id="ACC-001", broker_name="آگاه")
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page._refresh_test_button_state()
+    assert store.active_account_id() == "ACC-001"
+    assert len(page.order_queue.list_pending()) == 1
+    assert page.config.selected_instrument is None
+    assert page.test_button.isEnabled() is False
+
+
+# ------------------------------------------------------------
+# Test 10 — Button enabled when queue/account/instrument valid
+# ------------------------------------------------------------
+
+
+def test_ui5t1_enabled_when_conditions_valid(qapp, store):
+    page, _ = _make_valid_page(qapp, store, OrderQueue())
+    assert page.test_button.isEnabled() is True
+
+
+# ------------------------------------------------------------
+# Test 11 — Clicking Test causes NO dispatch/execution/broker/
+#           network activity
+# ------------------------------------------------------------
+
+
+def test_ui5t1_click_causes_no_execution_or_network_activity():
+    code = "\n".join(
+        [
+            "import sys",
+            "import socket",
+            "import urllib.request",
+            "",
+            "class _Boom:",
+            "    def __init__(self, *a, **k):",
+            "        raise AssertionError('network construct attempted')",
+            "    def __getattr__(self, name):",
+            "        raise AssertionError(f'network access attempted: {name}')",
+            "",
+            "socket.create_connection = _Boom",
+            "socket.socket = _Boom",
+            "socket.getaddrinfo = _Boom",
+            "urllib.request.urlopen = _Boom",
+            "",
+            "from ui.account_store import AccountStore",
+            "from ui.main_window import MainWindow",
+            "from PySide6.QtWidgets import QApplication",
+            "",
+            "app = QApplication.instance() or QApplication([])",
+            "window = MainWindow()",
+            "page = window.order_configuration_page",
+            "",
+            "# snapshot of already-loaded modules before ANY Test click",
+            "banned = ('core', 'brokers', 'market', 'main')",
+            "def forbidden_leak():",
+            "    return sorted(",
+            "        m for m in sys.modules if m.split('.')[0] in banned",
+            "    )",
+            "before = forbidden_leak()",
+            "",
+            "# even a bare Test click must not load any execution path",
+            "page.test_button.click()",
+            "after = forbidden_leak()",
+            "assert after == before, f'Test click loaded forbidden modules: {after}'",
+            "",
+            "# toggling back and forth must stay equally inert",
+            "page.test_button.click()",
+            "after2 = forbidden_leak()",
+            "assert after2 == before, 'Test toggle loaded forbidden modules'",
+            "assert page._test_mode is False",
+            "print('NO_EXECUTION_OK')",
+        ]
+    )
+    env = dict(os.environ)
+    env.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "NO_EXECUTION_OK" in result.stdout
+
+
+# ------------------------------------------------------------
+# Test 12 — Queue entries and identity bindings remain unchanged
+# ------------------------------------------------------------
+
+
+def test_ui5t1_queue_and_identity_unchanged(qapp, store):
+    page, order = _make_valid_page(qapp, store, OrderQueue())
+
+    before_entries = page.order_queue.list_pending()
+    before_order = before_entries[0].order
+    before_account = before_entries[0].account_id
+    before_broker = before_entries[0].broker_name
+    before_count = len(before_entries)
+
+    page.test_button.click()
+    page.test_button.click()
+    page.test_button.click()
+
+    after_entries = page.order_queue.list_pending()
+    assert len(after_entries) == before_count == 1
+    assert after_entries[0] is before_entries[0]  # same QueueEntry object
+    assert after_entries[0].order is before_order  # same Order object
+    assert after_entries[0].account_id == before_account == "ACC-001"
+    assert after_entries[0].broker_name == before_broker == "آگاه"
+    # the order itself is the same real object, untouched
+    assert after_entries[0].order is order
+    assert order.nsc_id == "NSC-1"
+    assert order.side == BUY
+    assert order.price == 15000
+    assert order.quantity == 500
+    # identity binding untouched after several toggles
+    assert page._active_account_record().account_id == "ACC-001"
+    assert page.config.selected_instrument is not None
