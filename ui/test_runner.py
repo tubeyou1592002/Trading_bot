@@ -75,12 +75,34 @@ How the pieces stay reusable:
     same lazy-seam pattern the page already uses for the resolver
     (``market.symbol_resolver``), the trading-state query
     (``core.trading_state_query``) and the queue (``core.order_queue``).
-  * ``dispatch_core`` is injectable so tests can substitute a test-double
-    Dispatch Core (never a real broker); production leaves it at ``None``
-    and the FIRST real run builds the existing ``core.dispatch_core.DispatchCore``.
-  * The integration is built once and reused; each ``run()`` still gets its
-    own ``plan_id`` (``ui5-test-<n>``) and its own registered execution, so
-    re-running the Test action is never a re-execution of an old dispatch.
+* ``dispatch_core`` is injectable so tests can substitute a test-double
+      Dispatch Core (never a real broker); production leaves it at ``None``
+      and the FIRST real run builds the existing ``core.dispatch_core.DispatchCore``.
+    * The integration is built once and reused; each ``run()`` still gets its
+      own ``plan_id`` (``ui5-test-<n>``) and its own registered execution, so
+      re-running the Test action is never a re-execution of an old dispatch.
+
+Why Task 3 results are read here (per-order, from the SAME dispatch):
+
+  * A real ``DispatchCore`` exposes the EXISTING Task 8.2 contract
+    ``dispatch_with_latency(plan)``: it runs the exact same single internal
+    ``_dispatch`` implementation as ``dispatch(plan)`` and additionally
+    returns a ``DispatchLatencyReport`` carrying one ``OrderLatency`` per
+    dispatched sequence, each holding the SAME per-order
+    ``core.order_engine.OrderExecutionResult`` the normal dispatch produced.
+    Whenever that existing contract exists, this runner issues exactly ONE
+    dispatch through it and collects the per-order results from the returned
+    report (Task 3 asks for the actual result of that one Test execution —
+    never a re-execution, never an invented verdict).
+  * ``last_order_results`` is a list aligned 1:1 to the ``entries`` of the
+    last successful run (queue order): each element is that order's real
+    ``OrderExecutionResult`` or ``None`` when no per-order result exists for
+    it (fail-closed). ``last_report`` is the measured dispatch's
+    ``DispatchLatencyReport``, or ``None`` on the plain path. Neither value
+    is ever displayed raw: the UI maps them through user-facing labels only.
+  * Test doubles that expose only ``dispatch(plan)`` (no measured contract)
+    keep the plain path unchanged — one dispatch, the integration's
+    registered execution id — and carry ``last_order_results = None``.
 """
 
 from __future__ import annotations
@@ -116,6 +138,13 @@ class TestRunner:
         self.last_plan: Optional[Any] = None
         self.last_execution_id: Optional[str] = None
         self.last_result: Optional[Any] = None
+        # Task 3: the per-order results of the last successful run, aligned
+        # 1:1 to the entries passed to ``run()`` (queue order). Each element
+        # is the real ``OrderExecutionResult`` of that order's own execution,
+        # or ``None`` when no per-order result exists (fail-closed). ``None``
+        # itself means "no measured path was used" (test-double dispatch).
+        self.last_order_results: Optional[List[Optional[Any]]] = None
+        self.last_report: Optional[Any] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -152,12 +181,19 @@ class TestRunner:
              attached, exactly as the existing integration layer (Blocks
              6/9/10) attaches resolved Account objects.
           7. The existing ``DispatchIntegration`` is created/reused.
-          8. ``integration.dispatch(plan)`` dispatches through the existing
-             ``DispatchCore`` -> ``OrderEngine`` dry-run path.
+          8. Exactly ONE dispatch is issued. A real ``DispatchCore`` runs
+             the EXISTING ``dispatch_with_latency(plan)`` (Task 8.2 — the
+             same single ``_dispatch`` implementation, so the per-order
+             results of THIS execution are returned in its report); a
+             test-double without that contract keeps the existing
+             ``integration.dispatch(plan)`` path unchanged.
           9. The exact bridge triple ``(plan, execution_id, result)`` is
-             returned: the plan bound to these entries, the execution id the
-             integration really registered (never ``plan.plan_id``), and the
-             ``DispatchResult`` from the dispatch.
+             returned: the plan bound to these entries, the execution id
+             (the integration's registered id on the plain path, the
+             runner's own ``exec-ui5-<n>`` on the measured path — never
+             ``plan.plan_id``), and the ``DispatchResult`` from the dispatch.
+             The per-order results of the run are exposed through
+             ``last_order_results`` (aligned to ``entries``, Task 3).
 
         Args:
             entries: The pending ``QueueEntry`` objects of one Test action.
@@ -227,8 +263,6 @@ class TestRunner:
         self._run_counter += 1
         plan_id = f"ui5-test-{self._run_counter}"
 
-        integration = self._ensure_integration()
-
         # Build the real plan exactly as the UI-5 chain does (Block 0/1,
         # unchanged), then attach the caller-supplied resolved Account
         # object — the documented integration-layer convention of Blocks
@@ -242,9 +276,25 @@ class TestRunner:
         )
         plan.accounts = [account]
 
-        result = integration.dispatch(plan)
+        # Exactly ONE dispatch per Test action. When the real ``DispatchCore``
+        # exposes the existing Task 8.2 measured contract, it is the single
+        # boundary used (the same single ``_dispatch`` implementation), so the
+        # per-order ``OrderExecutionResult`` of each sequence is available in
+        # the returned report (Task 3). A test-double without that contract
+        # keeps the existing plain integration path unchanged.
+        integration = self._ensure_integration()
+        measured = callable(
+            getattr(self._dispatch_core, "dispatch_with_latency", None)
+        )
+        if measured:
+            result, report = self._dispatch_core.dispatch_with_latency(plan)
+            execution_id = f"exec-ui5-{self._run_counter}"
+            self.last_report = report
+        else:
+            result = integration.dispatch(plan)
+            execution_id = integration.last_execution_id
+            self.last_report = None
 
-        execution_id = integration.last_execution_id
         if execution_id is None:
             raise ValueError(
                 "dispatch did not issue an execution "
@@ -252,6 +302,7 @@ class TestRunner:
                 "plan.plan_id is never used as an execution id"
             )
 
+        self.last_order_results = self._order_results_for(entries, self.last_report)
         self.last_plan = plan
         self.last_execution_id = execution_id
         self.last_result = result
@@ -260,6 +311,32 @@ class TestRunner:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _order_results_for(self, entries, report):
+        """
+        Extract the per-order results of ONE dispatch, aligned 1:1 to the
+        ``entries`` (queue order) of that successful run.
+
+        The measured ``DispatchLatencyReport`` carries one ``OrderLatency``
+        per dispatched sequence, each holding the SAME ``OrderExecutionResult``
+        the normal ``_dispatch`` produced (a reference, never a copy). Each
+        result owns its exact ``Order`` object, so a result is matched to a
+        queue entry by object identity — never by index, sequence or text.
+
+        ``None`` is returned when no report exists (plain/test-double path);
+        within a report, an entry with no matching per-order result gets
+        ``None`` (fail-closed: the caller must never guess a verdict).
+        """
+        if report is None:
+            return None
+
+        by_order = {}
+        for record in getattr(report, "orders", None) or []:
+            result = getattr(record, "execution_result", None)
+            order = getattr(result, "order", None)
+            if order is not None:
+                by_order[id(order)] = result
+        return [by_order.get(id(entry.order)) for entry in entries]
 
     def _ensure_integration(self) -> Any:
         """

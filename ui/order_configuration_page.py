@@ -166,6 +166,58 @@ QUEUE_STATUS_NO_IDENTITY = "Cannot queue: the symbol's order identity is not res
 QUEUE_STATUS_BROKER_STALE = "Cannot queue: the order identity belongs to a different broker — reselect the symbol"
 QUEUE_STATUS_QUEUED = "Order queued"
 
+# UI-5 Task 3 — per-order Test results. Only these three user-facing
+# statuses may ever be rendered; the raw per-order mode/message is never
+# displayed (a Trace ID, latency value, M6-A…M6-E label, endpoint, nscId /
+# tseId, raw Broker response, exception or internal id must never surface).
+# Fail-closed: nothing except an actually-successful result is ever shown
+# as "موفق".
+RESULT_STATUS_SUCCESS = "\u0645\u0648\u0641\u0642"
+RESULT_STATUS_BLOCKED = "\u0645\u0633\u062f\u0648\u062f\u0634\u062f\u0647"
+RESULT_STATUS_FAILED = "\u0646\u0627\u0645\u0648\u0641\u0642"
+
+# Fixed, user-facing reasons — one per status, never fabricated from a raw
+# result message.
+RESULT_REASON_SUCCESS = "\u0633\u0641\u0627\u0631\u0634 \u0628\u0627 \u0645\u0648\u0641\u0642\u06cc\u062a \u0634\u0628\u06cc\u0647\u200c\u0633\u0627\u0632\u06cc \u0634\u062f"
+RESULT_REASON_BLOCKED = "\u0627\u062c\u0631\u0627 \u0645\u062a\u0648\u0642\u0641 \u0634\u062f"
+RESULT_REASON_FAILED = "\u0627\u062c\u0631\u0627\u06cc \u0633\u0641\u0627\u0631\u0634 \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062f"
+
+# Empty state of the Test Results area before the first Test run.
+RESULT_EMPTY_STATE = (
+    "\u0647\u0646\u0648\u0632 \u0646\u062a\u06cc\u062c\u0647 \u0627\u06cc \u062b\u0628\u062a "
+    "\u0646\u0634\u062f\u0647 \u0627\u0633\u062a — \u0627\u0628\u062a\u062f\u0627 Test \u0631\u0627 "
+    "\u0627\u062c\u0631\u0627 \u06a9\u0646\u06cc\u062f."
+)
+
+# Fail-closed placeholders for a per-order result row: a symbol the UI has
+# no record of (never a technical nscId / tseId) and an unknown side label.
+RESULT_SYMBOL_UNKNOWN = "\u2014"
+
+
+def _result_status_label(result):
+    """
+    User-facing per-order verdict from the REAL ``OrderExecutionResult``.
+
+    Fail-closed: ``success is True`` is the ONLY thing that may render as
+    ``موفق``; an explicit preflight ``BLOCKED`` renders as ``مسدودشده``; any
+    other outcome (failure, ``ERROR``, missing/unknown result) renders as
+    ``ناموفق``. No per-order message/mode is ever shown raw.
+    """
+    if getattr(result, "success", None) is True:
+        return RESULT_STATUS_SUCCESS
+    if getattr(result, "mode", None) == "BLOCKED":
+        return RESULT_STATUS_BLOCKED
+    return RESULT_STATUS_FAILED
+
+
+def _result_reason_for_status(status):
+    """Fixed, user-facing reason string for one rendered status."""
+    if status == RESULT_STATUS_SUCCESS:
+        return RESULT_REASON_SUCCESS
+    if status == RESULT_STATUS_BLOCKED:
+        return RESULT_REASON_BLOCKED
+    return RESULT_REASON_FAILED
+
 
 def _default_order_identity_resolver(account_store):
     """
@@ -400,6 +452,17 @@ class OrderConfigurationPage(QWidget):
         self._last_test_run = None    # (plan, execution_id, result)
         self._last_test_entries = None
         self._last_test_error = None
+        # UI-5 Task 3 — the per-order results of the last successful Test
+        # run, aligned 1:1 to ``_last_test_entries`` (queue order). ``None``
+        # when the wired runner exposed no per-order results (display then
+        # fails closed per row — never fabricated).
+        self._last_order_results = None
+        # UI-layer symbol map for one queued Order: captured at the exact
+        # Add-to-Queue action from the selected REAL Instrument, keyed by the
+        # order object's identity. ``Order`` has no symbol field and nscId /
+        # tseId must never reach a result row, so the symbol the user picked
+        # is kept here in the UI layer only.
+        self._order_symbols = {}
 
         root_layout.addWidget(form_group)
 
@@ -459,6 +522,25 @@ class OrderConfigurationPage(QWidget):
         queue_layout.addWidget(self.queue_count_label)
 
         root_layout.addWidget(queue_group)
+
+        # ---------------------------------------------
+        # Test Results display (UI-5 Task 3)
+        # ---------------------------------------------
+
+        results_group = QGroupBox("Test Results", self)
+        results_layout = QVBoxLayout(results_group)
+
+        self.result_status_label = QLabel(RESULT_EMPTY_STATE, results_group)
+        results_layout.addWidget(self.result_status_label)
+
+        # Visible per-order result rows — rendered ONLY by the single final
+        # refresh of the last Test action (one refresh per run; a later run
+        # fully replaces the previous rows; no result history is kept).
+        self.result_list = QListWidget(results_group)
+        self.result_list.setMaximumHeight(140)
+        results_layout.addWidget(self.result_list)
+
+        root_layout.addWidget(results_group)
 
         root_layout.addStretch(1)
 
@@ -1100,6 +1182,14 @@ class OrderConfigurationPage(QWidget):
             price=price,
             quantity=quantity,
         )
+        # UI-5 Task 3: keep the user-selected symbol in the UI layer, keyed
+        # by this exact Order object. ``Order`` carries no symbol and the
+        # broker nscId must never reach a result row, so the display symbol
+        # is captured here at the exact enqueue action.
+        symbol = getattr(instrument, "symbol", "")
+        self._order_symbols[id(order)] = (
+            symbol if isinstance(symbol, str) and symbol else ""
+        )
         self.order_queue.enqueue(
             order,
             account_id=record.account_id,
@@ -1268,9 +1358,65 @@ class OrderConfigurationPage(QWidget):
         self._last_test_run = (plan, execution_id, result)
         self._last_test_entries = list(entries)
         self._last_test_error = None
+        # UI-5 Task 3: capture this run's per-order results (aligned to the
+        # entries) and render them exactly once — the single final refresh
+        # of THIS Test run. The rows fully replace any previous run's rows
+        # (no result history is kept).
+        self._last_order_results = getattr(runner, "last_order_results", None)
+        self._refresh_result_display()
         self._show_queue_status(
             f"Test run issued (dry-run): execution {execution_id}"
         )
+
+    def _refresh_result_display(self):
+        """
+        Render the per-order results of the last successful Test run.
+
+        Called EXACTLY ONCE per successful run (the final refresh, at the
+        end of ``_run_test_pass``); it is never invoked from construction,
+        navigation, refresh/render or toggle-off paths. One call clears and
+        repopulates, so a new run fully replaces the previous rows.
+
+        One visible row per queued order, in exact queue order:
+
+            حساب {account_id} | {symbol} | {side} | {status} | {reason}
+
+        Everything is user-facing only: the account id and side label come
+        from the exact QueueEntry/Order, the display symbol from the UI-layer
+        map (recorded at Add-to-Queue from the real Instrument), and the
+        verdict from the fail-closed status mapper. No nscId/tseId, mode
+        name, message, Trace ID, latency, M6-* label, endpoint, broker
+        response or exception text is ever rendered here.
+        """
+        self.result_list.clear()
+        entries = self._last_test_entries or []
+        results = self._last_order_results
+        for index, entry in enumerate(entries):
+            result = None
+            if isinstance(results, list) and 0 <= index < len(results):
+                result = results[index]
+            order = entry.order
+            symbol = (
+                self._order_symbols.get(id(order), "")
+                or RESULT_SYMBOL_UNKNOWN
+            )
+            side_label = dict(SIDE_LABELS).get(
+                getattr(order, "side", None),
+                str(getattr(order, "side", "")),
+            )
+            status = _result_status_label(result)
+            text = (
+                f"\u062d\u0633\u0627\u0628 {entry.account_id} | {symbol} | "
+                f"{side_label} | {status} | "
+                f"{_result_reason_for_status(status)}"
+            )
+            QListWidgetItem(text, self.result_list)
+        if entries:
+            self.result_status_label.setText(
+                f"{len(entries)} result(s)"
+            )
+        else:
+            self.result_status_label.setText(RESULT_EMPTY_STATE)
 
     def _refresh_test_button_state(self):
         """
