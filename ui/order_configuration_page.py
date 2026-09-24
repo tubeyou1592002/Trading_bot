@@ -387,6 +387,20 @@ class OrderConfigurationPage(QWidget):
         # Internal Test Mode state — UI-local only, initialized OFF.
         self._test_mode = False
 
+        # --- UI-5 Task 2: dry-run execution wiring (offline until used) ---
+        # The Test action runs its pending entries through the EXISTING
+        # execution chain via the runner seam below. The runner is injected
+        # like every other lazy seam (resolver / trading-state / queue): no
+        # runner is built here, so construction and plain toggling stay
+        # fully offline and never import Core/Broker modules. Production
+        # MainWindow wires a lazy real runner; tests inject a fake one.
+        self._test_runner_factory = None  # set via set_test_runner_factory()
+        self._test_runner_instance = None
+        # Outcome of the last Test action (Task 3 consumes these).
+        self._last_test_run = None    # (plan, execution_id, result)
+        self._last_test_entries = None
+        self._last_test_error = None
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -1139,9 +1153,124 @@ class OrderConfigurationPage(QWidget):
         This is a PURE UI state toggle — no execution, no dispatch,
         no broker call, no network activity of any kind. The button
         label reflects the state: OFF -> "Test", ON -> "Test (On)".
+
+        When the toggle turns Test Mode ON, exactly one dry-run Test pass
+        is issued through the wired runner (see ``_run_test_pass``) — the
+        intentional Test action. Turning OFF never executes anything.
         """
         self._test_mode = bool(checked)
         self.test_button.setText("Test (On)" if self._test_mode else "Test")
+        if self._test_mode:
+            self._run_test_pass()
+
+    def set_test_runner_factory(self, factory):
+        """
+        Provide the factory that builds the Test runner (UI-5 Task 2).
+
+        The runner drives the Test action's pending entries through the
+        EXISTING dry-run execution chain (UI-4 bridge -> DispatchIntegration
+        -> DispatchCore -> OrderEngine). It is built on the FIRST real Test
+        pass, never at construction or plain refresh, so no Core/Broker
+        import is ever forced by this page (offline contracts preserved).
+        Tests inject a fake runner factory so no dispatch is ever issued.
+        """
+        self._test_runner_factory = factory
+
+    def _test_runner(self):
+        """
+        Lazily build the wired Test runner (exactly once per factory).
+
+        ``None`` when no runner has been wired — the Test action then
+        stays a pure UI toggle (no execution possible).
+        """
+        if (
+            self._test_runner_instance is None
+            and self._test_runner_factory is not None
+        ):
+            self._test_runner_instance = self._test_runner_factory()
+        return self._test_runner_instance
+
+    def _run_test_pass(self):
+        """
+        Issue exactly one dry-run execution pass for the pending entries.
+
+        Only the Test action reaching ON state calls this method; it is
+        never invoked from refresh, render, navigation, or any constructor
+        or signal-wiring path.
+
+        Guards (fail-closed, no partial execution):
+          * Test Mode must be ON (this method is only called then).
+          * A runner must actually be wired; otherwise the toggle is a pure
+            UI action (Task 1 behavior, no execution).
+          * There must be pending queue entries; an empty queue never
+            reaches the runner.
+          * The active AccountRecord must exist (AccountSource: the pass
+            runs for the account the user has selected). Its existing
+            ``Account`` object is obtained verbatim from the store — never
+            resolved, inferred, fabricated or rebuilt — and passed to the
+            runner.
+          * The active account's identity (and its broker association) must
+            match every queue entry; a mismatch never reaches the runner.
+
+        The resolved ``Account`` object is handed to the runner explicitly
+        (``runner.run(entries, account=account)``). No Account is ever
+        resolved through a broker or the network, and no queue entry is
+        changed by this method.
+
+        Exactly once: one Test action = one ``runner.run(entries, account)``
+        call. A blocked/failed result is stored on ``_last_test_run`` /
+        ``_last_test_error`` for a later pass to surface; nothing is
+        retried and the queue is never mutated by the pass itself.
+        """
+        if not self._test_mode:
+            return
+
+        runner = self._test_runner()
+        if runner is None:
+            # No runner wired (tests, or UI-only usage): pure toggle.
+            return
+
+        entries = list(self.order_queue.list_pending())
+        if not entries:
+            self._show_queue_status("Test run skipped: no pending orders")
+            return
+
+        record = self._active_account_record()
+        if record is None:
+            self._show_queue_status(
+                "Test run skipped: no active account (fail-closed)"
+            )
+            return
+
+        account = record.account
+        for entry in entries:
+            if (
+                entry.account_id != account.account_id
+                or entry.broker_name != record.broker_name
+            ):
+                self._show_queue_status(
+                    "Test run skipped: active account does not match the "
+                    "queue entries (fail-closed)"
+                )
+                return
+
+        try:
+            plan, execution_id, result = runner.run(
+                entries, account=account
+            )
+        except Exception as exc:  # fail-closed: surface, never crash the UI
+            self._last_test_error = str(exc)
+            self._show_queue_status(
+                f"Test run could not be issued: {exc}"
+            )
+            return
+
+        self._last_test_run = (plan, execution_id, result)
+        self._last_test_entries = list(entries)
+        self._last_test_error = None
+        self._show_queue_status(
+            f"Test run issued (dry-run): execution {execution_id}"
+        )
 
     def _refresh_test_button_state(self):
         """

@@ -458,13 +458,24 @@ def test_14_ui_does_not_use_legacy_main():
     other brokers.* / core.* import remains banned.
     UI-4 seam: ``core.order_queue`` is the lazy (first Add-to-Queue,
     never construction) holder the page prepares orders into.
+    UI-5 Task 2 seam: ``ui/test_runner.py`` is the lazy runner the Test
+    action builds (first real Test pass, never construction/refresh); it
+    imports the EXISTING dry-run chain — ``core.order_queue_adapter`` /
+    ``core.block5_task4`` / ``core.dispatch_core`` — only to dispatch, and
+    only in dry-run (``live`` stays False end-to-end).
     """
     import ast
 
     banned_top = {"main", "brokers", "core"}
     allowed_market = {"market.symbol_resolver"}
     allowed_brokers = {"brokers.manager"}
-    allowed_core = {"core.trading_state_query", "core.order_queue"}
+    allowed_core = {
+        "core.trading_state_query",
+        "core.order_queue",
+        "core.order_queue_adapter",
+        "core.block5_task4",
+        "core.dispatch_core",
+    }
 
     def _check_import(module_name, node):
         if isinstance(node, ast.Import):

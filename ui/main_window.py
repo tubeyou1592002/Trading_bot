@@ -191,6 +191,13 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_trading_state_query_factory(
             self._real_trading_state_query
         )
+        # UI-5 Task 2: the Test action drives its pending entries through
+        # the EXISTING dry-run execution chain. The runner is built lazily
+        # (only on the first real Test pass, never here), so construction
+        # stays offline — no Core/Broker module is imported below.
+        self.order_configuration_page.set_test_runner_factory(
+            self._real_test_runner
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 
@@ -240,6 +247,19 @@ class MainWindow(QMainWindow):
         broker = manager.get("آگاه")
         provider = manager.get_instrument_provider("آگاه")
         return TradingStateQuery(broker, provider)
+
+    def _real_test_runner(self):
+        """
+        Lazily build the REAL UI-5 Test runner.
+
+        Imported on the first real Test pass, never at MainWindow
+        construction, so the offline UI contracts (UI-1..UI-3.1) stay
+        intact: the runner itself imports the existing Core dispatch chain
+        only when it actually runs.
+        """
+        from ui.test_runner import TestRunner
+
+        return TestRunner()
 
     def select_page(self, name):
         """Show the page of a navigation entry (no-op if unknown)."""
