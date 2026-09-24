@@ -2567,11 +2567,167 @@ Next step: UI-4 — Order Queue
 
 #### UI-5 — Test & User Logs
 
-* Test Button
-* اجرای آزمایشی
-* بدون ارسال سفارش واقعی
-* نمایش نتیجه هر سفارش
-* User-facing Logs
+**Status:** NOT STARTED — official four-task plan defined below.
+
+**Dependency — UI-4 COMPLETE:** UI-4 — Order Queue is **COMPLETE** (Tasks 1–8 implemented, tested, and committed: queue interface `865c1e3`, dispatch execution bridge `5c5638b`, selected queue entry planning `78445fc`, queue lifecycle `e04076d`, order queue pipeline `ad2dda3`). UI-5 consumes the UI-4 `OrderQueue` / `QueueEntry` / `core/order_queue_adapter.py` bridge contracts as its input and **MUST NOT** modify them or any other UI-4 artifact.
+
+**Definition of Done (UI-5):**
+- All four UI-5 tasks (Task 1 → Task 4) implemented, tested, and Architect-approved.
+- The Test Button executes the prepared queued orders **exactly once** through the existing Core dry-run path.
+- **No real order is ever sent**; `live_trading_enabled` remains disabled for the whole of UI-5.
+- **M6-A…M6-E and the Safety Gate are never bypassed** — every test execution still flows through the existing OrderEngine / DispatchCore preflight gates.
+- The result of **each** order is displayed individually in the UI (never aggregate-only).
+- The user-facing log table shows **only** user-meaningful fields; Trace ID, Latency, and detailed diagnostics remain excluded.
+- Full regression passes and no production trading path (`core/`, `brokers/`, `market/`, `models/`) is changed by UI-5.
+
+**Execution rule — one task at a time:** Only **one UI-5 task** may be in progress at any moment. Each task is implemented, tested, and Architect-approved **before** the next task starts. No UI-5 task may begin before its predecessor is approved.
+
+**Safety rules binding all four UI-5 tasks:**
+1. **No real trading.** Test Mode is dry-run only (`live=False`). No UI-5 task may enable `live_trading_enabled` or submit a real order.
+2. **No bypass of M6-A…M6-E / Safety Gate.** All test executions must route through the existing Core preflight gates; fail-closed behavior is preserved end-to-end.
+3. **Trace ID, Latency, and detailed diagnostics belong to UI-6.** They MUST NOT be introduced, displayed, or stubbed by any UI-5 task.
+4. UI-5 creates **no new trading logic** and modifies **no** file under `core/`, `brokers/`, `market/`, or `models/`.
+
+---
+
+##### UI-5 — Task 1 — Test Button / Test Mode
+
+**Goal:** Add a single explicit, visible **Test** button on the main page, together with the UI-only **Test Mode** state and its enable/disable behavior — and **nothing else**. Task 1 delivers the control surface only; it performs **no execution of any kind**.
+
+**Scope:**
+- One visible **Test** button placed on the main page next to the order-queue area.
+- A UI-only **Test Mode** state holder (a UI flag/state, **not** a Core object) that records whether the application is in Test Mode.
+- Enable/disable behavior: the button is disabled while the queue is empty or the selected account/instrument is missing, and re-enabled once the queue is valid again.
+- Test Mode is strictly distinct from Apply Schedule (UI-7): no scheduling, no countdown, no timer.
+
+**Hard exclusions — Task 1 MUST NOT do any of these:**
+- **No execution** — interacting with the button must not run, dispatch, or submit any order, and must not trigger dry-run execution yet (that belongs to UI-5 Task 2).
+- **No `DispatchIntegration`**, **No `DispatchCore`**, **No `OrderEngine`** — none of these is imported, constructed, or invoked by Task 1.
+- **No broker call** — no `Broker` / `AgaahBroker` method is called (no `place_order`, no capacity query, no login).
+- **No network activity** — no broker login, no TSETMC call, no HTTP request of any kind; Task 1 is fully offline.
+
+**Files (candidate, to be confirmed at implementation):**
+- `ui/main_window.py` — Test button placement and enable/disable wiring.
+- `ui/order_configuration_page.py` — integration into the main-page layout.
+- `ui/test_mode.py` (new, proposed) — UI-only Test Mode state holder (no Core object).
+- `test_ui5_task1_test_button.py` (new) — unit tests.
+
+**Acceptance criteria:**
+1. A **Test** button exists on the main page and is visible to the user.
+2. Interacting with the button sets/records the UI-only **Test Mode** state only — it does **not** execute, dispatch, or submit any order (no dry-run execution yet).
+3. The button is disabled while the queue is empty or the selected account/instrument is missing, and re-enabled once the queue is valid again.
+4. No execution path is reachable from Task 1: no `DispatchIntegration`, `DispatchCore`, or `OrderEngine` usage, no broker call, and no network activity occurs.
+5. Queue entries, orders, account identities, and broker bindings are unchanged after interacting with the Test button.
+6. Test Mode performs no scheduling, countdown, or timer behavior.
+7. Tests pass fully offline (no network, no broker login, no TSETMC access).
+8. No file outside `ui/` (plus the new test file) is modified.
+
+**Out of scope:**
+- Triggering execution from the Test action and the entire dry-run execution path (UI-5 Task 2).
+- Per-order result rendering (UI-5 Task 3).
+- User-facing log table (UI-5 Task 4).
+- Apply Schedule / Countdown (UI-7).
+- Trace ID / Latency / diagnostics (UI-6).
+- Any change to UI-4 queue/adapter/bridge contracts or to `core/`, `brokers/`, `market/`, `models/`.
+
+---
+
+##### UI-5 — Task 2 — Controlled Dry-Run Execution
+
+**Goal:** Own the execution that the Test button (Task 1) triggers: run each prepared `QueueEntry` through the **existing** execution chain exactly once, with every preflight gate intact and **zero** real order submission.
+
+**Scope:**
+- Trigger execution from the Test action (the Task 1 button) — Task 2 owns everything from that trigger onward.
+- Execution chain, reusing existing components end-to-end and introducing no new layer: `QueueEntry` → existing UI-4 bridge (`core/order_queue_adapter.py`) → `DispatchIntegration` → `DispatchCore` → `OrderEngine`.
+- Enforce `live=False` (dry-run) end-to-end; no code path in Task 2 can enable live trading.
+- Enforce **exactly once** per Test action: no retry loop, no re-run, no scheduling, no burst.
+- Preserve M6-A…M6-E / Safety Gate: every preflight gate still fires and fail-closed semantics hold — any preflight failure (M6-A identity/trading-state, M6-B price/quantity constraints, M6-C/M6-D BUY/SELL capacity) leaves that order blocked and reported, never silently executed.
+- No new Core layer, no new broker call to a live path, no new endpoint, no new dependency.
+
+**Files (candidate, to be confirmed at implementation):**
+- `ui/test_runner.py` (new, proposed) — UI-side runner that triggers the existing chain in dry-run mode.
+- `ui/main_window.py` — wiring from the Test button (Task 1) to the runner.
+- `test_ui5_task2_dry_run_execution.py` (new) — unit tests using a test-double Dispatch Core / broker (never a real broker).
+
+**Acceptance criteria:**
+1. Triggering the Test action runs each prepared `QueueEntry` through the existing chain (`QueueEntry` → UI-4 bridge → `DispatchIntegration` → `DispatchCore` → `OrderEngine`) exactly once.
+2. `live=False` is enforced end-to-end; no code path in Task 2 can enable live trading.
+3. M6-A…M6-E and the Safety Gate remain authoritative — every gate still fires on the dry-run path, and any blocked order stays blocked.
+4. A blocked or failed order stops **that order only**; it is surfaced (Task 3 renders it) and never retried.
+5. No real broker, network, or TSETMC call occurs in the tests; tests run fully offline.
+6. The existing UI-4 and Core contracts are imported and used unchanged (no edits to `core/`, `brokers/`, `market/`, `models/`).
+7. Full regression passes.
+
+**Out of scope:**
+- The visible Test button, the Test Mode UI state, and the enable/disable behavior (UI-5 Task 1).
+- Rendering per-order results (UI-5 Task 3).
+- The user-facing log table (UI-5 Task 4).
+- Retry / scheduler / countdown (UI-7 and later).
+- Trace ID / Latency / diagnostics (UI-6).
+- Order splitting (M6-F — Deferred / Future Development).
+
+---
+
+##### UI-5 — Task 3 — Per-Order Result Display
+
+**Goal:** Display the result of **each** prepared order after a Test run, so the user sees a per-order success/failure status in the UI — never an aggregate-only "done" state.
+
+**Scope:**
+- Show, per queued order: account, symbol, side (خرید/فروش), status (موفق / ناموفق / مسدودشده), and a short user-meaningful reason.
+- Map Core outcomes (dry-run executed vs BLOCKED by any M6 gate) onto the user-facing statuses; **do not** expose internal gate names, endpoint names, or identifiers.
+- Refresh the display exactly once per Test run, per order, in queue order.
+- No technical details: no Trace ID, no Latency, no gate identifiers.
+
+**Files (candidate, to be confirmed at implementation):**
+- `ui/order_configuration_page.py` (or a new `ui/order_results_view.py`) — per-order result row/widget.
+- `ui/test_runner.py` (from Task 2) — source of the per-order outcomes.
+- `test_ui5_task3_order_result_display.py` (new) — unit tests.
+
+**Acceptance criteria:**
+1. After a Test run, every prepared order has its own visible result entry.
+2. Success and failure are distinguishable and reported **per order** (not a single aggregate message).
+3. Blocked orders show a user-meaningful Persian reason, with no internal Core/gate/endpoint terminology.
+4. Results appear in queue order and are refreshed exactly once per Test run.
+5. A blocked or failed order is never displayed as successful.
+6. The display is fully testable offline.
+7. No file outside `ui/` (plus the new test file) is modified.
+
+**Out of scope:**
+- The persistent user-facing log table with the زمان column (UI-5 Task 4).
+- Trace ID / Latency / execution-step detail (UI-6).
+- Historical log storage / persistence.
+- Diagnostic Mode rendering (UI-6).
+
+---
+
+##### UI-5 — Task 4 — User-Facing Logs
+
+**Goal:** Add the **user-facing log table** on the main page that records the user-meaningful outcome of Test runs (and later executions), using exactly the user-facing fields defined in the main-page specification.
+
+**Scope:**
+- Log table columns, exactly as specified for the main page: **زمان (time) / حساب (account) / نماد (symbol) / عملیات (operation) / وضعیت (status) / توضیح (description)**.
+- Append exactly one row per order result produced by Task 3; the newest entry is visible to the user.
+- Core technical details — M6-A…M6-E, Safety Gate, DispatchCore, Instrument Resolution, Trace ID, broker API details, internal Latency, Simulation Harness, Core internals — **MUST NOT** appear in the log.
+- In-memory only: no persistence, no Central Server upload, no log export.
+
+**Files (candidate, to be confirmed at implementation):**
+- `ui/main_window.py` and/or `ui/order_configuration_page.py` — log-table placement on the main page.
+- `ui/user_log.py` (new, proposed) — in-memory log model backing the six user-facing columns.
+- `test_ui5_task4_user_logs.py` (new) — unit tests.
+
+**Acceptance criteria:**
+1. The log table shows exactly the six user-facing columns (زمان / حساب / نماد / عملیات / وضعیت / توضیح).
+2. Each Test-run order result appends exactly one log row.
+3. No technical Core detail (Trace ID, Latency, gate names, endpoints, internal IDs) is ever displayed.
+4. The log never crashes the UI on empty or malformed input (fail-safe rendering).
+5. Works fully offline in tests.
+6. No file outside `ui/` (plus the new test file) is modified.
+
+**Out of scope:**
+- Trace ID / Latency / execution details / error details / Core breakpoints (UI-6).
+- Log persistence, export, filtering, or Central Server logging.
+- Admin Panel log viewing.
+- Any change to the Core execution path.
 
 #### UI-6 — Test / Diagnostic Mode
 
