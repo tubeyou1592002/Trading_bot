@@ -1051,3 +1051,93 @@ Account identity already exists as a validated domain concept (Task 6.1). Duplic
 * `ui/account_store.py` (`AccountRecord`, `AccountStore`), `ui/accounts_page.py` (`AccountsPage`).
 * `test_ui2_1_account_management.py` — 13 contracts, fully offline.
 * `models/account.py`, `core/`, `brokers/`, `market/` unchanged.
+
+---
+
+## Decision 025 — Order Feedback, Queue Position, and the Task 4 Log Are Staged
+
+**Status:** Accepted — planning decision only; no code implemented.
+
+**Decision:**
+
+The UI-5 Task 4 feature (live order feedback + user-facing log) is **not** implemented as one combined UI/feedback feature. It is split into three small stages, implemented and verified **independently and in order**:
+
+```text
+Stage 1 (Core)  — order feedback & timing contract
+Stage 2 (Core)  — per-order queue position
+Stage 3 (UI)    — the UI-5 Task 4 user-facing log table
+```
+
+Stages 1 and 2 are Core / Broker-layer work, so they are **reclassified as Core tasks that must land before the UI stage**. They are not UI-5 tasks. UI-5 Task 4 stays a **UI-only** task that consumes their contracts, exactly as it already consumes the UI-4 / Block 5 / Block 8 contracts.
+
+**Stage 1 — Order Feedback & Timing Contract (Core):**
+
+* Builds only the missing per-order feedback/timing connection on top of the existing execution infrastructure. No second latency system.
+* For each order the system must be able to associate:
+
+```text
+sequence
+sent_at
+exchange_registered_at
+confirmation_delay = exchange_registered_at - sent_at
+```
+
+* `sent_at` = the actual moment the order request is sent to the broker API.
+* `exchange_registered_at` = the moment a valid broker/exchange feedback confirms the order has been accepted by the broker and registered in the trading core.
+* The send path **MUST NOT** wait for this feedback. Feedback is independent, and its arrival order must never change send order:
+
+```text
+send:      Order 1 -> Order 2 -> Order 3
+feedback:  Order 2 -> Order 1 -> Order 3     (each updates only its own order)
+```
+
+* Existing Block 8 latency instrumentation is reused where applicable. The following measurements remain conceptually separate and must never be fabricated into one combined value:
+  * send → exchange registration,
+  * internal application timing,
+  * broker/API round-trip timing.
+
+**Stage 2 — Queue Position (Core):**
+
+* Per-order queue position must come from a **verified** broker/exchange source.
+* It must never be inferred, estimated, or calculated locally from unrelated data.
+* When reliable queue-position data are unavailable, the UI shows an unknown/empty value — never an invented number.
+* The existing Agah `getorderposition` capability must be verified against the repository's actual broker contract **before** implementation.
+
+**Stage 3 — UI-5 Task 4 User-Facing Log (UI):**
+
+* Implemented **only after** Stages 1 and 2 are available.
+* The table is a live user-facing monitor, not a technical debug log.
+* Rows are created in **send order** and updated **asynchronously** as feedback arrives; the send loop continues independently while earlier orders are waiting for feedback.
+* A successful/green row means the order is **actually confirmed as registered in the trading core**; an initial broker/API response alone is not sufficient.
+* No persistence, database, export, new logging framework, or new trading architecture.
+
+**Conflicts resolved by this decision:**
+
+1. **UI-5 safety rule #4 ("modifies no file under `core/`, `brokers/`, `market/`, or `models/`").** Stage 1 stamps the broker submission boundary and the registration feedback; Stage 2 reads a broker endpoint. Neither can be built inside `ui/`. Resolution: Stages 1 and 2 are Core tasks that precede the UI task; UI-5 Task 4 stays UI-only.
+2. **UI-5 safety rule #3 ("Trace ID, Latency, and detailed diagnostics belong to UI-6").** The superseded Task 4 spec listed latency-style columns. Resolution: exchange registration time, send → registration delay, and internal/API timing are **UI-6 scope** and are removed from the UI-5 Task 4 table.
+3. **No combined latency value.** Block 8 already keeps the internal-stage layer and the broker/API layer separate (its `clocks_shared` guard leaves derived values `None` rather than fabricating a cross-clock delta). These stages must not merge `confirmation_delay`, internal application timing, and broker/API round-trip timing into one number.
+
+**Constraints:**
+
+* Do not recreate Block 5 execution tracking or Block 8 latency instrumentation; reuse them.
+* Do not modify the order-send path merely to display results.
+* Do not block timed/burst sending while waiting for broker/exchange feedback.
+* Do not guess undocumented broker APIs or queue-position semantics.
+* Each stage is implemented and verified independently **before** the next stage begins.
+* `live_trading_enabled` remains disabled; no real order is sent by these stages.
+
+**Open items — verify, never invent:**
+
+* `brokers/base.py` today exposes only `get_account` and `place_order`; the Broker contract has no order-status or queue-position method.
+* `GET /api/v1/order/{decisionId}` and `GET /api/v1/order/getorderposition` are recorded in `AI_PROJECT_MEMORY.md` only as **observed Agah panel traffic**; that file states the exact order-entry status endpoint "has not yet been fully identified".
+* `sent_at` / `exchange_registered_at` / `confirmation_delay` do not exist anywhere in the repository today. Block 8 timestamps are monotonic `perf_counter_ns` ticks, and `models.order.Order.creation_date` is a wall-clock construction stamp, not a send stamp.
+* With `place_order(live=False)` an order never reaches an exchange, so a dry-run execution has no honest `exchange_registered_at`. A verified registration-feedback source is a **prerequisite** for Stage 1, not something Stage 1 may fabricate.
+
+**Reason:**
+
+Order feedback and queue position are broker- and core-level facts. They cannot be produced, and must not be guessed, inside the UI layer. Splitting the work keeps the binding UI-5 boundaries intact (the UI still modifies no `core/`/`brokers/`/`market/`/`models/` file, and latency/diagnostic data stays in UI-6), while making each piece independently verifiable against the real broker contract before anything user-facing depends on it. Staging also prevents the UI table from being built on data that does not yet exist and would therefore have to be invented.
+
+**Evidence:**
+
+* `AI_HANDOFF.md` — the UI-5 Task 4 section, rewritten by this decision (supersedes the six-column spec).
+* No code implemented by this decision; no test added; `core/`, `brokers/`, `market/`, `models/`, `ui/` unchanged.

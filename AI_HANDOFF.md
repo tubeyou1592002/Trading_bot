@@ -2700,30 +2700,48 @@ Next step: UI-4 — Order Queue
 
 ---
 
-##### UI-5 — Task 4 — User-Facing Logs
+##### UI-5 — Task 4 — User-Facing Log
 
-**Goal:** Add the **user-facing log table** on the main page that records the user-meaningful outcome of Test runs (and later executions), using exactly the user-facing fields defined in the main-page specification.
+**Status:** PLANNED — superseded by `DECISIONS.md` Decision 025. **Blocked on two Core prerequisites (Stage 1 and Stage 2); Stages 1–2 are NOT UI-5 tasks.**
+
+**Planning decision (Decision 025):** Task 4 is **not** implemented as one combined UI/feedback feature. It is split into three independently implemented and verified stages. Stages 1 and 2 are Core work and must land first; Task 4 (Stage 3) is the UI-only table that consumes their contracts.
+
+**Prerequisites — NOT part of UI-5 (Core tasks):**
+
+- **Stage 1 — Order Feedback & Timing Contract.** Per order: `sequence`, exact `sent_at`, exact `exchange_registered_at`, and `confirmation_delay = exchange_registered_at - sent_at`. `sent_at` is the actual moment the request is sent to the broker API; `exchange_registered_at` is the moment a valid broker/exchange feedback confirms the order was accepted and registered in the trading core. The send path **MUST NOT** wait for this feedback, and feedback arrival order must never change send order. Existing Block 8 latency instrumentation is reused; send→registration, internal application timing, and broker/API round-trip timing stay separate and are never merged.
+- **Stage 2 — Queue Position.** Per-order queue position must come from a **verified** broker/exchange source; never inferred or calculated locally. When unavailable the UI shows an unknown/empty value. The Agah `getorderposition` capability must be verified against the actual broker contract before implementation.
+
+**Goal (Stage 3):** Once Stages 1 and 2 exist, add the live **user-facing log table** on the main page. It is a live user-facing monitor, not a technical debug log.
 
 **Scope:**
-- Log table columns, exactly as specified for the main page: **زمان (time) / حساب (account) / نماد (symbol) / عملیات (operation) / وضعیت (status) / توضیح (description)**.
-- Append exactly one row per order result produced by Task 3; the newest entry is visible to the user.
-- Core technical details — M6-A…M6-E, Safety Gate, DispatchCore, Instrument Resolution, Trace ID, broker API details, internal Latency, Simulation Harness, Core internals — **MUST NOT** appear in the log.
-- In-memory only: no persistence, no Central Server upload, no log export.
+- Columns: **زمان ارسال (send time, millisecond precision) / حساب (account) / نماد (symbol) / عملیات (operation) / وضعیت (status) / توضیح (short user-facing explanation) / وضعیت صف (queue position — Stage 2 source; unknown when unavailable)**.
+- Rows are created in **send order**, exactly one per order.
+- Rows are updated **asynchronously** as feedback arrives; the send loop continues independently while earlier orders wait.
+- A green/successful row means the order is **confirmed as registered in the trading core**; an initial broker/API response alone is never sufficient.
+- In-memory only: no persistence, no database, no export, no new logging framework.
+
+**Deferred to UI-6 — NOT part of the UI-5 table:**
+- exchange registration time (ms), send → registration delay, internal/API timing (UI-5 safety rule #3: Latency belongs to UI-6).
+- Trace ID, execution-step detail, gate names, endpoints, internal IDs.
 
 **Files (candidate, to be confirmed at implementation):**
 - `ui/main_window.py` and/or `ui/order_configuration_page.py` — log-table placement on the main page.
-- `ui/user_log.py` (new, proposed) — in-memory log model backing the six user-facing columns.
+- `ui/user_log.py` (new, proposed) — in-memory log model backing the user-facing columns.
 - `test_ui5_task4_user_logs.py` (new) — unit tests.
 
 **Acceptance criteria:**
-1. The log table shows exactly the six user-facing columns (زمان / حساب / نماد / عملیات / وضعیت / توضیح).
-2. Each Test-run order result appends exactly one log row.
-3. No technical Core detail (Trace ID, Latency, gate names, endpoints, internal IDs) is ever displayed.
-4. The log never crashes the UI on empty or malformed input (fail-safe rendering).
-5. Works fully offline in tests.
-6. No file outside `ui/` (plus the new test file) is modified.
+1. The table shows only the user-facing columns above.
+2. Rows are created in send order; exactly one row per order.
+3. Rows update asynchronously as feedback arrives, without blocking or reordering the send loop.
+4. A row is green only when registration in the trading core is confirmed; an initial broker/API response alone never shows success.
+5. Queue position is shown only from the Stage 2 verified source — otherwise unknown/empty, never an invented number.
+6. No latency/diagnostic field, Trace ID, gate name, endpoint, or internal ID is displayed (UI-6 scope).
+7. The log never crashes the UI on empty or malformed input (fail-safe rendering).
+8. Works fully offline in tests; no real order is sent.
+9. No file outside `ui/` (plus the new test file) is modified.
 
 **Out of scope:**
+- Stage 1 (order feedback/timing) and Stage 2 (queue position) — Core tasks, not UI-5.
 - Trace ID / Latency / execution details / error details / Core breakpoints (UI-6).
 - Log persistence, export, filtering, or Central Server logging.
 - Admin Panel log viewing.
@@ -2734,6 +2752,7 @@ Next step: UI-4 — Order Queue
 * Trace ID
 * مراحل اجرای سفارش
 * Latency موجود Block 8
+* ستون‌های زمان‌بندی جدول Task 4 (زمان ثبت در بورس، تأخیر ارسال تا ثبت، زمان‌بندی داخلی و API) — طبق Decision 025
 * Execution Details
 * Error Details
 * نقاط توقف Core
