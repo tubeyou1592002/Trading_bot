@@ -321,18 +321,25 @@ Decision 018 در DECISIONS.md: این تصمیم نباید بدون شواهد
 10. Current Task / Milestone
 Milestone 3 completed — integration of OrderEngine with InstrumentProvider and migration of interactive scripts.
 
-جزئیات:
-* Milestone 1: پیاده‌سازی و تأیید AgaahInstrumentProvider (commit 2020f92).
-* Milestone 2: افزودن OrderEngine.execute_by_ins_code و رسمی‌سازی InstrumentLookupError (Decision 019، commit 91bd2b4).
-* Milestone 3: مهاجرت اسکریپت‌های تعاملی (test_order_engine.py، test_order_dry_run.py، test_tsetmc_to_agah.py) به مسیر InstrumentProvider (commit 1a0d2d4).
-* Documentation checkpoint: هم‌ترازی مستندات با Milestoneهای 2 و 3 (commit fb33d94).
+Milestone 4 completed — Block 6 Multi-Account Execution (all Tasks 6.1–6.7 implemented, tested, and committed).
 
-Milestone 4 وضعیت:
-* M4-A (BrokerManager → InstrumentProvider): IMPLEMENTED — committed as `bdd5a1d`. متد `BrokerManager.get_instrument_provider(name)` اضافه شد؛ provider به‌صورت lazy ساخته و per-broker cache می‌شود؛ provider از همان `AgaahBroker` instance موجود در `self.brokers[name]` استفاده می‌کند (broker جدید ساخته نمی‌شود). تست واحد جدید `test_broker_manager.py` 6/6 PASS. regression: 38/38 PASS (32 قبلی + 6 جدید). `main.py`، `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/` در M4-A تغییر نکرده‌اند.
-* M4-B (main.py / Order Workflow): IMPLEMENTED — COMMITTED as `9713360`. `current_provider` در `on_broker_changed` parallel به `current_broker` وصل شد؛ `OrderEngine` instance ساخته شد؛ `selected_instrument` در `select_symbol` ذخیره می‌شود؛ متد `send_order()` اضافه شد که از طریق `OrderEngine.execute_by_ins_code(live=False)` سفارش dry-run را اجرا می‌کند. تست واحد جدید `test_main_order_workflow.py` 7/7 PASS. regression: 45/45 PASS (38 قبلی + 7 جدید). فقط `main.py` تغییر کرده است؛ `core/`، `brokers/base.py`، `brokers/agaah/`، `models/`، `market/`، `input/` تغییر نکرده‌اند. هیچ real order ارسال نشده.
+Block 7 completed — Multi-Broker Execution.
 
-11. Next Step
-M4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone بعدی با دستور مستقل تعریف می‌شود:
+Block 8 completed — Latency Measurement & Optimization.
+
+M5 completed — TSETMC Trading State Integration.
+
+M6-A through M6-E completed — Order Preflight & Constraints.
+
+UI-5 Tasks 1–3 completed.
+
+UI-5 Task 4 Stage 1 completed — Order feedback & timing capture.
+
+UI-5 Task 4 Stage 2 pending — Per-order queue position (requires verified Agah endpoint).
+
+UI-5 Task 4 Stage 3 future — UI user-facing log table (consumes Stage 1/2 contracts).
+
+Milestone 4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone بعدی با دستور مستقل تعریف می‌شود:
 * پیاده‌سازی واقعی `get_trading_state` برای آگاه (Decision 017) پس از شناسایی منبع معتبر.
 * افزودن scheduling/timer برای ارسال زمان‌بندی‌شده سفارش.
 * مدیریت چندحسابی و session lifecycle.
@@ -2567,7 +2574,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-5 — Test & User Logs
 
-**Status:** NOT STARTED — official four-task plan defined below.
+**Status:** IN PROGRESS — UI-5 Tasks 1–3 are completed; UI-5 Task 4 Stage 1 (Core) is completed and pushed. Stage 2 (Core) is the current prerequisite before Task 4 Stage 3 (UI).
 
 **Dependency — UI-4 COMPLETE:** UI-4 — Order Queue is **COMPLETE** (Tasks 1–8 implemented, tested, and committed: queue interface `865c1e3`, dispatch execution bridge `5c5638b`, selected queue entry planning `78445fc`, queue lifecycle `e04076d`, order queue pipeline `ad2dda3`). UI-5 consumes the UI-4 `OrderQueue` / `QueueEntry` / `core/order_queue_adapter.py` bridge contracts as its input and **MUST NOT** modify them or any other UI-4 artifact.
 
@@ -2702,13 +2709,29 @@ Next step: UI-4 — Order Queue
 
 ##### UI-5 — Task 4 — User-Facing Log
 
-**Status:** PLANNED — superseded by `DECISIONS.md` Decision 025. **Blocked on two Core prerequisites (Stage 1 and Stage 2); Stages 1–2 are NOT UI-5 tasks.**
+**Status:** PLANNED — superseded by `DECISIONS.md` Decision 025. **Stage 1 is completed and verified; Stage 2 is the remaining Core prerequisite. Stages 1–2 are NOT UI-5 tasks.**
 
 **Planning decision (Decision 025):** Task 4 is **not** implemented as one combined UI/feedback feature. It is split into three independently implemented and verified stages. Stages 1 and 2 are Core work and must land first; Task 4 (Stage 3) is the UI-only table that consumes their contracts.
 
 **Prerequisites — NOT part of UI-5 (Core tasks):**
 
-- **Stage 1 — Order Feedback & Timing Contract.** Per order: `sequence`, exact `sent_at`, exact `exchange_registered_at`, and `confirmation_delay = exchange_registered_at - sent_at`. `sent_at` is the actual moment the request is sent to the broker API; `exchange_registered_at` is the moment a valid broker/exchange feedback confirms the order was accepted and registered in the trading core. The send path **MUST NOT** wait for this feedback, and feedback arrival order must never change send order. Existing Block 8 latency instrumentation is reused; send→registration, internal application timing, and broker/API round-trip timing stay separate and are never merged.
+-- **Stage 1 — Order Feedback & Timing Contract (IMPLEMENTED).** Per order, the current Core instrumentation preserves the order `sequence` and captures:
+
+* `sent_at_ns` — the application timestamp at the actual broker submission point.
+* `broker_registered_at_ns` — the application receipt timestamp of a successful initial Agah registration response, identified by `isSuccess=true` and `data.decisionId`.
+* `matching_engine_registered_at_ns` — reserved for the application receipt timestamp of `OmsStateChanged (100)` with `AcceptedByBourse (5)`, but currently remains `None` because no Pusher/OMS consumer exists in the repository.
+  The initial broker/API response is **not** treated as final trading-core registration. The send path does not wait for matching-engine feedback, and the timestamp record remains associated with the originating order `sequence`.
+  Existing Block 8 latency instrumentation is reused; send→registration, internal application timing, and broker/API round-trip timing stay separate and are never merged.
+
+**Stage 1 implementation record:**
+
+* Commit: `822c46d` — `feat: capture order feedback timing`
+* Existing Block 8 `LatencyCollector` infrastructure is reused; no second latency system was introduced.
+* Timestamp fields are stored as monotonic nanoseconds.
+* Dry-run does not produce a broker-registration timestamp.
+* No Pusher/NATS/OMS integration was added.
+* Stage 1 was verified offline with focused and regression tests; no real order was sent.
+
 - **Stage 2 — Queue Position.** Per-order queue position must come from a **verified** broker/exchange source; never inferred or calculated locally. When unavailable the UI shows an unknown/empty value. The Agah `getorderposition` capability must be verified against the actual broker contract before implementation.
 
 **Goal (Stage 3):** Once Stages 1 and 2 exist, add the live **user-facing log table** on the main page. It is a live user-facing monitor, not a technical debug log.

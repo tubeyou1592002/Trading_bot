@@ -732,6 +732,32 @@ NATS
 → order state
 ```
 
+### 5b.5a Stage 1 Timing Implementation
+
+Stage 1 timing instrumentation was implemented on top of the existing Block 8 `LatencyCollector`.
+
+Per-order timing fields:
+- `sent_at_ns`
+  - Monotonic application timestamp captured at the actual broker submission point.
+- `broker_registered_at_ns`
+  - Monotonic application receipt timestamp captured only when the live Agah order response confirms successful initial registration with:
+    - `isSuccess = true`
+    - `data.decisionId` present
+- `matching_engine_registered_at_ns`
+  - Reserved for receipt of `OmsStateChanged (100)` with `AcceptedByBourse (5)`.
+  - Currently remains `None` because no Pusher/OMS consumer exists in the repository.
+
+Important:
+- `data.decisionId` confirms initial broker/Agah registration only.
+- It is not equivalent to `AcceptedByBourse (5)`.
+- `AcceptedByBourse (5)` remains the documented matching-engine registration signal.
+- Dry-run does not generate a broker-registration timestamp.
+- No new latency framework was introduced; Block 8 infrastructure is reused.
+- No real order was sent during implementation or testing.
+
+Implementation commit:
+`822c46d — feat: capture order feedback timing`
+
 ### 5b.6 Validity Constraints (Must Read)
 
 - All of §5b is **Agah-specific**.

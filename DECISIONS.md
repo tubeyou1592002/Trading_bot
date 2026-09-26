@@ -1056,7 +1056,34 @@ Account identity already exists as a validated domain concept (Task 6.1). Duplic
 
 ## Decision 025 — Order Feedback, Queue Position, and the Task 4 Log Are Staged
 
-**Status:** Accepted — planning decision only; no code implemented.
+**Status:** Accepted — planning decision; Stage 1 has since been implemented and verified separately. Stage 2 remains pending. Stage 3 remains the future UI implementation.
+
+### Decision 025 — Implementation Update: Stage 1
+
+**Status:** Implemented and verified.
+
+Stage 1 was implemented as a Core-level instrumentation extension without introducing a second latency system.
+
+Current implemented fields per order:
+- `sent_at_ns` — timestamp at the actual application send point to the broker.
+- `broker_registered_at_ns` — timestamp when a successful initial Agah registration response is received. The Agah response must contain `isSuccess=true` and `data.decisionId`.
+- `matching_engine_registered_at_ns` — reserved for matching-engine registration feedback, but currently remains `None` because the repository does not contain a Pusher/OMS consumer for `OmsStateChanged (100)` / `AcceptedByBourse (5)`.
+
+Important distinction:
+- Initial `POST /api/v1/order` success is initial broker/Agah registration only.
+- It is not equivalent to final registration in the trading core.
+- `AcceptedByBourse (5)` remains the verified trading-core registration signal documented in `AI_PROJECT_MEMORY.md`.
+
+Implementation:
+- Commit: `822c46d` — `feat: capture order feedback timing`
+- Block 8 latency instrumentation is reused.
+- No new event bus, polling mechanism, protocol, or persistence layer was introduced.
+- Dry-run does not fabricate broker-registration feedback.
+- No real order was sent during Stage 1 implementation or testing.
+
+Verification:
+- Focused Stage 1 tests: 10 passed
+- Block 8 / engine / M6 / dispatch regression set: 209 passed
 
 **Decision:**
 
@@ -1077,13 +1104,12 @@ Stages 1 and 2 are Core / Broker-layer work, so they are **reclassified as Core 
 
 ```text
 sequence
-sent_at
-exchange_registered_at
-confirmation_delay = exchange_registered_at - sent_at
+sent_at_ns
+broker_registered_at_ns
 ```
 
-* `sent_at` = the actual moment the order request is sent to the broker API.
-* `exchange_registered_at` = the moment a valid broker/exchange feedback confirms the order has been accepted by the broker and registered in the trading core.
+* `sent_at_ns` = the actual moment the order request is sent to the broker API (captured at the application send point).
+* `broker_registered_at_ns` = the moment the application receives a valid broker/exchange feedback confirming initial registration (Agah: `isSuccess=true` and `data.decisionId`). This is **not** final trading-core registration.
 * The send path **MUST NOT** wait for this feedback. Feedback is independent, and its arrival order must never change send order:
 
 ```text
@@ -1130,8 +1156,9 @@ feedback:  Order 2 -> Order 1 -> Order 3     (each updates only its own order)
 
 * `brokers/base.py` today exposes only `get_account` and `place_order`; the Broker contract has no order-status or queue-position method.
 * `GET /api/v1/order/{decisionId}` and `GET /api/v1/order/getorderposition` are recorded in `AI_PROJECT_MEMORY.md` only as **observed Agah panel traffic**; that file states the exact order-entry status endpoint "has not yet been fully identified".
-* `sent_at` / `exchange_registered_at` / `confirmation_delay` do not exist anywhere in the repository today. Block 8 timestamps are monotonic `perf_counter_ns` ticks, and `models.order.Order.creation_date` is a wall-clock construction stamp, not a send stamp.
-* With `place_order(live=False)` an order never reaches an exchange, so a dry-run execution has no honest `exchange_registered_at`. A verified registration-feedback source is a **prerequisite** for Stage 1, not something Stage 1 may fabricate.
+* `sent_at_ns` and `broker_registered_at_ns` now exist in the Block 8-based order timing instrumentation. `matching_engine_registered_at_ns` remains unpopulated until a verified OMS/Pusher consumer exists. A final confirmation delay to matching-engine registration is therefore not currently available. Block 8 timestamps are monotonic `perf_counter_ns` ticks, and `models.order.Order.creation_date` is a wall-clock construction stamp, not a send stamp.
+
+* With `place_order(live=False)` an order never reaches an exchange, so dry-run execution has no honest broker or exchange registration timestamp. Stage 1 therefore records no broker-registration timestamp for dry-run, and does not fabricate matching-engine feedback.
 
 **Reason:**
 
