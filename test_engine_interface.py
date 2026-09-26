@@ -183,15 +183,19 @@ def test_agaah_live_trading_disabled_by_default():
     assert broker.live_trading_enabled is False
 
 
-def test_agaah_get_trading_state_returns_unverified_on_network_failure():
+def test_agaah_get_trading_state_raises_unavailable_on_network_failure():
     """
-    وقتی TSETMC در دسترس نیست، وضعیت UNVERIFIED برگردانده می‌شود.
+    وقتی TSETMC در دسترس نیست، TradingStateUnavailable پرتاب می‌شود.
 
     بر اساس Decision 020، در صورت خطای شبکه یا عدم دریافت
-    پاسخ معتبر، نتیجه UNVERIFIED است تا سفارش بلاک شود.
+    پاسخ معتبر، broker باید TradingStateUnavailable پرتاب کند
+    تا موتور سفارش آن را به UNVERIFIED تبدیل و سفارش را بلاک نماید.
     """
 
+    import requests
     from unittest.mock import patch, MagicMock
+
+    from models.trading_state import TradingStateUnavailable
 
     broker = AgaahBroker()
 
@@ -207,14 +211,17 @@ def test_agaah_get_trading_state_returns_unverified_on_network_failure():
     ) as mock_tsetmc_class:
         mock_tsetmc = mock_tsetmc_class.return_value
         mock_tsetmc.get_trading_state.side_effect = (
-            ConnectionError("network unavailable")
+            requests.RequestException("network unavailable")
         )
 
-        state = broker.get_trading_state("IRO1TEST0001")
+        try:
+            broker.get_trading_state("IRO1TEST0001")
+        except TradingStateUnavailable:
+            return
 
-    assert isinstance(state, TradingState)
-    assert state.is_verified is False
-    assert state.is_order_entry_allowed is False
+        raise AssertionError(
+            "broker.get_trading_state باید TradingStateUnavailable پرتاب کند."
+        )
 
 
 def test_agaah_get_trading_state_requires_nsc_id():
