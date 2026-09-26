@@ -63,6 +63,8 @@ class OrderEngine:
         account: Account,
         live: bool = False,
         broker_timing: Optional["BrokerCallRecorder"] = None,
+        collector: Optional["LatencyCollector"] = None,
+        sequence: Optional[int] = None,
     ) -> OrderExecutionResult:
         """
         اجرای سفارش با دریافت `ins_code` به‌جای BrokerInstrument.
@@ -70,6 +72,9 @@ class OrderEngine:
         ``broker_timing`` (Task 8.3) is an optional, opt-in recorder that
         measures the round trip of the existing broker/provider calls. When
         it is None the behavior is exactly as before and no clock is read.
+
+        ``collector`` and ``sequence`` (UI-5 Task 4 Stage 1) optionally capture
+        order feedback timestamps. When None, no feedback timestamps are recorded.
 
         Pipeline:
 
@@ -185,6 +190,8 @@ class OrderEngine:
             account=account,
             live=live,
             broker_timing=broker_timing,
+            collector=collector,
+            sequence=sequence,
         )
 
     def prepare(
@@ -508,6 +515,8 @@ class OrderEngine:
         account: Account,
         live: bool = False,
         broker_timing: Optional["BrokerCallRecorder"] = None,
+        collector: Optional["LatencyCollector"] = None,
+        sequence: Optional[int] = None,
     ) -> OrderExecutionResult:
         """
         آماده‌سازی و اجرای سفارش.
@@ -516,6 +525,11 @@ class OrderEngine:
         existing ``place_order`` call. It is measurement only: ``live``,
         the engine-level safety check, and the existing exception handling are
         unchanged.
+
+        ``collector`` and ``sequence`` (UI-5 Task 4 Stage 1) optionally capture
+        order feedback timestamps (sent_at, broker_registered_at,
+        matching_engine_registered_at) using the collector's clock. When None,
+        no feedback timestamps are recorded.
 
         live=False:
             فقط Dry Run.
@@ -561,6 +575,10 @@ class OrderEngine:
                     ),
                 )
 
+        # Record sent_at timestamp at the actual send point.
+        if collector is not None and sequence is not None:
+            collector.record_sent_at(sequence)
+
         try:
             broker_result = measure_broker_call(
                 broker_timing,
@@ -580,6 +598,17 @@ class OrderEngine:
                 broker_name=broker.name,
                 message=str(exc),
             )
+
+        # Record broker_registered_at only for live orders with successful
+        # initial broker registration (response contains isSuccess=true and data.decisionId).
+        # Dry-run does not represent real broker registration.
+        if live and collector is not None and sequence is not None:
+            if isinstance(broker_result, dict):
+                is_success = broker_result.get("isSuccess", False)
+                data = broker_result.get("data")
+                has_decision_id = isinstance(data, dict) and "decisionId" in data
+                if is_success and has_decision_id:
+                    collector.record_broker_registered_at(sequence)
 
         # ---------------------------------------------
         # Live

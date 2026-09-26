@@ -404,6 +404,8 @@ class DispatchCore:
                         provider=provider,
                         dispatch_request=dispatch_request,
                         broker_timing=broker_timing,
+                        collector=collector,
+                        sequence=sequence,
                     ),
                 )
                 results.append((sequence, result))
@@ -691,6 +693,8 @@ class DispatchCore:
         provider,
         dispatch_request: BrokerDispatchRequest,
         broker_timing: Optional[BrokerCallRecorder] = None,
+        collector: Optional["LatencyCollector"] = None,
+        sequence: Optional[int] = None,
     ):
         """
         Delegate one order to the existing OrderEngine path.
@@ -702,6 +706,9 @@ class DispatchCore:
         feeds the existing ``execute_by_ins_code`` path (ins_code ->
         provider resolution -> nsc_id consistency check -> prepare() with all
         M6-A … M6-E gates -> broker.place_order).
+
+        ``collector`` and ``sequence`` (UI-5 Task 4 Stage 1) optionally capture
+        order feedback timestamps. When None, no feedback timestamps are recorded.
 
         Returns an ``OrderExecutionResult``; never raises.
         """
@@ -719,6 +726,11 @@ class DispatchCore:
             # path invokes the engine with exactly the same arguments as
             # before this task.
             engine_kwargs["broker_timing"] = broker_timing
+        if collector is not None and sequence is not None:
+            # UI-5 Task 4 Stage 1: pass collector and sequence for
+            # feedback timestamp capture.
+            engine_kwargs["collector"] = collector
+            engine_kwargs["sequence"] = sequence
 
         try:
             result = self.order_engine.execute_by_ins_code(**engine_kwargs)

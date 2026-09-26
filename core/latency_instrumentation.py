@@ -255,6 +255,13 @@ class OrderLatency:
     # (both of their layers are, by construction, on one clock).
     clocks_shared: bool = True
 
+    # UI-5 Task 4 Stage 1 — Order feedback timestamps (monotonic ns).
+    # Captured at application receipt time of the corresponding feedback.
+    # None when the feedback has not (yet) been received.
+    sent_at_ns: Optional[int] = None
+    broker_registered_at_ns: Optional[int] = None
+    matching_engine_registered_at_ns: Optional[int] = None
+
     # -- Task 8.2 stage accessors ------------------------------------------
 
     def stage(self, stage_name: str) -> Optional[StageTiming]:
@@ -662,6 +669,29 @@ class LatencyCollector:
         """Attach the existing execution result to ``sequence``'s record."""
         record = self._order(sequence)
         record.execution_result = result
+        return record
+
+    # --- UI-5 Task 4 Stage 1: Order feedback timestamp capture ---
+    # These are called at the application receipt point of each feedback.
+    # They use the collector's BROKER clock (not the stage clock) for consistency
+    # with the broker/API layer and to avoid consuming the Task 8.2 stage clock.
+
+    def record_sent_at(self, sequence: int) -> OrderLatency:
+        """Record the timestamp when the order was sent to the broker."""
+        record = self._order(sequence)
+        record.sent_at_ns = self._broker_clock()
+        return record
+
+    def record_broker_registered_at(self, sequence: int) -> OrderLatency:
+        """Record the timestamp when broker registration feedback was received."""
+        record = self._order(sequence)
+        record.broker_registered_at_ns = self._broker_clock()
+        return record
+
+    def record_matching_engine_registered_at(self, sequence: int) -> OrderLatency:
+        """Record the timestamp when matching-engine registration feedback was received."""
+        record = self._order(sequence)
+        record.matching_engine_registered_at_ns = self._broker_clock()
         return record
 
     def broker_recorder(self, sequence: int) -> BrokerCallRecorder:

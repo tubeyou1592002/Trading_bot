@@ -656,7 +656,7 @@ def test_broker_timing_is_only_passed_when_measurement_is_enabled():
     assert seen[1]["broker_timing"].sequence == 1
 
     # Same arguments either way apart from the measurement keyword.
-    assert set(seen[0]) | {"broker_timing"} == set(seen[1])
+    assert set(seen[0]) | {"broker_timing", "collector", "sequence"} == set(seen[1])
 
 
 # ---------------------------------------------------------------------------
@@ -763,11 +763,11 @@ def test_measurement_keeps_existing_engine_and_result_contracts():
     }
 
     # prepare()/execute()/execute_by_ins_code() keep every existing parameter
-    # and only gain an optional trailing measurement keyword.
+    # and only gain optional trailing measurement/feedback keywords.
     for method, expected in (
-        (OrderEngine.execute_by_ins_code, "broker_timing"),
+        (OrderEngine.execute_by_ins_code, "sequence"),
         (OrderEngine.prepare, "broker_timing"),
-        (OrderEngine.execute, "broker_timing"),
+        (OrderEngine.execute, "sequence"),
     ):
         params = list(inspect.signature(method).parameters)
         assert params[-1] == expected
