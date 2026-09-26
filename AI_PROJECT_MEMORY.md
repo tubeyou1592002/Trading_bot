@@ -644,21 +644,105 @@ GET /instruments/live-segmentation/{nscId}
 
 Endpoint:
 
-
-
 ```text
 
 GET /v2/markets/marketindexes?nscIds=...
 
 ```
 
+---
+## 5b. Agah OMS (Order Management System) — Verified Contracts (Agah-Specific Only)
 
+**Source:** Real Agah panel network traffic (Chrome DevTools) and live order observation.  
+**Scope:** The following applies **only to Agah**. Other brokers must not use these endpoints, state values, events, or mappings without independent evidence.  
+**Real trading:** Still disabled. No real order was submitted for these discoveries.
 
-\---
+### 5b.1 Initial Order Placement
 
+| Item | Detail |
+|------|--------|
+| Endpoint | `POST /api/v1/order` |
+| Success response | Contains `data.decisionId` |
+| `data.isSuccess=true` | **Only** indicates initial registration success. It does **not** mean the order is registered in the trading core. |
+| Core registration signal | Observed via OMS state `AcceptedByBourse (5)` → message «... در هسته معاملات ثبت گردید» |
 
+> **Conclusion:** `POST /api/v1/order` success ≠ final registration in trading core. Full lifecycle must be tracked via `decisionId` and OMS states.
 
-\## 6. TSETMC
+### 5b.2 OMS State Contract — `OmsStateChanged` (code 100)
+
+Frontend consumes `OmsStateChanged` (message code `100`) for order state transitions.  
+**Contract: numeric value + enum name + Persian/functional meaning**
+
+| Value | Enum Name | Persian / Meaning |
+|-------|-----------|-------------------|
+| 1 | `SavingInAsa` | در حال ثبت در آسا |
+| 2 | `SavedInAsa` | در آسا ثبت شد |
+| 3 | `SendingToBourse` | در حال ارسال به بورس |
+| 4 | `SentToBourse` | به بورس ارسال شد |
+| 5 | `AcceptedByBourse` | در هسته معاملات ثبت/پذیرفته شد |
+| 6 | `RejectedByError` | رد سفارش با خطا |
+| 7 | `Traded` | معامله شد |
+| 8 | `Completed` | تکمیل شد |
+| 9 | `EliminatedByBourse` | حذف/لغو توسط بورس |
+
+### 5b.3 Real-World Observation (Single Live Order)
+
+```
+SavedInAsa (2)
+  → پیام «... در آسا ثبت گردید»
+
+AcceptedByBourse (5)
+  → پیام «... در هسته معاملات ثبت گردید»
+```
+
+This confirms the gap between initial POST success and core registration.
+
+### 5b.4 OMS Error Path — `RejectedByError = 6`
+
+When an order is rejected, the Pusher push includes:
+- `decisionId`
+- `message` → splits into `errorText | errorCode`
+
+Example `errorCode`: `oms_042`  
+Frontend mapping for `oms_042`: **«وضعیت گروه نماد برای ثبت سفارش مجاز نمی باشد»**
+
+**Timing note:** The rejection push can arrive **before** the successful POST callback. Frontend temporarily holds it by `decisionId` and processes after the callback resolves.
+
+> **Unverified / Not Confirmed:**
+> - Root cause/backend logic that produces `oms_042` is **not confirmed**.
+> - `instrumentGroupStateCode` is **not confirmed** as the definitive backend condition for `oms_042`.
+> - **Do not** implement a speculative pre-check based on `groupStateCode` for `oms_042`.
+
+### 5b.5 Pusher Transport (Observed in Production)
+
+Frontend uses NATS-backed Pusher:
+
+```
+/api/v1/pusher/nats
+/api/v1/Pusher/message-types
+```
+
+Message flow:
+
+```
+NATS
+→ decode message
+→ message$
+→ OmsStateChanged (100)
+→ order state
+```
+
+### 5b.6 Validity Constraints (Must Read)
+
+- All of §5b is **Agah-specific**.
+- Other brokers **must not** reuse these states, events, endpoints, or mappings without independent evidence.
+- `oms_042` backend cause: **unconfirmed**.
+- `instrumentGroupStateCode` as `oms_042` condition: **unconfirmed**.
+- No speculative pre-check for `oms_042` based on `groupStateCode`.
+
+---
+
+## 6. TSETMC
 
 
 
