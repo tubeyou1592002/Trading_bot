@@ -335,7 +335,7 @@ UI-5 Tasks 1–3 completed.
 
 UI-5 Task 4 Stage 1 completed — Order feedback & timing capture.
 
-UI-5 Task 4 Stage 2 pending — Per-order queue position (requires verified Agah endpoint).
+UI-5 Task 4 Stage 2 completed — Queue position via Agah NATS/OMS.
 
 UI-5 Task 4 Stage 3 future — UI user-facing log table (consumes Stage 1/2 contracts).
 

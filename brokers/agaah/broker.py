@@ -1,4 +1,5 @@
 import base64
+from typing import TYPE_CHECKING, Optional
 
 import requests
 
@@ -10,6 +11,10 @@ from market.tsetmc import TSETMC
 
 from ..base import Broker
 from ..device_info import ExternalDeviceInfoProvider
+
+if TYPE_CHECKING:
+    from .nats_transport import AgahQueuePositionService
+    from .queue_position import AgahQueuePositionProvider
 
 
 CETAVAL_ALLOWED = {"A ", "A", "AR"}
@@ -62,6 +67,9 @@ class AgaahBroker(Broker):
         # ---------------------------------------------
         # False = هیچ POST /order ارسال نمی‌شود.
         self.live_trading_enabled = False
+
+        # Queue position provider (Stage 2) - lazy init to avoid circular import
+        self._queue_position_provider: Optional["AgahQueuePositionProvider"] = None
 
     @property
     def name(self):
@@ -908,6 +916,38 @@ class AgaahBroker(Broker):
             )
 
         return data
+
+    # =================================================
+    # Queue Position (Stage 2)
+    # =================================================
+
+    def _ensure_queue_position_provider(self) -> "AgahQueuePositionProvider":
+        """Lazy initialization of queue position provider."""
+        if self._queue_position_provider is None:
+            from .queue_position import AgahQueuePositionProvider
+            self._queue_position_provider = AgahQueuePositionProvider(self)
+        return self._queue_position_provider
+
+    async def start_queue_position_tracking(self) -> None:
+        """Start queue position tracking via NATS/OMS."""
+        provider = self._ensure_queue_position_provider()
+        await provider.start()
+
+    async def stop_queue_position_tracking(self) -> None:
+        """Stop queue position tracking."""
+        if self._queue_position_provider:
+            await self._queue_position_provider.stop()
+
+    def on_order_placed(self, decision_id: str, nsc_id: str) -> None:
+        """Called when order is placed to register for queue position tracking."""
+        provider = self._ensure_queue_position_provider()
+        provider.on_order_placed(decision_id, nsc_id)
+
+    def get_queue_position(self, decision_id: str) -> Optional[int]:
+        """Get queue position for an order by decisionId."""
+        if self._queue_position_provider:
+            return self._queue_position_provider.get_queue_position(decision_id)
+        return None
 
     # =================================================
     # Cancel Order

@@ -602,13 +602,22 @@ class OrderEngine:
         # Record broker_registered_at only for live orders with successful
         # initial broker registration (response contains isSuccess=true and data.decisionId).
         # Dry-run does not represent real broker registration.
-        if live and collector is not None and sequence is not None:
-            if isinstance(broker_result, dict):
-                is_success = broker_result.get("isSuccess", False)
-                data = broker_result.get("data")
-                has_decision_id = isinstance(data, dict) and "decisionId" in data
-                if is_success and has_decision_id:
+        if live and isinstance(broker_result, dict):
+            is_success = broker_result.get("isSuccess", False)
+            data = broker_result.get("data")
+            has_decision_id = isinstance(data, dict) and "decisionId" in data
+
+            if is_success and has_decision_id:
+                decision_id = data["decisionId"]
+
+                if collector is not None and sequence is not None:
                     collector.record_broker_registered_at(sequence)
+
+                if hasattr(broker, "on_order_placed"):
+                    broker.on_order_placed(
+                        decision_id,
+                        order.nsc_id,
+                    )
 
         # ---------------------------------------------
         # Live

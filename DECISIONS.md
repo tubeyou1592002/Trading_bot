@@ -1129,6 +1129,33 @@ feedback:  Order 2 -> Order 1 -> Order 3     (each updates only its own order)
 * When reliable queue-position data are unavailable, the UI shows an unknown/empty value — never an invented number.
 * The existing Agah `getorderposition` capability must be verified against the repository's actual broker contract **before** implementation.
 
+**Stage 2 Implementation Status (UI-5 Task 4 Stage 2):**
+
+* Implementation complete: `brokers/agaah/nats_transport.py`, `brokers/agaah/queue_position.py`, `brokers/agaah/broker.py`
+* NATS transport with runtime URL/subject/schema fetching from Agah APIs
+* JWT/NKey authentication with fail-closed (no token-only fallback on privateKey parse failure)
+* Decoder parses server-provided schema (ordered field list for code 100)
+* Queue position fetched from `GET /api/v1/order/getorderposition` with nscId, hostOrderNumber, orderDate
+* orderDate extracted from SavedInAsa (2) message, timezone converted (Asia/Tehran → UTC)
+* hostOrderNumber extracted from AcceptedByBourse (5) message
+* Order correlation via decisionId only
+* Non-blocking: OMS handler schedules async fetch without blocking message loop
+* Non-blocking: order placement does not wait for queue position
+* Fail-closed: missing params, API failure, invalid response → position = None
+
+**Stage 2 Gap — Lifecycle:**
+
+* `start_queue_position_tracking()` / `stop_queue_position_tracking()` have NO call sites in the application.
+* The Qt application (`ui/app.py`) has no asyncio event loop; `start`/`stop` are async methods that cannot be called from the synchronous app lifecycle.
+* No new event loop bridge, background thread, scheduler, or event bus was created (per task constraints).
+* **Gap:** The transport implementation is complete but cannot be activated in the current Qt application lifecycle without a lifecycle bridge (deferred to a separate task).
+
+**Stage 2 Gap — Dependency Declaration:**
+
+* No `requirements.txt`, `pyproject.toml`, `setup.py`, `setup.cfg`, `Pipfile`, `uv.lock`, or `poetry.lock` exists in the repository.
+* `nats-py` and `nkeys` are installed on the Agent's system but are not declared in any manifest.
+* **Gap:** No dependency manifest exists to declare `nats-py` and `nkeys`. No new package-management architecture was created per constraints.
+
 **Stage 3 — UI-5 Task 4 User-Facing Log (UI):**
 
 * Implemented **only after** Stages 1 and 2 are available.
@@ -1168,3 +1195,14 @@ Order feedback and queue position are broker- and core-level facts. They cannot 
 
 * `AI_HANDOFF.md` — the UI-5 Task 4 section, rewritten by this decision (supersedes the six-column spec).
 * No code implemented by this decision; no test added; `core/`, `brokers/`, `market/`, `models/`, `ui/` unchanged.
+
+---
+
+## Stage 2 Implementation Evidence
+
+* Implementation files: `brokers/agaah/nats_transport.py`, `brokers/agaah/queue_position.py`, `brokers/agaah/broker.py`, `core/order_engine.py`
+* Tests: `test_ui5_task4_stage2_queue_position.py` — 39 tests covering NATS transport, OMS decoding, queue position fetch, timezone conversion, non-blocking behavior
+* API evidence: `AI_PROJECT_MEMORY.md` §5b — Agah OMS via NATS, OmsStateChanged states, `oms_042` error mapping
+* Protocol: NATS WebSocket transport with JWT/NKey authentication (`nkeys_seed_str`)
+* Endpoints: `GET /api/v1/pusher/nats` (connection info), `GET /api/v1/Pusher/message-types` (schema), `GET /api/v1/order/getorderposition` (queue position)
+* Dependencies: `nats-py`, `nkeys` (installed but not declared — no manifest exists)
