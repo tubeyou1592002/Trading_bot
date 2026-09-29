@@ -1,4 +1,5 @@
 import base64
+import logging
 from typing import TYPE_CHECKING, Optional
 
 import requests
@@ -70,6 +71,13 @@ class AgaahBroker(Broker):
 
         # Queue position provider (Stage 2) - lazy init to avoid circular import
         self._queue_position_provider: Optional["AgahQueuePositionProvider"] = None
+
+        # Listener lists for feedback/queue-position tracking (Stage 3 bridge)
+        self._order_registered_listeners = []
+        self._queue_position_listeners = []
+        self._order_error_listeners = []
+
+        self._logger = logging.getLogger(__name__)
 
     @property
     def name(self):
@@ -920,12 +928,61 @@ class AgaahBroker(Broker):
     # =================================================
     # Queue Position (Stage 2)
     # =================================================
+    # Feedback / Queue Position Listeners (Stage 3 bridge)
+    # =================================================
+
+    def add_order_registered_listener(self, callback) -> None:
+        """Register a callback for AcceptedByBourse order registration events."""
+        self._order_registered_listeners.append(callback)
+
+    def add_queue_position_listener(self, callback) -> None:
+        """Register a callback for queue position updates."""
+        self._queue_position_listeners.append(callback)
+
+    def add_order_error_listener(self, callback) -> None:
+        """Register a callback for order tracking errors."""
+        self._order_error_listeners.append(callback)
+
+    def _on_order_registered_forward(self, decision_id: str, order_info) -> None:
+        """Forward AcceptedByBourse registration to all registered listeners."""
+        for cb in self._order_registered_listeners:
+            try:
+                cb(decision_id, order_info)
+            except Exception:
+                self._logger.warning(
+                    "Order registered listener failed for %s", decision_id
+                )
+
+    def _on_queue_position_forward(self, decision_id: str, position: int) -> None:
+        """Forward queue position updates to all registered listeners."""
+        for cb in self._queue_position_listeners:
+            try:
+                cb(decision_id, position)
+            except Exception:
+                self._logger.warning(
+                    "Queue position listener failed for %s", decision_id
+                )
+
+    def _on_order_error_forward(self, decision_id: str, error: str) -> None:
+        """Forward order errors to all registered listeners."""
+        for cb in self._order_error_listeners:
+            try:
+                cb(decision_id, error)
+            except Exception:
+                self._logger.warning(
+                    "Order error listener failed for %s", decision_id
+                )
 
     def _ensure_queue_position_provider(self) -> "AgahQueuePositionProvider":
         """Lazy initialization of queue position provider."""
         if self._queue_position_provider is None:
             from .queue_position import AgahQueuePositionProvider
-            self._queue_position_provider = AgahQueuePositionProvider(self)
+            self._queue_position_provider = AgahQueuePositionProvider(
+                self,
+                on_order_registered=self._on_order_registered_forward,
+                on_queue_position=self._on_queue_position_forward,
+                on_error=self._on_order_error_forward,
+            )
         return self._queue_position_provider
 
     async def start_queue_position_tracking(self) -> None:

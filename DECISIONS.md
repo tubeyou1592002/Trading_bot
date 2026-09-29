@@ -1056,7 +1056,7 @@ Account identity already exists as a validated domain concept (Task 6.1). Duplic
 
 ## Decision 025 — Order Feedback, Queue Position, and the Task 4 Log Are Staged
 
-**Status:** Accepted — planning decision; Stage 1 has since been implemented and verified separately. Stage 2 remains pending. Stage 3 remains the future UI implementation.
+**Status:** Accepted — planning decision; Stage 1 has been implemented and verified; Stage 2 has been implemented and verified; the Stage 3 prerequisite (OMS/NATS feedback activation bridge) is COMPLETED. The Stage 3 UI table is NOT STARTED and is the next step.
 
 ### Decision 025 — Implementation Update: Stage 1
 
@@ -1206,3 +1206,17 @@ Order feedback and queue position are broker- and core-level facts. They cannot 
 * Protocol: NATS WebSocket transport with JWT/NKey authentication (`nkeys_seed_str`)
 * Endpoints: `GET /api/v1/pusher/nats` (connection info), `GET /api/v1/Pusher/message-types` (schema), `GET /api/v1/order/getorderposition` (queue position)
 * Dependencies: `nats-py`, `nkeys` (installed but not declared — no manifest exists)
+
+---
+
+## Stage 3 Prerequisite Implementation Evidence — Feedback Activation Bridge (COMPLETED)
+
+The lifecycle gap recorded above is now closed. The Stage 3 **prerequisite** is COMPLETED; the Stage 3 UI table itself is NOT STARTED and is the next step.
+
+* Implementation files: `ui/order_feedback_service.py` (new — `OrderFeedbackService`), `ui/main_window.py`, `ui/test_runner.py`, `brokers/agaah/broker.py`, `brokers/agaah/queue_position.py`
+* Lifecycle is ACTIVE: the service starts on entering Order Configuration (`select_page`) and stops on window close (`closeEvent`).
+* `TestRunner` and `OrderFeedbackService` use the SAME shared `BrokerManager` / `AgaahBroker` instance (lazy `MainWindow._shared_broker_manager()`), so the order execution path and the OMS feedback path share one broker identity.
+* `AcceptedByBourse` (action=5) is the ONLY trigger for core order-registration (`on_order_registered` fires only from `_handle_accepted_by_bourse`); `SavedInAsa` (action=2) does not trigger core registration.
+* The asyncio/NATS loop runs on a dedicated background `QThread`; it never touches the GUI thread and never blocks order sends. Receiving path only — no scheduler, no order sending.
+* Verification tests (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32) PASS; full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS. Fully offline — no real Agah/NATS/network.
+* Status: PREREQUISITE COMPLETED — Stage 3 UI table NOT STARTED (next step).

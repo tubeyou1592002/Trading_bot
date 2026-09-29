@@ -108,6 +108,18 @@ class MainWindow(QMainWindow):
         self.account_store = AccountStore()
 
         # ---------------------------------------------
+        # Lazy shared BrokerManager (UI-5 Task 4 Stage 3 prerequisite)
+        # ---------------------------------------------
+        # One BrokerManager per MainWindow instance, created only on first
+        # actual request. Every lazy factory below returns the SAME manager
+        # instance (and thus the SAME AgaahBroker), so the broker that
+        # receives OMS feedback (via OrderFeedbackService) is the exact
+        # same instance used by the order execution path (via TestRunner ->
+        # DispatchCore -> broker_manager.get("آگاه")).
+        self._broker_manager_cache = None
+        self._feedback_service = None
+
+        # ---------------------------------------------
         # Window identity / initial logical size
         # ---------------------------------------------
 
@@ -211,6 +223,8 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self.mode_label)
         self._update_mode_label()
 
+        # ---------------------------------------------
+
     # ---------------------------------------------------------
     # Navigation (single navigation mechanism, unchanged)
     # ---------------------------------------------------------
@@ -231,7 +245,7 @@ class MainWindow(QMainWindow):
     def _real_trading_state_query(self):
         """
         Lazily build the REAL read-only trading-state query seam
-        (core.trading_state_query.TradingStateQuery) backed by the real
+        (core.trading_state_query.TradingStateQuery) backed by the shared
         BrokerManager broker/provider pair — the same path the Core
         already uses; nothing new is implemented here.
 
@@ -240,17 +254,18 @@ class MainWindow(QMainWindow):
         contracts of UI-1..UI-3.1 preserved). Read-only: it never
         creates, submits or dispatches an Order.
         """
-        from brokers.manager import BrokerManager
         from core.trading_state_query import TradingStateQuery
 
-        manager = BrokerManager()
+        manager = self._shared_broker_manager()
         broker = manager.get("آگاه")
         provider = manager.get_instrument_provider("آگاه")
         return TradingStateQuery(broker, provider)
 
     def _real_test_runner(self):
         """
-        Lazily build the REAL UI-5 Test runner.
+        Lazily build the REAL UI-5 Test runner, passing the shared
+        BrokerManager so that DispatchCore resolves the SAME AgaahBroker
+        instance that OrderFeedbackService listens on.
 
         Imported on the first real Test pass, never at MainWindow
         construction, so the offline UI contracts (UI-1..UI-3.1) stay
@@ -259,7 +274,52 @@ class MainWindow(QMainWindow):
         """
         from ui.test_runner import TestRunner
 
-        return TestRunner()
+        return TestRunner(
+            broker_manager=self._shared_broker_manager()
+        )
+
+    def _shared_broker_manager(self):
+        """
+        Lazily create and cache the single BrokerManager for this
+        MainWindow instance.
+
+        Created only on first call (never during construction), so
+        MainWindow construction stays fully offline. Every subsequent
+        call returns the exact same instance.
+        """
+        if self._broker_manager_cache is None:
+            from brokers.manager import BrokerManager
+
+            self._broker_manager_cache = BrokerManager()
+        return self._broker_manager_cache
+
+    def _real_feedback_broker_factory(self):
+        """
+        Return the shared AgaahBroker for OrderFeedbackService.
+
+        The SAME BrokerManager.get("آگاه") instance that DispatchCore
+        will resolve — guaranteeing decisionId registration and
+        AcceptedByBourse feedback land on the same broker object.
+        """
+        return self._shared_broker_manager().get("آگاه")
+
+    @property
+    def feedback_service(self):
+        """
+        Lazily create and cache the OrderFeedbackService.
+
+        Built only on first access (never during construction), using the
+        shared AgaahBroker via ``_real_feedback_broker_factory``. The service
+        is NOT started here — callers start it when feedback needs to be
+        active (e.g. after authentication, or before order tracking).
+        """
+        if self._feedback_service is None:
+            from ui.order_feedback_service import OrderFeedbackService
+
+            self._feedback_service = OrderFeedbackService(
+                broker_factory=self._real_feedback_broker_factory,
+            )
+        return self._feedback_service
 
     def select_page(self, name):
         """Show the page of a navigation entry (no-op if unknown)."""
@@ -272,9 +332,20 @@ class MainWindow(QMainWindow):
         # symbol or broker.
         if name == "Order Configuration":
             self.order_configuration_page.refresh_active_account()
+            self.feedback_service.start_service()
         self.content_area.setCurrentWidget(page)
         for entry_name, button in self.nav_buttons.items():
             button.setChecked(entry_name == name)
+
+    def closeEvent(self, event):
+        """
+        Stop the feedback service when the window is closing.
+
+        If the service was never created, closing is a no-op (no error).
+        """
+        if self._feedback_service is not None:
+            self._feedback_service.stop_service()
+        event.accept()
 
     # ---------------------------------------------------------
     # Application Mode (NORMAL / DIAGNOSTIC) — state and structure only

@@ -2251,7 +2251,18 @@ The following are explicitly **not** part of M6-E:
 - UI-3 Order Configuration: **COMPLETED** — UI-3.1 (`97283c5`), UI-3.2A Symbol Search (`d14a8d2`), UI-3.2B Trading State Display (`a614597`)
 - UI-3.2B follow-up (`4fc49e3`): **test-contract only** — updated the UI-1 / UI-3.1 import allowlists for the existing lazy UI-3.2B seams (`brokers.manager`, `core.trading_state_query`, `models.trading_state`); **no production code changed**. Final targeted tests: **84 passed**.
 - Trading State display path (unchanged, read-only): `UI → TradingStateWorker → core.trading_state_query.TradingStateQuery → BrokerManager / InstrumentProvider → Agah Broker → TSETMC`. TSETMC stays the authoritative source (Decision 020); the UI never calls TSETMC directly and never interprets raw `cEtaval` / `cEtavalTitle`. Unverified / unavailable / error states are fail-closed «نامشخص»; the path creates, submits, or dispatches no Order.
-- Next roadmap step: **UI-4 — Order Queue**. Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
+- UI-4 — Order Queue: **COMPLETED** (Tasks 1–8 implemented, tested, and committed).
+- UI-5 Task 4 Stage 1 (Core — order feedback & timing capture): **COMPLETED** (`822c46d`)
+- UI-5 Task 4 Stage 2 (Core — queue position via Agah NATS/OMS): **COMPLETED**
+- UI-5 Task 4 Stage 3 PREREQUISITE — OMS/NATS feedback activation bridge: **COMPLETED**
+    * `ui/order_feedback_service.py` (`OrderFeedbackService`): lifecycle is ACTIVE — starts on entering Order Configuration, stops on window close.
+    * `TestRunner` and `OrderFeedbackService` use the SAME shared `BrokerManager` / `AgaahBroker` instance — one broker identity for both the order execution path and the OMS feedback path.
+    * `AcceptedByBourse` (action=5) is the ONLY trigger for core order registration; `SavedInAsa` (action=2) does NOT trigger core registration.
+    * The asyncio/NATS loop runs on a dedicated background `QThread`; receiving path only — never blocks order sends.
+    * Lifecycle tests are fully offline (no real Agah/NATS/network).
+    * Verification (actual runs): 122 PASS (UI-5 core 90 + UI-3.1 regression 32); full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS.
+- UI-5 Task 4 Stage 3 (UI — user-facing log table): **NOT STARTED — this is the next step.**
+- Next roadmap step: **UI-5 Task 4 Stage 3 — the UI user-facing log table** (consumes Stage 1/2 contracts and the Stage 3 prerequisite bridge). Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
 
 
 

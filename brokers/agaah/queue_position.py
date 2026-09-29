@@ -49,10 +49,12 @@ class AgahOrderCorrelator:
     def __init__(
         self,
         broker,
+        on_order_registered: Optional[Callable[[str, "OrderTrackingInfo"], None]] = None,
         on_queue_position: Optional[Callable[[str, int], None]] = None,
         on_error: Optional[Callable[[str, str], None]] = None,
     ):
         self.broker = broker
+        self.on_order_registered = on_order_registered
         self.on_queue_position = on_queue_position
         self.on_error = on_error
 
@@ -187,6 +189,12 @@ class AgahOrderCorrelator:
                 message,
             )
 
+        # Fire on_order_registered callback ONLY on AcceptedByBourse (action=5).
+        # This is the GREEN trigger for the order log UI — matching-engine
+        # registration, NOT the initial broker POST /order response.
+        if self.on_order_registered:
+            self.on_order_registered(order_info.decision_id, order_info)
+
     def _try_fetch_queue_position(self, order_info: OrderTrackingInfo) -> None:
         """Try to fetch queue position if all required data is available."""
         if not order_info.host_order_number or not order_info.order_date:
@@ -251,8 +259,19 @@ class AgahQueuePositionProvider:
     - Provides queue position lookup
     """
 
-    def __init__(self, broker):
-        self.correlator = AgahOrderCorrelator(broker)
+    def __init__(
+        self,
+        broker,
+        on_order_registered: Optional[Callable[[str, "OrderTrackingInfo"], None]] = None,
+        on_queue_position: Optional[Callable[[str, int], None]] = None,
+        on_error: Optional[Callable[[str, str], None]] = None,
+    ):
+        self.correlator = AgahOrderCorrelator(
+            broker,
+            on_order_registered=on_order_registered,
+            on_queue_position=on_queue_position,
+            on_error=on_error,
+        )
 
     async def start(self) -> None:
         """Start the correlator."""

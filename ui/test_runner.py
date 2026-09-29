@@ -120,17 +120,26 @@ class TestRunner:
 
     __test__ = False  # helper double imported by tests; not a pytest test class
 
-    def __init__(self, dispatch_core: Any = None) -> None:
+    def __init__(self, dispatch_core: Any = None, broker_manager: Any = None) -> None:
         """
-        Build the runner around an optional Dispatch Core test-double.
+        Build the runner around an optional Dispatch Core test-double and/or
+        a shared BrokerManager.
 
         Args:
             dispatch_core: object exposing ``dispatch(plan)``. Tests inject
                 a test-double here; production passes ``None`` and the real
                 ``core.dispatch_core.DispatchCore`` is built lazily on the
                 first real run (never at construction).
+            broker_manager: a shared ``BrokerManager`` instance so that the
+                DispatchCore (and thus the AgahBroker it resolves) is the
+                SAME instance used by every other UI path (e.g.
+                OrderFeedbackService). Production supplies one from the
+                MainWindow; tests may inject a stub. When ``None`` and no
+                ``dispatch_core`` is injected, the real DispatchCore creates
+                its own manager (existing behavior, backward compatible).
         """
         self._dispatch_core = dispatch_core
+        self._broker_manager = broker_manager
         self._integration: Optional[Any] = None
         self._run_counter = 0
 
@@ -343,6 +352,13 @@ class TestRunner:
         Build the existing DispatchIntegration once, around the existing
         DispatchCore (or the injected test-double). Any Core module import
         happens here, inside a real run — never at construction/import time.
+
+        When no test-double ``dispatch_core`` was injected, the real
+        ``DispatchCore`` is built with the shared ``broker_manager`` (if one
+        was supplied to this runner) so that the broker instance it resolves
+        is the SAME one every other UI path uses (e.g.
+        OrderFeedbackService). When no manager was supplied, DispatchCore
+        creates its own as before (backward compatible).
         """
         if self._integration is not None:
             return self._integration
@@ -350,7 +366,12 @@ class TestRunner:
         if self._dispatch_core is None:
             from core.dispatch_core import DispatchCore
 
-            self._dispatch_core = DispatchCore()
+            if self._broker_manager is not None:
+                self._dispatch_core = DispatchCore(
+                    broker_manager=self._broker_manager
+                )
+            else:
+                self._dispatch_core = DispatchCore()
 
         from core.block5_task4 import DispatchIntegration
 

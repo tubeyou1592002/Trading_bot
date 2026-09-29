@@ -337,7 +337,18 @@ UI-5 Task 4 Stage 1 completed — Order feedback & timing capture.
 
 UI-5 Task 4 Stage 2 completed — Queue position via Agah NATS/OMS.
 
-UI-5 Task 4 Stage 3 future — UI user-facing log table (consumes Stage 1/2 contracts).
+UI-5 Task 4 Stage 3 PREREQUISITE completed — OMS/NATS feedback activation bridge finalized.
+  The Stage 3 UI table itself is NOT STARTED and is the next step:
+  - OrderFeedbackService lifecycle is ACTIVE: start on entering Order Configuration, stop on window close.
+  - TestRunner and OrderFeedbackService use the SAME shared BrokerManager / AgaahBroker instance — same broker identity for both order execution path and OMS feedback path.
+  - `AcceptedByBourse` (action=5) is the only trigger for green registration in the core.
+  - `SavedInAsa` (action=2) does not trigger core order registration.
+  - Lifecycle tests are fully offline, deterministic, and do not use real Agah/NATS/network.
+  - Prerequisite now ready for UI-5 Task 4 Stage 3 user-facing table.
+
+  - Verification tests passed (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32); full UI regression 206; core regression (M5/M6/engine/provider/broker manager) 152.
+
+  - Status: PREREQUISITE COMPLETED — Stage 3 UI table NOT STARTED (next step)
 
 Milestone 4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone بعدی با دستور مستقل تعریف می‌شود:
 * پیاده‌سازی واقعی `get_trading_state` برای آگاه (Decision 017) پس از شناسایی منبع معتبر.
@@ -2574,7 +2585,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-5 — Test & User Logs
 
-**Status:** IN PROGRESS — UI-5 Tasks 1–3 are completed; UI-5 Task 4 Stage 1 (Core) is completed and pushed. Stage 2 (Core) is the current prerequisite before Task 4 Stage 3 (UI).
+**Status:** IN PROGRESS — UI-5 Tasks 1–3 are completed. UI-5 Task 4 Stage 1 (Core) and Stage 2 (Core) are completed and pushed, and the Stage 3 prerequisite (OMS/NATS feedback activation bridge: `ui/order_feedback_service.py` + shared `BrokerManager`/`AgaahBroker` wiring) is COMPLETED. The Stage 3 UI table itself is NOT STARTED and is the next step.
 
 **Dependency — UI-4 COMPLETE:** UI-4 — Order Queue is **COMPLETE** (Tasks 1–8 implemented, tested, and committed: queue interface `865c1e3`, dispatch execution bridge `5c5638b`, selected queue entry planning `78445fc`, queue lifecycle `e04076d`, order queue pipeline `ad2dda3`). UI-5 consumes the UI-4 `OrderQueue` / `QueueEntry` / `core/order_queue_adapter.py` bridge contracts as its input and **MUST NOT** modify them or any other UI-4 artifact.
 
@@ -2709,7 +2720,7 @@ Next step: UI-4 — Order Queue
 
 ##### UI-5 — Task 4 — User-Facing Log
 
-**Status:** PLANNED — superseded by `DECISIONS.md` Decision 025. **Stage 1 is completed and verified; Stage 2 is the remaining Core prerequisite. Stages 1–2 are NOT UI-5 tasks.**
+**Status:** PLANNED — superseded by `DECISIONS.md` Decision 025. **Stage 1 is completed and verified; Stage 2 is completed and verified; the Stage 3 prerequisite (feedback activation bridge) is COMPLETED. The Stage 3 UI table is NOT STARTED — it is the next step. Stages 1–2 and the Stage 3 prerequisite are NOT UI-5 tasks.**
 
 **Planning decision (Decision 025):** Task 4 is **not** implemented as one combined UI/feedback feature. It is split into three independently implemented and verified stages. Stages 1 and 2 are Core work and must land first; Task 4 (Stage 3) is the UI-only table that consumes their contracts.
 
