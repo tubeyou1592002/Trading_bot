@@ -61,6 +61,15 @@ Presentation of the order-configuration form:
                       no DispatchIntegration/DispatchCore/OrderEngine, no
                       broker call, no network activity (Task 2 owns
                       execution).
+    * Order Log      — UI-5 Task 4 (base display): a read-only seven-column
+                      table (زمان ارسال / حساب / نماد / توضیح / زمان دریافت
+                      توسط کارگزاری / زمان ثبت در هسته معاملاتی / وضعیت صف)
+                      with ONE row appended per SENT order, in send order,
+                      rendered only from the in-memory ``ui.user_log.OrderLog``.
+                      It shows what the send already produced and shows "—"
+                      for everything that does not exist yet: no NATS/OMS
+                      connection, no asynchronous feedback, no row update, no
+                      green row and no queue-status logic is wired here.
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
@@ -84,6 +93,8 @@ always fail-closed: without a selected Instrument, side, price,
 quantity, resolved nsc_id and an active account nothing is queued.
 """
 
+from datetime import datetime
+
 from models.order import BUY, SELL, Order
 from models.trading_state import (
     TradingState,
@@ -97,6 +108,7 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -104,6 +116,8 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -119,6 +133,7 @@ from ui.symbol_search_worker import (
     SymbolSearchWorker,
 )
 from ui.trading_state_worker import TradingStateWorker
+from ui.user_log import ORDER_LOG_COLUMNS, OrderLog, OrderLogRow
 
 # User-facing side labels — mapped 1:1 to the real project constants.
 SIDE_LABELS = ((BUY, "خرید"), (SELL, "فروش"))
@@ -192,6 +207,17 @@ RESULT_EMPTY_STATE = (
 # Fail-closed placeholders for a per-order result row: a symbol the UI has
 # no record of (never a technical nscId / tseId) and an unknown side label.
 RESULT_SYMBOL_UNKNOWN = "\u2014"
+
+# UI-5 Task 4 (Stage 3, base display) — the user-facing order log table.
+# The seven columns and their order live in ui.user_log.ORDER_LOG_COLUMNS; the
+# rows come from the in-memory ui.user_log.OrderLog, one row appended per
+# SENT order in send order. Information that does not exist yet is rendered
+# as "—" (never invented). This base display has NO feedback consumer: no
+# NATS/OMS connection, no asynchronous update of an appended row, no green
+# row and no queue-status logic — the broker-receipt, trading-core-registration
+# and queue-status columns therefore stay empty until a later task supplies a
+# verified value.
+ORDER_LOG_GROUP_TITLE = "Order Log"
 
 
 def _result_status_label(result):
@@ -541,6 +567,32 @@ class OrderConfigurationPage(QWidget):
         results_layout.addWidget(self.result_list)
 
         root_layout.addWidget(results_group)
+
+        # ---------------------------------------------
+        # Order Log (UI-5 Task 4, base display)
+        # ---------------------------------------------
+        # A read-only seven-column table of the orders the user has sent:
+        # one row per sent order, in send order. Rows are appended by the
+        # send action (never by the queue or by a refresh) and are rendered
+        # only from the in-memory OrderLog this page owns.
+
+        self.order_log = OrderLog()
+
+        log_group = QGroupBox(ORDER_LOG_GROUP_TITLE, self)
+        log_layout = QVBoxLayout(log_group)
+
+        self.order_log_table = QTableWidget(0, len(ORDER_LOG_COLUMNS), log_group)
+        self.order_log_table.setHorizontalHeaderLabels(list(ORDER_LOG_COLUMNS))
+        self.order_log_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.Stretch
+        )
+        self.order_log_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.order_log_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.order_log_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.order_log_table.setMaximumHeight(160)
+        log_layout.addWidget(self.order_log_table)
+
+        root_layout.addWidget(log_group)
 
         root_layout.addStretch(1)
 
@@ -1344,6 +1396,12 @@ class OrderConfigurationPage(QWidget):
                 )
                 return
 
+        # UI-5 Task 4 (base display): the wall-clock moment this send is
+        # issued. A UI-local stamp of the send moment only — never a broker
+        # / exchange timestamp, never a latency measurement, and never read
+        # again after the send (the send itself never waits for it).
+        sent_at = datetime.now()
+
         try:
             plan, execution_id, result = runner.run(
                 entries, account=account
@@ -1363,10 +1421,93 @@ class OrderConfigurationPage(QWidget):
         # of THIS Test run. The rows fully replace any previous run's rows
         # (no result history is kept).
         self._last_order_results = getattr(runner, "last_order_results", None)
+        # UI-5 Task 4 (base display): one log row per SENT order, appended in
+        # send order. This only records what this send already produced — it
+        # changes nothing about what was sent.
+        self._append_order_log_rows(
+            self._last_test_entries, sent_at, self._last_order_results
+        )
         self._refresh_result_display()
         self._show_queue_status(
             f"Test run issued (dry-run): execution {execution_id}"
         )
+
+    # ---------------------------------------------------------
+    # Order Log (UI-5 Task 4, base display)
+    # ---------------------------------------------------------
+
+    def _append_order_log_rows(self, entries, sent_at, results):
+        """
+        Append ONE user-facing log row per SENT order, in send order.
+
+        ``entries`` are the exact ``QueueEntry`` objects of this send in their
+        exact send order and ``results`` are this send's real per-order
+        results, aligned 1:1 to them (``None`` where no per-order result
+        exists). Each row carries only what this send really produced:
+
+            * ``account_id`` — verbatim from the exact QueueEntry;
+            * ``symbol``     — the UI-layer symbol recorded at Add-to-Queue
+                              from the real Instrument (never a broker
+                              nscId / tseId);
+            * ``description`` — the fixed user-facing reason of the REAL
+                              per-order result, or nothing at all when no
+                              per-order result exists;
+            * ``sent_at``    — the UI's wall-clock send moment.
+
+        The broker-receipt, trading-core-registration and queue-status fields
+        stay ``None``: this base display has no feedback consumer and no
+        queue-status logic, so those columns render empty (``—``) rather than
+        carrying an invented value. Rows are append-only — an appended row is
+        never updated, reordered or removed.
+        """
+        results = results if isinstance(results, list) else None
+        for index, entry in enumerate(entries):
+            order = entry.order
+            result = None
+            if results is not None and 0 <= index < len(results):
+                result = results[index]
+            symbol = self._order_symbols.get(id(order))
+            self.order_log.append(
+                OrderLogRow(
+                    sent_at=sent_at,
+                    account_id=entry.account_id,
+                    symbol=symbol if symbol else None,
+                    description=self._order_log_description(result),
+                )
+            )
+        self._refresh_order_log_display()
+
+    @staticmethod
+    def _order_log_description(result):
+        """
+        The fixed, user-facing description for one sent order.
+
+        Derived only from the REAL ``OrderExecutionResult`` of this send,
+        through the existing fail-closed UI-5 Task 3 mapper — never from a
+        raw result message, mode name, endpoint, exception, Trace ID or
+        latency. ``None`` (rendered ``—``) when no per-order result exists,
+        so nothing is ever fabricated for an order the UI knows nothing about.
+        """
+        if result is None:
+            return None
+        return _result_reason_for_status(_result_status_label(result))
+
+    def _refresh_order_log_display(self):
+        """
+        Re-render the order-log table ONLY from the in-memory ``OrderLog``.
+
+        The table is rebuilt from ``OrderLog.rows()`` — the rows in send
+        order — with each row's seven cells placed by its own column order.
+        This render never creates, updates or invents a row: it only mirrors
+        what the send action already appended.
+        """
+        rows = self.order_log.rows()
+        self.order_log_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for column, text in enumerate(row.cells()):
+                self.order_log_table.setItem(
+                    row_index, column, QTableWidgetItem(text)
+                )
 
     def _refresh_result_display(self):
         """
