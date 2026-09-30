@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Optional
 
 from models.account import Account
@@ -12,6 +13,17 @@ from models.trading_state import (
     TradingState,
     TradingStateUnavailable,
 )
+
+
+def _wall_clock_now() -> datetime:
+    """
+    The single wall-clock seam for the broker-receipt timestamp.
+
+    Kept deliberately tiny and module-level so tests can inject a fixed
+    clock. Returns the real wall clock with millisecond precision; no
+    monotonic value is ever converted here.
+    """
+    return datetime.now()
 
 if TYPE_CHECKING:
     from brokers.base import InstrumentProvider
@@ -47,6 +59,14 @@ class OrderExecutionResult:
     message: str | None = None
 
     response: dict | None = None
+
+    # UI-5 Task 4 Stage 3 Task 2 — wall-clock receipt boundary.
+    # Real local wall-clock moment the existing ``broker.place_order(...)
+    # call returned to the application, with millisecond precision. Taken at
+    # the return boundary, never derived from ``sent_at`` or the monotonic
+    # ``broker_registered_at_ns``; ``None`` whenever no real broker receipt
+    # moment exists (fail-closed).
+    broker_received_at: datetime | None = None
 
 
 class OrderEngine:
@@ -599,6 +619,32 @@ class OrderEngine:
                 message=str(exc),
             )
 
+        # UI-5 Task 4 Stage 3 Task 2 — broker receipt boundary (wall clock).
+        # Read exactly once, immediately AFTER place_order() returned and
+        # BEFORE the response is analysed, purely from the real wall clock.
+        # It is only surfaced when a REAL, verified broker receipt exists:
+        # a live order whose response is isSuccess=true with a usable,
+        # non-empty string decisionId. Fail-closed: everything else leaves
+        # broker_received_at None — including dry runs and this ERROR path.
+        broker_received_at: datetime | None = None
+        if isinstance(broker_result, dict):
+            broker_received_at = _wall_clock_now()
+
+            is_success = broker_result.get("isSuccess", False)
+            data = broker_result.get("data")
+
+            receipt_is_verified = (
+                is_success is True
+                and isinstance(data, dict)
+                and isinstance(
+                    data.get("decisionId"),
+                    str,
+                )
+                and data["decisionId"].strip() != ""
+            )
+            if not receipt_is_verified or not live:
+                broker_received_at = None
+
         # Record broker_registered_at only for live orders with successful
         # initial broker registration (response contains isSuccess=true and data.decisionId).
         # Dry-run does not represent real broker registration.
@@ -635,6 +681,7 @@ class OrderEngine:
                     "ارسال شد."
                 ),
                 response=broker_result,
+                broker_received_at=broker_received_at,
             )
 
         # ---------------------------------------------
