@@ -620,30 +620,39 @@ class OrderEngine:
             )
 
         # UI-5 Task 4 Stage 3 Task 2 — broker receipt boundary (wall clock).
-        # Read exactly once, immediately AFTER place_order() returned and
-        # BEFORE the response is analysed, purely from the real wall clock.
-        # It is only surfaced when a REAL, verified broker receipt exists:
-        # a live order whose response is isSuccess=true with a usable,
-        # non-empty string decisionId. Fail-closed: everything else leaves
-        # broker_received_at None — including dry runs and this ERROR path.
-        broker_received_at: datetime | None = None
-        if isinstance(broker_result, dict):
-            broker_received_at = _wall_clock_now()
+        # Read exactly once, on the statement IMMEDIATELY after place_order()
+        # returned and BEFORE any inspection of the broker response, purely
+        # from the real wall clock. The value is only surfaced when a REAL,
+        # verified broker receipt exists: a live order whose response is
+        # isSuccess=true with a usable, non-empty string decisionId.
+        # Fail-closed: everything else leaves broker_received_at None —
+        # including dry runs, non-dict responses and this ERROR path.
+        broker_received_at: datetime | None = _wall_clock_now()
 
-            is_success = broker_result.get("isSuccess", False)
-            data = broker_result.get("data")
+        # Response inspection starts HERE — strictly after the clock read.
+        is_dict_response = isinstance(broker_result, dict)
+        is_success = (
+            broker_result.get("isSuccess", False)
+            if is_dict_response
+            else False
+        )
+        data = (
+            broker_result.get("data")
+            if is_dict_response
+            else None
+        )
 
-            receipt_is_verified = (
-                is_success is True
-                and isinstance(data, dict)
-                and isinstance(
-                    data.get("decisionId"),
-                    str,
-                )
-                and data["decisionId"].strip() != ""
+        receipt_is_verified = (
+            is_success is True
+            and isinstance(data, dict)
+            and isinstance(
+                data.get("decisionId"),
+                str,
             )
-            if not receipt_is_verified or not live:
-                broker_received_at = None
+            and data["decisionId"].strip() != ""
+        )
+        if not receipt_is_verified or not live:
+            broker_received_at = None
 
         # Record broker_registered_at only for live orders with successful
         # initial broker registration (response contains isSuccess=true and data.decisionId).
