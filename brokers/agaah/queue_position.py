@@ -31,6 +31,13 @@ class OrderTrackingInfo:
     created_at: float = field(default_factory=time.time)
     completed_at: Optional[float] = None
     error: Optional[str] = None
+    # UI-5 Task 4 Stage 3 Task 3 — the REAL wall-clock moment (``time.time()``
+    # epoch seconds) the AcceptedByBourse event itself was received, captured
+    # verbatim from the event's own ``raw_timestamp``. It stays ``None`` for
+    # every other action (e.g. SavedInAsa) and is never a fabricated or
+    # converted value. ``None`` means "no matching-engine registration event
+    # has been received".
+    accepted_by_bourse_at: Optional[float] = None
 
 
 class AgahOrderCorrelator:
@@ -188,6 +195,13 @@ class AgahOrderCorrelator:
                 "Invalid hostOrderNumber in AcceptedByBourse: %s",
                 message,
             )
+
+        # UI-5 Task 4 Stage 3 Task 3 — keep the REAL receive moment of THIS
+        # event, verbatim from the event's own timestamp (no clock is read
+        # here, nothing is synthesized). Re-delivery overwrites with the
+        # latest real value; it never invents one when absent.
+        if oms.raw_timestamp is not None:
+            order_info.accepted_by_bourse_at = oms.raw_timestamp
 
         # Fire on_order_registered callback ONLY on AcceptedByBourse (action=5).
         # This is the GREEN trigger for the order log UI — matching-engine

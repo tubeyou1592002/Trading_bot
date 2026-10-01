@@ -210,6 +210,14 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_test_runner_factory(
             self._real_test_runner
         )
+        # UI-5 Task 4 Stage 3 Task 3: bind the order log to the EXISTING
+        # order-feedback path (matching-engine registration / green row).
+        # The factory hands the page the already-existing shared feedback
+        # service object; the page connects lazily on the first real send
+        # and only uses the signal's existence — nothing is started here.
+        self.order_configuration_page.set_feedback_binder_factory(
+            lambda: self.feedback_service
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 

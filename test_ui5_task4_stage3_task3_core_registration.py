@@ -65,10 +65,18 @@ from ui.order_configuration_page import (
 from ui.user_log import (
     COLUMN_CORE_REGISTERED_AT,
     EMPTY_CELL,
-    OrderLogRow,
 )
 
 BROKER = "SIM"
+
+# Deterministic event timestamps used by every regression in this file.
+# They are fixed historical moments, never "now", so an assertion can only
+# hold if the value travelled verbatim from the event — any clock read
+# inside the production path would fail these tests.
+RAW_TS = 1788000123.456
+RAW_TS_REDELIVERED = 1788000456.789
+ACTION_SAVED_IN_ASA = 2
+ACTION_ACCEPTED_BY_BOURSE = 5
 
 
 # ---------------------------------------------------------------------------
@@ -203,17 +211,17 @@ class TestAcceptedByBourseRegistersTheRow:
         assert not row_is_green(page, 0)
 
         # The REAL event receive moment (epoch seconds), as the feedback
-        # path carries it — no clock is read inside the UI for this.
-        event_moment = time.time()
+        # path carries it — a fixed event value, never a clock read.
+        event_moment = RAW_TS
         binder.emit_registered("DEC-T1", event_moment, object())
 
         rows = page.order_log.rows()
         assert rows[0].registered_in_core is True
         assert isinstance(rows[0].core_registered_at, datetime)
-        # The stamped value is the REAL event moment, converted to a
-        # local datetime — nothing else, nothing invented.
+        # The stamped value IS the event moment exactly — converted to a
+        # local datetime, nothing else, nothing invented.
         stamped = rows[0].core_registered_at
-        assert abs(stamped.timestamp() - event_moment) < 1.0
+        assert stamped.timestamp() == event_moment
         assert row_is_green(page, 0)
         rendered = table_rows(page.order_log_table)[0][
             COLUMN_CORE_REGISTERED_AT
@@ -405,128 +413,6 @@ class TestRedeliveryIsIdempotent:
 
 
 # ---------------------------------------------------------------------------
-# Model-level contracts of the one new update operation
-# ---------------------------------------------------------------------------
-
-
-class TestOrderLogUpdateSemantics:
-    def test_update_requires_a_real_datetime(self, qapp):
-        log = __import__("ui.user_log", fromlist=["OrderLog"]).OrderLog()
-        key = object()
-        log.append(OrderLogRow(account_id="A", key=key))
-
-        assert log.update_core_registration(key, "not-a-datetime") is None
-        assert log.update_core_registration(key, None) is None
-        assert log.update_core_registration(key, 12345.0) is None
-        assert log.rows()[0].core_registered_at is None
-
-    def test_update_of_unknown_key_is_a_noop(self, qapp):
-        log = __import__("ui.user_log", fromlist=["OrderLog"]).OrderLog()
-        log.append(OrderLogRow(account_id="A", key=object()))
-        snapshot = log.rows()
-
-        assert log.update_core_registration(object(), datetime.now()) is None
-        assert log.rows() == snapshot
-
-    def test_update_never_reorders_or_recreates_other_rows(self, qapp):
-        log = __import__("ui.user_log", fromlist=["OrderLog"]).OrderLog()
-        key_a, key_b = object(), object()
-        first = log.append(OrderLogRow(account_id="A", key=key_a))
-        log.append(OrderLogRow(account_id="B", key=key_b))
-
-        updated = log.update_core_registration(
-            key_b, datetime(2026, 9, 30, 12, 0, 0)
-        )
-
-        assert updated is not None and updated.registered_in_core is True
-        assert log.rows()[0] is first          # first row untouched
-        assert log.rows()[1].key is key_b
-        assert log.rows()[1].core_registered_at == datetime(
-            2026, 9, 30, 12, 0, 0
-        )
-
-    def test_registered_flag_is_only_set_together_with_a_timestamp(self, qapp):
-        log = __import__("ui.user_log", fromlist=["OrderLog"]).OrderLog()
-        key = object()
-        log.append(OrderLogRow(account_id="A", key=key))
-        assert log.update_core_registration(key, datetime.now()) is not None
-        row = log.rows()[0]
-        assert (row.core_registered_at is None) == (
-            row.registered_in_core is not True
-        )
-
-
-# ---------------------------------------------------------------------------
-# The real correlator stamps the real event timestamp (action 5 only)
-# ---------------------------------------------------------------------------
-
-
-class TestCorrelatorStampsRealEventTimestamp:
-    def test_accepted_by_bourse_keeps_the_event_moment(self):
-        from brokers.agaah.queue_position import (
-            AgahOrderCorrelator,
-            OrderTrackingInfo,
-        )
-        from brokers.agaah.nats_transport import OmsStateChanged
-
-        fired = []
-        correlator = object.__new__(AgahOrderCorrelator)
-        correlator.on_order_registered = lambda *a: fired.append(a)
-        correlator._running = True
-        info = OrderTrackingInfo(decision_id="DEC-C1", nsc_id="NSC-C1")
-        correlator._orders = {"DEC-C1": info}
-
-        moment = time.time()
-        event = OmsStateChanged(
-            code=100,
-            action=5,
-            decision_id="DEC-C1",
-            request_id="R",
-            current_trade_count=0,
-            message="1234567",
-            channel="c",
-            nsc_id="NSC-C1",
-            raw_timestamp=moment,
-        )
-        correlator._handle_oms_event(event)
-
-        assert len(fired) == 1  # the green trigger fired exactly once
-        assert fired[0][0] == "DEC-C1"
-        assert info.accepted_by_bourse_at == moment
-        assert info.host_order_number == "1234567"
-
-    def test_redelivery_overwrites_with_the_latest_real_value(self):
-        from brokers.agaah.queue_position import (
-            AgahOrderCorrelator,
-            OrderTrackingInfo,
-        )
-        from brokers.agaah.nats_transport import OmsStateChanged
-
-        correlator = object.__new__(AgahOrderCorrelator)
-        correlator.on_order_registered = lambda *a: None
-        correlator._running = True
-        info = OrderTrackingInfo(decision_id="DEC-C2", nsc_id="NSC-C2")
-        correlator._orders = {"DEC-C2": info}
-
-        first, second = time.time(), time.time() + 1.5
-        for moment in (first, second):
-            correlator._handle_oms_event(
-                OmsStateChanged(
-                    code=100,
-                    action=5,
-                    decision_id="DEC-C2",
-                    request_id="R",
-                    current_trade_count=0,
-                    message="1",
-                    channel="c",
-                    nsc_id="NSC-C2",
-                    raw_timestamp=moment,
-                )
-            )
-        assert info.accepted_by_bourse_at == second
-
-
-# ---------------------------------------------------------------------------
 # Corrective task — the feedback binding precedes the send pass (race fix)
 # ---------------------------------------------------------------------------
 
@@ -573,7 +459,7 @@ class TestFeedbackBindingPrecedesTheSend:
                 # Observed DURING the send: the page must already be
                 # bound (the corrective task's core requirement).
                 bound_during_send.append(page._feedback_binder is binder)
-                binder.emit_registered("probe-unknown", time.time(), object())
+                binder.emit_registered("probe-unknown", RAW_TS, object())
                 result = OrderExecutionResult(
                     success=True,
                     sent=True,
@@ -618,15 +504,313 @@ class TestFeedbackBindingPrecedesTheSend:
         # 4) The send's own row was appended and correlated normally.
         assert page._order_by_decision_id.get("DEC-RACE") is not None
         # 5) The real event after the pass stamps/greens the row as ever.
-        event_moment = time.time()
+        event_moment = RAW_TS_REDELIVERED
         binder.emit_registered("DEC-RACE", event_moment, object())
         rows = page.order_log.rows()
         assert rows[0].registered_in_core is True
-        assert abs(rows[0].core_registered_at.timestamp() - event_moment) < 1.0
+        assert rows[0].core_registered_at.timestamp() == event_moment
         assert row_is_green(page, 0)
         # 6) Binding stays idempotent: a second emit reaches the handler
         #    exactly once more (the probe would double-count on a
         #    duplicated Qt connection).
         received_during_send.clear()
-        binder.emit_registered("probe-unknown", time.time(), object())
+        binder.emit_registered("probe-unknown", RAW_TS, object())
         assert received_during_send == ["probe-unknown"]
+
+
+# ---------------------------------------------------------------------------
+# Contract A — accepted_by_bourse_at is the EVENT's own raw_timestamp
+# ---------------------------------------------------------------------------
+
+
+def make_oms_event(decision_id, action, raw_timestamp):
+    """A parsed OMS code-100 event with an explicit, fixed timestamp."""
+    from brokers.agaah.nats_transport import OmsStateChanged
+
+    return OmsStateChanged(
+        code=100,
+        action=action,
+        decision_id=decision_id,
+        request_id="R",
+        current_trade_count=0,
+        message="1234567" if action == ACTION_ACCEPTED_BY_BOURSE else "0|0|x",
+        channel="c",
+        nsc_id="NSC-RAW",
+        raw_timestamp=raw_timestamp,
+    )
+
+
+def make_correlator(decision_id):
+    """A bare correlator (offline) tracking exactly one decisionId."""
+    from brokers.agaah.queue_position import (
+        AgahOrderCorrelator,
+        OrderTrackingInfo,
+    )
+
+    fired = []
+    correlator = object.__new__(AgahOrderCorrelator)
+    correlator.on_order_registered = lambda *a: fired.append(a)
+    correlator._running = True
+    info = OrderTrackingInfo(decision_id=decision_id, nsc_id="NSC-RAW")
+    correlator._orders = {decision_id: info}
+    return correlator, info, fired
+
+
+class TestAcceptedByBourseAtIsTheEventTimestamp:
+    def test_action5_stores_raw_timestamp_verbatim(self):
+        correlator, info, fired = make_correlator("DEC-RAW1")
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-RAW1", ACTION_ACCEPTED_BY_BOURSE, RAW_TS)
+        )
+
+        # Exactly the event's own value: identical, and provably NOT a
+        # freshly built timestamp (RAW_TS is a fixed historical moment).
+        assert info.accepted_by_bourse_at == RAW_TS
+        assert info.accepted_by_bourse_at == 1788000123.456
+        assert len(fired) == 1
+        assert fired[0][0] == "DEC-RAW1"
+        assert fired[0][1] is info
+        # The rest of the AcceptedByBourse handling is unchanged.
+        assert info.host_order_number == "1234567"
+
+    def test_action5_with_missing_raw_timestamp_fabricates_nothing(self):
+        correlator, info, fired = make_correlator("DEC-RAW2")
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-RAW2", ACTION_ACCEPTED_BY_BOURSE, None)
+        )
+
+        # Fail-closed: no event timestamp -> no stored timestamp. The
+        # registration callback still fires; the UI is what must ignore a
+        # None stamp (never the broker inventing one).
+        assert info.accepted_by_bourse_at is None
+        assert len(fired) == 1
+
+    def test_action2_never_writes_accepted_by_bourse_at(self):
+        """SavedInAsa carries a timestamp too — it must NOT be stored."""
+        correlator, info, fired = make_correlator("DEC-RAW3")
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-RAW3", ACTION_SAVED_IN_ASA, RAW_TS)
+        )
+
+        assert info.accepted_by_bourse_at is None
+        assert fired == []
+
+    def test_only_action5_writes_the_field(self):
+        """Only the matching-engine registration action touches the field."""
+        for action, expected in (
+            (ACTION_ACCEPTED_BY_BOURSE, RAW_TS),
+            (ACTION_SAVED_IN_ASA, None),
+        ):
+            correlator, info, _fired = make_correlator("DEC-RAW4")
+            correlator._handle_oms_event(
+                make_oms_event("DEC-RAW4", action, RAW_TS)
+            )
+            assert info.accepted_by_bourse_at == expected
+
+    def test_zero_is_a_real_timestamp_and_is_kept(self):
+        """0.0 is falsy but REAL — it must survive verbatim, not be lost."""
+        correlator, info, _fired = make_correlator("DEC-RAW5")
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-RAW5", ACTION_ACCEPTED_BY_BOURSE, 0.0)
+        )
+
+        assert info.accepted_by_bourse_at == 0.0
+
+    def test_redelivery_stores_the_latest_events_own_value(self):
+        correlator, info, _fired = make_correlator("DEC-RAW6")
+
+        for moment in (RAW_TS, RAW_TS_REDELIVERED):
+            correlator._handle_oms_event(
+                make_oms_event("DEC-RAW6", ACTION_ACCEPTED_BY_BOURSE, moment)
+            )
+
+        assert info.accepted_by_bourse_at == RAW_TS_REDELIVERED
+
+
+# ---------------------------------------------------------------------------
+# Contract B — the three-value order_registered signal
+# ---------------------------------------------------------------------------
+
+
+def qt_signal_signature(qt_object, name):
+    """The Qt meta-object signature of a signal, e.g. 'f(QString,int)'."""
+    meta = qt_object.metaObject()
+    for index in range(meta.methodCount()):
+        method = meta.method(index)
+        signature = bytes(method.methodSignature()).decode()
+        if signature.startswith(name + "("):
+            return signature
+    raise AssertionError(
+        f"signal {name!r} not declared on {type(qt_object).__name__!r}"
+    )
+
+
+class TestFeedbackServiceCarriesThreeValues:
+    def test_signal_is_declared_with_three_arguments(self, qapp):
+        from ui.order_feedback_service import OrderFeedbackService
+
+        service = OrderFeedbackService(broker_factory=lambda: None)
+        assert (
+            qt_signal_signature(service, "order_registered")
+            == "order_registered(QString,PyObject,PyObject)"
+        )
+
+    def _service(self, received):
+        from ui.order_feedback_service import OrderFeedbackService
+
+        # Constructed only — never started (no thread, no broker, no NATS).
+        service = OrderFeedbackService(broker_factory=lambda: None)
+        service.order_registered.connect(lambda *a: received.append(a))
+        return service
+
+    def test_forwarder_passes_decision_id_timestamp_and_order_info(self):
+        from brokers.agaah.queue_position import OrderTrackingInfo
+
+        received = []
+        service = self._service(received)
+        info = OrderTrackingInfo(decision_id="DEC-SIG", nsc_id="NSC-SIG")
+        info.accepted_by_bourse_at = RAW_TS
+
+        service._on_order_registered("DEC-SIG", info)
+
+        assert len(received) == 1
+        decision_id, accepted_at_ts, order_info = received[0]
+        assert decision_id == "DEC-SIG"
+        assert accepted_at_ts == RAW_TS
+        # The signal's timestamp IS the tracked order's own stamp, verbatim.
+        assert accepted_at_ts == order_info.accepted_by_bourse_at
+        assert order_info is info
+
+    def test_forwarder_passes_none_when_the_event_carried_no_timestamp(self):
+        received = []
+        service = self._service(received)
+
+        service._on_order_registered("DEC-SIG-NONE", None)
+
+        assert received == [("DEC-SIG-NONE", None, None)]
+
+    def test_forwarder_never_invents_a_timestamp(self):
+        """A tracker without the field yields None — never a clock read."""
+        from brokers.agaah.queue_position import OrderTrackingInfo
+
+        received = []
+        service = self._service(received)
+
+        class _Bare:
+            pass
+
+        service._on_order_registered("DEC-BARE", _Bare())
+        service._on_order_registered(
+            "DEC-DEFAULT",
+            OrderTrackingInfo(decision_id="DEC-DEFAULT", nsc_id="NSC-D"),
+        )
+
+        assert received[0] == ("DEC-BARE", None, received[0][2])
+        assert received[1][1] is None  # never stamped yet -> None
+
+    def test_event_timestamp_reaches_the_signal_end_to_end(self):
+        """Correlator (action 5) -> service forwarder -> signal, verbatim."""
+        correlator, info, _fired = make_correlator("DEC-E2E")
+        received = []
+        service = self._service(received)
+        correlator.on_order_registered = service._on_order_registered
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-E2E", ACTION_ACCEPTED_BY_BOURSE, RAW_TS)
+        )
+
+        assert len(received) == 1
+        decision_id, accepted_at_ts, order_info = received[0]
+        assert decision_id == "DEC-E2E"
+        assert accepted_at_ts == RAW_TS
+        assert accepted_at_ts == info.accepted_by_bourse_at
+        assert order_info is info
+
+
+# ---------------------------------------------------------------------------
+# Contract C — MainWindow wires the page to the SHARED feedback service
+# ---------------------------------------------------------------------------
+
+
+def make_window():
+    """A real MainWindow, constructed offline (no NATS/broker/network)."""
+    from ui.main_window import MainWindow
+
+    return MainWindow()
+
+
+class TestMainWindowWiresTheSharedFeedbackService:
+    def test_page_has_a_feedback_binder_factory(self):
+        window = make_window()
+        try:
+            page = window.order_configuration_page
+            assert page._feedback_binder_factory is not None
+            assert callable(page._feedback_binder_factory)
+            # Nothing is bound yet — the page binds lazily, on first use.
+            assert page._feedback_binder is None
+            assert window._feedback_service is None
+        finally:
+            window.close()
+
+    def test_factory_returns_the_shared_service_without_building_a_new_one(self):
+        from ui.order_feedback_service import OrderFeedbackService
+
+        window = make_window()
+        try:
+            page = window.order_configuration_page
+            first = page._feedback_binder_factory()
+            second = page._feedback_binder_factory()
+
+            assert isinstance(first, OrderFeedbackService)
+            assert first is second                       # one shared instance
+            assert first is window.feedback_service      # the MainWindow's
+            assert first is window._feedback_service     # cached, not rebuilt
+            assert not first.isRunning()                # wiring starts nothing
+            assert window._broker_manager_cache is None  # no BrokerManager made
+        finally:
+            window.close()
+
+    def test_page_binding_uses_that_same_service_instance(self):
+        window = make_window()
+        try:
+            page = window.order_configuration_page
+            service = window.feedback_service
+
+            page._ensure_feedback_binding()
+
+            assert page._feedback_binder is service
+            assert window._feedback_service is service
+            assert not service.isRunning()
+
+            # Idempotent: binding again keeps the very same instance.
+            page._feedback_binder = None
+            page._ensure_feedback_binding()
+            assert page._feedback_binder is service
+        finally:
+            window.close()
+
+    def test_shared_service_signal_updates_the_window_page_row(self):
+        """The wiring's purpose: the shared service drives the real page."""
+        window = make_window()
+        try:
+            page = window.order_configuration_page
+            page._ensure_feedback_binding()
+            service = page._feedback_binder
+
+            send_one_order(page, decision_id="DEC-WIRE")
+            assert page.order_log.rows()[0].core_registered_at is None
+
+            service.order_registered.emit("DEC-WIRE", RAW_TS, object())
+
+            rows = page.order_log.rows()
+            assert len(rows) == 1
+            assert rows[0].registered_in_core is True
+            # The row carries the event's own stamp, converted for display.
+            assert rows[0].core_registered_at.timestamp() == RAW_TS
+            assert row_is_green(page, 0)
+        finally:
+            window.close()

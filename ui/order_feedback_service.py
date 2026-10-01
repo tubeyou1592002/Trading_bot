@@ -60,10 +60,14 @@ class OrderFeedbackService(QThread):
     into Qt signals on the GUI thread.
 
     Signals:
-        order_registered (decision_id, order_info)
+        order_registered (decision_id, accepted_at_ts, order_info)
             Emitted when AcceptedByBourse (matching-engine registration)
-            is received for an order. This is the GREEN trigger for the
-            order log.
+            is received for an order. ``accepted_at_ts`` is the REAL
+            wall-clock moment (``time.time()`` epoch seconds) that event
+            was received, captured by the correlator from the event
+            itself — never fabricated here; ``None`` when the event
+            carried no usable timestamp. This is the GREEN trigger for
+            the order log.
         queue_position (decision_id, position)
             Emitted when a queue position is fetched for an order.
         feedback_error (message)
@@ -76,7 +80,7 @@ class OrderFeedbackService(QThread):
             Emitted when the service has fully stopped.
     """
 
-    order_registered = Signal(str, object)
+    order_registered = Signal(str, object, object)
     queue_position = Signal(str, int)
     feedback_error = Signal(str)
     started = Signal()
@@ -166,14 +170,21 @@ class OrderFeedbackService(QThread):
         if self._broker._queue_position_provider is None:
             self._broker._ensure_queue_position_provider()
 
-    def _on_order_registered(self, decision_id: str, order_info: Any) -> None:
+    def _on_order_registered(
+        self, decision_id: str, order_info: Any
+    ) -> None:
         """
         Listener for AcceptedByBourse — forwarded to the GUI thread via signal.
 
         This is the GREEN trigger. It fires on matching-engine registration,
-        NOT on the initial broker POST /order response.
+        NOT on the initial broker POST /order response. The event's own real
+        receive timestamp (kept by the correlator on ``order_info``) travels
+        with the signal; nothing is re-read or synthesized here.
         """
-        self.order_registered.emit(decision_id, order_info)
+        accepted_at_ts = getattr(
+            order_info, "accepted_by_bourse_at", None
+        )
+        self.order_registered.emit(decision_id, accepted_at_ts, order_info)
 
     def _on_queue_position(self, decision_id: str, position: int) -> None:
         """Listener for queue position updates."""
