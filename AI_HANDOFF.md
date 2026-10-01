@@ -2783,15 +2783,13 @@ Next step: UI-4 — Order Queue
 
 #### UI-6 — Test / Diagnostic Mode
 
-**Status:** IN PROGRESS. UI-6 has exactly four implementation tasks. Task 1 is COMPLETED; Tasks 2–4 are NOT STARTED. The next task is UI-6 Task 2 — Trace ID.
+**Status:** IN PROGRESS. UI-6 has exactly four implementation tasks. Tasks 1–2 are COMPLETED; Tasks 3–4 are NOT STARTED. The next task is UI-6 Task 3 — Latency & Execution Diagnostics.
 
 **UI-6 Task 1 — Diagnostic Mode Foundation**
 **Status:** COMPLETED. The existing `ApplicationMode` is switchable through the UI; the minimal diagnostic section is hidden in NORMAL and shown in DIAGNOSTIC mode. Invalid mode values fail closed by hiding the section. Mode changes do not change execution behavior.
 
 **UI-6 Task 2 — Trace ID**
-- Expose the existing execution-infrastructure `trace_id` to the UI.
-- Display Trace ID only in Diagnostic Mode.
-- Reuse the existing Trace ID; do not generate a second UI-specific ID.
+**Status:** COMPLETED. The Diagnostic section displays the current run's existing `DispatchResult.trace_id` at dispatch level, only in DIAGNOSTIC mode. It rejects invalid results, shows unavailable when the ID is missing, and clears a stale ID immediately if a new runner attempt fails. No ID is generated or substituted by the UI.
 
 **UI-6 Task 3 — Latency & Execution Diagnostics**
 - Reuse the existing Block 8 latency infrastructure and present already-available latency/execution timing in Diagnostic Mode.
@@ -2805,7 +2803,7 @@ Next step: UI-4 — Order Queue
 
 **Explicit boundaries:** Schedule / Countdown belongs to UI-7; End-to-End Integration & Acceptance belongs to UI-8. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and order splitting (M6-F) are excluded from UI-6.
 
-**Verification:** Focused UI-6 Task 1 tests: 12 passed; related UI regression: 182 passed (as reported for this implementation).
+**Verification:** Task 1 focused tests: 12 passed; related UI regression: 182 passed. Task 2 focused tests: 20 passed; related UI regression: 190 passed (reported implementation runs).
 
 #### UI-7 — Schedule & Countdown
 

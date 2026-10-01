@@ -1265,7 +1265,7 @@ UI-6 — Test / Diagnostic Mode consists of exactly four implementation tasks:
 
 **Roadmap order:** `UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8 → Central Server`.
 
-UI-5 remains COMPLETED. UI-6 Task 1 is completed; Tasks 2–4 remain not started. UI-7 owns Schedule / Countdown, and UI-8 owns End-to-End Integration & Acceptance. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and M6-F order splitting are outside UI-6.
+UI-5 remains COMPLETED. UI-6 Tasks 1–2 are completed; Task 3 is next and Task 4 is not started. UI-7 owns Schedule / Countdown, and UI-8 owns End-to-End Integration & Acceptance. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and M6-F order splitting are outside UI-6.
 
 **Architectural rule:** UI-6 consumes and presents existing Block 8 execution/latency information. It does not redesign or duplicate Block 8. Its latency layers remain separate; unavailable or cross-clock values are not synthesized.
 
@@ -1274,4 +1274,6 @@ UI-5 remains COMPLETED. UI-6 Task 1 is completed; Tasks 2–4 remain not started
 * Roadmap details are recorded in `AI_HANDOFF.md` §9 and summarized in `AI_PROJECT_MEMORY.md`.
 * This decision records the roadmap scope; task completion is tracked in the current status update below.
 
-**Current implementation status update (2026-10-01):** UI-6 Task 1 — Diagnostic Mode Foundation is COMPLETED. The existing `ApplicationMode` controls the presentation boundary; invalid values hide the diagnostic section. Reported verification: 12 focused tests and 182 related UI regression tests passed. UI-6 Tasks 2–4 remain NOT STARTED; UI-6 as a whole is not complete. This status update does not change the four-task scope or Block 8 boundaries above.
+**Task 1 completion record (2026-10-01):** UI-6 Task 1 — Diagnostic Mode Foundation was completed using the existing `ApplicationMode`; invalid values hide the diagnostic section. Reported verification: 12 focused tests and 182 related UI regression tests passed. At that point Tasks 2–4 were not started; the current status is recorded in the following update. This record does not change the four-task scope or Block 8 boundaries above.
+
+**Current implementation status update (2026-10-01):** UI-6 Task 2 — Trace ID is COMPLETED. The UI presents the existing dispatch-level `DispatchResult.trace_id` only in Diagnostic Mode; invalid or missing results remain unavailable, and a failed new runner attempt immediately clears the previous Trace ID. No ID generation or Core/Broker/Block 8 changes were introduced. Reported verification: 20 focused tests and 190 related UI regression tests passed. Task 3 is next; Task 4 remains not started. UI-6 as a whole is not complete.

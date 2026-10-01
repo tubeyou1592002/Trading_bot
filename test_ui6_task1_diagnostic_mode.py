@@ -1,7 +1,8 @@
 """
 test_ui6_task1_diagnostic_mode.py
 
-UI-6 Task 1 — Diagnostic Mode Foundation tests (fully offline).
+UI-6 Task 1 — Diagnostic Mode Foundation + Task 2 — Trace ID
+(fully offline tests).
 
 Contract coverage:
 
@@ -26,6 +27,19 @@ Contract coverage:
               diagnostic items; MainWindow construction still imports no
               core/brokers/market module (UI-1 offline contract).
 
+    Task 2  — the dispatch-level Trace ID line: the Core-built
+              ``DispatchResult.trace_id`` of THIS run is shown verbatim
+              inside the diagnostic section (DIAGNOSTIC only, section-level
+              — never per order, never in the order log); NORMAL keeps it
+              hidden; ONLY a real ``core.dispatch_contracts.DispatchResult``
+              is accepted (a forged look-alike with a ``trace_id`` attribute
+              is rejected); ``None``/blank/non-string/stale-after-failure/
+              stopped-run render the unavailable marker and never fabricate
+              or substitute an id; ``execution_id`` is never shown as the
+              trace id; a failed issue attempt never presents the previous
+              run's trace id as the new run's; display changes never touch
+              send/UI-5 behavior.
+
 These tests are fully offline:
   - no network
   - no login
@@ -46,6 +60,7 @@ import pytest
 
 from PySide6.QtWidgets import QApplication
 
+from core.dispatch_contracts import DispatchResult
 from core.order_engine import OrderExecutionResult
 from core.order_queue import OrderQueue
 from models.order import BUY, SELL, Order
@@ -56,6 +71,8 @@ from ui.main_window import ApplicationMode, MainWindow
 from ui.order_configuration_page import (
     DIAGNOSTIC_EMPTY_STATE,
     DIAGNOSTIC_SECTION_TITLE,
+    DIAGNOSTIC_TRACE_LABEL,
+    DIAGNOSTIC_TRACE_UNAVAILABLE,
     OrderConfigurationPage,
 )
 
@@ -100,8 +117,9 @@ class _StubRunner:
 
     last_order_results = None
 
-    def __init__(self, results):
+    def __init__(self, results, dispatch_result=None):
         self._results = results
+        self._dispatch_result = dispatch_result
         self.run_calls = []
 
     def run(self, entries, account=None):
@@ -109,7 +127,9 @@ class _StubRunner:
         self.last_order_results = list(self._results)
         # The existing runner returns (plan, execution_id, result); the
         # stub keeps that exact surface so the page's pass runs unchanged.
-        return None, "EXEC-OFFLINE", None
+        # The third member is the run's real DispatchResult (it may carry
+        # the Core-built trace_id — UI-6 Task 2).
+        return None, "exec-ui5-1", self._dispatch_result
 
 
 def _dry_run_result(order, success=True):
@@ -125,9 +145,22 @@ def _dry_run_result(order, success=True):
     )
 
 
-def _wire_and_run(page, orders, results):
+def _dispatch_result(trace_id="TRACE-UI6-0001"):
+    """The dispatch-level result shape the real runner returns (Task 8.2)."""
+    return DispatchResult(
+        success=True,
+        sent=True,
+        mode="DRY_RUN",
+        message="offline dispatch",
+        broker_name=BROKER,
+        order_count=1,
+        trace_id=trace_id,
+    )
+
+
+def _wire_and_run(page, orders, results, dispatch_result=None):
     """The EXISTING pass path: wire a stub runner, prepare the queue, run."""
-    runner = _StubRunner(results)
+    runner = _StubRunner(results, dispatch_result=dispatch_result)
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -278,6 +311,426 @@ class TestDiagnosticSectionIsRealAndModeGated:
         page.apply_mode(ApplicationMode.NORMAL)
         assert page.is_diagnostic_visible() is False
         assert page.diagnostic_section.isVisibleTo(page) is False
+
+
+# ============================================================
+# UI-6 Task 2 — the dispatch-level Trace ID line
+# ============================================================
+
+
+class TestDiagnosticTraceId:
+    """
+    The Trace ID shown is the Core-built ``DispatchResult.trace_id`` of
+    THIS run — never created, defaulted or substituted by the UI, never
+    attributed to a single order, and visible only inside the mode-gated
+    diagnostic section.
+    """
+
+    def test_real_trace_id_of_this_run_shown_in_diagnostic(self, qapp):
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        order = Order(nsc_id="NSC-T1", side=BUY, price=100, quantity=1)
+        page._order_symbols[id(order)] = "\u0622\u06a9\u0648"
+        _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order, success=True)],
+            dispatch_result=_dispatch_result("TRACE-UI6-0001"),
+        )
+
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.is_diagnostic_visible() is True
+        # The shown value is THIS run's real trace id, verbatim.
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "TRACE-UI6-0001"
+        )
+        # The trace id is a SECTION-level line: not attached to any
+        # per-order item and never rendered into the order-log table.
+        for row in range(page.diagnostic_list.count()):
+            assert "TRACE-UI6-0001" not in page.diagnostic_list.item(row).text()
+        for r in range(page.order_log_table.rowCount()):
+            for c in range(page.order_log_table.columnCount()):
+                cell = page.order_log_table.item(r, c)
+                assert cell is None or "TRACE-UI6-0001" not in cell.text()
+
+    def test_trace_id_hidden_in_normal_mode(self, qapp):
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        order = Order(nsc_id="NSC-T2", side=BUY, price=10, quantity=1)
+        _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order, success=True)],
+            dispatch_result=_dispatch_result("TRACE-UI6-0002"),
+        )
+        # NORMAL: the whole section — and with it the trace id — stays
+        # hidden even though the run's trace id exists. The label is
+        # never visible to the page while its section is hidden.
+        window.set_mode(ApplicationMode.NORMAL)
+        assert page.is_diagnostic_visible() is False
+        assert page.diagnostic_section.isVisibleTo(page) is False
+        assert page.trace_id_label.isVisibleTo(page) is False
+        assert page.trace_id_label.isVisible() is False
+        # Switching to DIAGNOSTIC reveals the same run's real trace id.
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "TRACE-UI6-0002"
+        )
+
+    def test_missing_blank_and_nodispatch_never_fabricate(self, qapp):
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        # 1) trace_id=None on a real dispatch result.
+        order = Order(nsc_id="NSC-T3", side=BUY, price=1, quantity=1)
+        _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order)],
+            dispatch_result=_dispatch_result(trace_id=None),
+        )
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 2) A blank trace id (whitespace only).
+        page._last_test_run = (
+            None,
+            "exec-ui5-2",
+            _dispatch_result(trace_id="   "),
+        )
+        page._refresh_diagnostic_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 3) A result object WITHOUT a trace_id attribute at all.
+        class _NoTrace:
+            pass
+
+        page._last_test_run = (None, "exec-ui5-3", _NoTrace())
+        page._refresh_diagnostic_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 4) A halted pre-dispatch pass: nothing was stored and NO id of
+        #    any kind is invented.
+        page._last_test_run = None
+        page._refresh_diagnostic_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 5) A non-string trace id is rejected the same way.
+        page._last_test_run = (
+            None,
+            "exec-ui5-4",
+            _dispatch_result(trace_id=12345),
+        )
+        page._refresh_diagnostic_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+    def test_execution_id_is_never_shown_as_trace_id(self, qapp):
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        order = Order(nsc_id="NSC-T4", side=BUY, price=5, quantity=1)
+        # A run whose dispatch carries NO trace id, with a distinctive
+        # execution id: the execution id must never appear in its place.
+        _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order)],
+            dispatch_result=_dispatch_result(trace_id=None),
+        )
+        assert page._diagnostic_trace_id() is None
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+        assert "exec-ui5-1" not in page.trace_id_label.text()
+        # The extractor itself never returns the execution id either.
+        assert page._last_test_run[1] == "exec-ui5-1"
+        assert page._diagnostic_trace_id() is None
+
+    def test_invalid_result_carrying_trace_id_is_rejected(self, qapp):
+        """
+        ONLY a real ``DispatchResult`` is accepted: a look-alike object
+        carrying a (forged) ``trace_id`` attribute is rejected and renders
+        the unavailable marker — no look-alike ever unmasks the line.
+        """
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        class _ForgedResult:  # a dict-like look-alike, NOT a DispatchResult
+            trace_id = "forged-trace-should-never-show"
+
+        page._last_test_run = (None, "exec-ui5-f", _ForgedResult())
+        page._refresh_diagnostic_trace_display()
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+        # The same behavior holds through the full display refresh.
+        page._refresh_diagnostic_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # A real DispatchResult with the same id still renders verbatim.
+        from core.dispatch_contracts import DispatchResult
+
+        page._last_test_run = (
+            None,
+            "exec-ui5-f",
+            DispatchResult(
+                success=True,
+                sent=True,
+                mode="DRY_RUN",
+                trace_id="forged-trace-should-never-show",
+            ),
+        )
+        page._refresh_diagnostic_trace_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "forged-trace-should-never-show"
+        )
+
+    def test_stale_trace_of_failed_issue_never_shown_as_new_run(self, qapp):
+        """
+        A failed/halted issue attempt must never let the PREVIOUS run's
+        trace id pass as the new run's: while ``_last_test_error`` is set
+        the stored tuple is treated as stale and the line shows the
+        unavailable marker; only a NEW completed run may show a trace id
+        again.
+        """
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        # 1) A first successful run with a real trace id.
+        order = Order(nsc_id="NSC-T6", side=BUY, price=3, quantity=1)
+        page._order_symbols[id(order)] = "\u0622\u06a9\u0648"
+
+        class _FailingRunner:
+            last_order_results = None
+
+            def run(self, entries, account=None):
+                raise RuntimeError("issue failed before dispatch")
+
+        page.set_test_runner_factory(lambda: _FailingRunner())
+        page.config.select_instrument(
+            Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
+        )
+        page.order_queue.enqueue(
+            order, account_id="ACC-001", broker_name=BROKER
+        )
+        page._test_mode = True
+        page._run_test_pass()  # fails BEFORE dispatch (fail-closed path)
+        assert page._last_test_error is not None
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        # No trace id of ANY run is shown for the failed pass.
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 2) The explicit stale-guard contract: a stored PREVIOUS run's
+        #    result while an error is recorded is treated as stale.
+        from core.dispatch_contracts import DispatchResult
+
+        page._last_test_run = (
+            None,
+            "exec-ui5-old",
+            DispatchResult(
+                success=True,
+                sent=True,
+                mode="DRY_RUN",
+                trace_id="PREVIOUS-RUN-TRACE",
+            ),
+        )
+        page._refresh_diagnostic_trace_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+        assert "PREVIOUS-RUN-TRACE" not in page.trace_id_label.text()
+
+        # 3) A real pre-dispatch STOPPED result carries trace_id=None:
+        #    it renders unavailable — no fabricated id (same contract as
+        #    test_missing_blank_and_nodispatch_never_fabricate case 1).
+        page._last_test_error = None
+        page._last_test_run = (
+            None,
+            "exec-ui5-stop",
+            DispatchResult(
+                success=False,
+                sent=False,
+                mode="STOPPED",
+                trace_id=None,
+            ),
+        )
+        page._refresh_diagnostic_trace_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+
+        # 4) Only a NEW completed run shows its own trace id again.
+        page._last_test_error = None
+        page._last_test_run = (
+            None,
+            "exec-ui5-new",
+            DispatchResult(
+                success=True,
+                sent=True,
+                mode="DRY_RUN",
+                trace_id="NEW-RUN-TRACE",
+            ),
+        )
+        page._refresh_diagnostic_trace_display()
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "NEW-RUN-TRACE"
+        )
+
+    def test_stale_trace_cleared_immediately_after_failed_issue(self, qapp):
+        """
+        Required corrective scenario: with the section VISIBLE
+        (DIAGNOSTIC), a successful run shows its trace id; the NEXT issue
+        failing BEFORE dispatch must wipe that stale trace id from the
+        screen IMMEDIATELY (no mode change, no extra action) — the old
+        run's id is never left on display as the failed run's.
+        """
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        # 1) A successful run with a known trace id, section visible.
+        order = Order(nsc_id="NSC-T7", side=BUY, price=9, quantity=1)
+        page._order_symbols[id(order)] = "\u0622\u06a9\u0648"
+        _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order)],
+            dispatch_result=_dispatch_result("GOOD-TRACE-0001"),
+        )
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "GOOD-TRACE-0001"
+        )
+
+        # 2) The next issue fails BEFORE dispatch (queue keeps its entry,
+        #    exactly like the real pass path). The error handler itself —
+        #    not a mode change — must refresh the trace line.
+        class _FailingRunner:
+            last_order_results = None
+
+            def run(self, entries, account=None):
+                raise RuntimeError("issue failed before dispatch")
+
+        # The page caches its runner (existing UI-5 contract); the test
+        # resets that cache to inject the failing runner for the NEXT pass.
+        page._test_runner_instance = None
+        page.set_test_runner_factory(lambda: _FailingRunner())
+        page._test_mode = True
+        page._run_test_pass()
+
+        # 3) No mode change, no extra action: the stale id is already gone.
+        assert page._last_test_error is not None
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+        )
+        assert "GOOD-TRACE-0001" not in page.trace_id_label.text()
+
+        # 4) Existing behavior intact: the error is surfaced, no new
+        #    dispatch happened, and a completed NEW run shows its own id.
+        assert "could not be issued" in page.queue_status_label.text()
+        page._test_runner_instance = None
+        page.set_test_runner_factory(
+            lambda: _StubRunner(
+                [_dry_run_result(order)],
+                dispatch_result=_dispatch_result("GOOD-TRACE-0002"),
+            )
+        )
+        page._run_test_pass()
+        assert page._last_test_error is None
+        assert page.trace_id_label.text() == (
+            DIAGNOSTIC_TRACE_LABEL + "GOOD-TRACE-0002"
+        )
+
+    def test_trace_display_changes_no_send_behavior(self, qapp):
+        page = make_page(qapp)
+        window = MainWindow()
+
+        def _redirect(mode):
+            page.apply_mode(mode)
+
+        window.order_configuration_page.apply_mode = _redirect
+
+        order = Order(nsc_id="NSC-T5", side=BUY, price=7, quantity=1)
+        page._order_symbols[id(order)] = "\u0622\u06a9\u0648"
+        runner = _wire_and_run(
+            page,
+            [order],
+            [_dry_run_result(order)],
+            dispatch_result=_dispatch_result("TRACE-UI6-0005"),
+        )
+        before = (
+            len(page.order_log),
+            len(runner.run_calls),
+            len(page.order_queue.list_pending()),
+        )
+        # Every mode transition changes ONLY what is displayed.
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        shown = page.trace_id_label.text()
+        assert shown == DIAGNOSTIC_TRACE_LABEL + "TRACE-UI6-0005"
+        window.set_mode(ApplicationMode.NORMAL)
+        assert page.is_diagnostic_visible() is False
+        window.set_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.trace_id_label.text() == shown
+        # The run, log, queue and Test state are all untouched.
+        assert (
+            len(page.order_log),
+            len(runner.run_calls),
+            len(page.order_queue.list_pending()),
+        ) == before
+        assert page._test_mode is True
+        page._test_mode = False
 
 
 # ============================================================

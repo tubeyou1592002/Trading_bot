@@ -2266,11 +2266,11 @@ The following are explicitly **not** part of M6-E:
 - Deferred to UI-6: latency/diagnostics/trace-style presentation and detailed execution timing.
 ### UI-6 Roadmap — Finalized
 
-**Current status:** UI-5 is COMPLETED. UI-6 is IN PROGRESS and has exactly four tasks: (1) Diagnostic Mode Foundation — COMPLETED; (2) Trace ID — NEXT; (3) Latency & Execution Diagnostics — NOT STARTED; and (4) Integration, Regression & Documentation — NOT STARTED. UI-6 itself is not complete.
+**Current status:** UI-5 is COMPLETED. UI-6 is IN PROGRESS and has exactly four tasks: (1) Diagnostic Mode Foundation — COMPLETED; (2) Trace ID — COMPLETED; (3) Latency & Execution Diagnostics — NEXT; and (4) Integration, Regression & Documentation — NOT STARTED. UI-6 itself is not complete.
 
 1. **Diagnostic Mode Foundation** — establish the NORMAL/DIAGNOSTIC presentation boundary; technical information remains hidden in Normal Mode; no trading/execution behavior changes.
-2. **Trace ID** — expose the existing execution `trace_id` only in Diagnostic Mode; no second UI-specific Trace ID.
-3. **Latency & Execution Diagnostics** — reuse existing Block 8 latency infrastructure; present existing timing data without creating a second measurement system or fabricating/merging values.
+2. **Trace ID — COMPLETED** — the existing dispatch-level `DispatchResult.trace_id` is shown only in Diagnostic Mode. Invalid/missing IDs are unavailable; no second ID is generated or substituted. A failed new runner attempt immediately clears the previous displayed ID. Reported verification: 20 focused tests and 190 related UI regression tests passed.
+3. **Latency & Execution Diagnostics — NEXT** — reuse existing Block 8 latency infrastructure; present existing timing data without creating a second measurement system or fabricating/merging values.
 4. **Integration, Regression & Documentation** — verify Diagnostic Mode, Trace ID, latency/diagnostic presentation, UI-5 regression safety, and complete documentation before marking UI-6 complete.
 
 UI-6 Task 1 uses the existing `ApplicationMode`; the diagnostic section is hidden in NORMAL and shown in DIAGNOSTIC. Invalid mode values hide it fail-closed. The mode does not change trading/execution behavior. Reported verification: 12 focused tests and 182 related UI regression tests passed.

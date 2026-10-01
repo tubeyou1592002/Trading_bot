@@ -287,6 +287,17 @@ DIAGNOSTIC_EMPTY_STATE = (
     "\u0646\u0634\u062f\u0647 \u0627\u0633\u062a."
 )
 
+# UI-6 Task 2 — the Trace ID line of the diagnostic section. The trace id
+# is the EXISTING dispatch-level id the Core already builds
+# (``DispatchResult.trace_id`` of THIS run — no second id is ever created
+# here). It belongs to the whole dispatch, so it is a section-level line,
+# never attributed to any single order or log row. Fail-closed rendering:
+# a missing/blank/foreign trace id renders the real unavailable marker —
+# never a substitute id (``execution_id`` is a DIFFERENT identifier and is
+# never shown in its place).
+DIAGNOSTIC_TRACE_LABEL = "Trace ID: "
+DIAGNOSTIC_TRACE_UNAVAILABLE = "\u2014"  # ناموجود / نامشخص
+
 def _epoch_to_local_datetime(value):
     """
     The local ``datetime`` of a REAL epoch-seconds feedback timestamp.
@@ -700,6 +711,18 @@ class OrderConfigurationPage(QWidget):
             DIAGNOSTIC_SECTION_TITLE, self
         )
         diagnostic_layout = QVBoxLayout(self.diagnostic_section)
+
+        # UI-6 Task 2: the dispatch-level Trace ID line. ONE section-level
+        # label (the trace belongs to the whole dispatch, never to a single
+        # order/log row), rendered ONLY from the run's real
+        # ``DispatchResult.trace_id`` and shown ONLY while the section is
+        # visible (DIAGNOSTIC mode) — the label inherits the section's
+        # visibility, so NORMAL never discloses it.
+        self.trace_id_label = QLabel(
+            DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE,
+            self.diagnostic_section,
+        )
+        diagnostic_layout.addWidget(self.trace_id_label)
 
         self.diagnostic_list = QListWidget(self.diagnostic_section)
         self.diagnostic_list.setMaximumHeight(120)
@@ -1579,6 +1602,11 @@ class OrderConfigurationPage(QWidget):
             self._show_queue_status(
                 f"Test run could not be issued: {exc}"
             )
+            # UI-6 Task 2: with the error recorded, the stored tuple is the
+            # PREVIOUS run's — stale for display. Refresh the trace line
+            # RIGHT HERE so a stale trace id never lingers on screen until
+            # the next mode change (one label update — no execution impact).
+            self._refresh_diagnostic_trace_display()
             return
 
         self._last_test_run = (plan, execution_id, result)
@@ -1852,7 +1880,10 @@ class OrderConfigurationPage(QWidget):
               never leaves the section unmasked).
 
         Ordering, queue, result and feedback behavior are untouched:
-        this is a visibility change only.
+        this is a visibility change only. The Trace ID line follows the
+        same boundary: it exists only inside the (mode-gated) section and
+        is re-rendered on every visibility change so the shown value is
+        always THIS mode moment's current run value.
         """
         # ``ui.main_window`` is already imported at module level (the two
         # modules form one package surface since UI-1); the name is bound
@@ -1866,10 +1897,63 @@ class OrderConfigurationPage(QWidget):
             visible = False
         self._diagnostic_section_visible = visible
         self.diagnostic_section.setVisible(visible)
+        # UI-6 Task 2: the Trace ID line re-renders on every visibility
+        # change, so a shown value is always the current run's value at
+        # the moment the boundary lets it be seen.
+        self._refresh_diagnostic_trace_display()
 
     def is_diagnostic_visible(self):
         """The current diagnostic-section visibility (the page boundary)."""
         return self._diagnostic_section_visible
+
+    def _diagnostic_trace_id(self):
+        """
+        The Trace ID of THIS run's real dispatch result — or ``None``.
+
+        Source of truth: ``_last_test_run[2].trace_id`` — the
+        ``DispatchResult`` the existing Test runner returned as the third
+        member of its bridge triple (the Core built the id; the UI never
+        creates, derives or substitutes one; ``execution_id`` is a
+        DIFFERENT identifier and is never used).
+
+        Strict result validation (fail-closed): ONLY a real
+        ``core.dispatch_contracts.DispatchResult`` of THIS run is accepted.
+        Any other object — a dict, a look-alike carrying a forged
+        ``trace_id`` attribute, a previous run's result handed back — is
+        rejected and renders the unavailable marker. The contract module
+        imports ONLY the standard library and is imported lazily INSIDE
+        this method (never at module import or window construction, where
+        the UI-1 offline contracts forbid any ``core.*`` module); an
+        import failure yields ``None``.
+
+        Halted / failed runs: a real STOPPED pre-dispatch result carries
+        ``trace_id=None`` and renders unavailable. When the last issue
+        attempt FAILED (the runner raised — ``_last_test_error`` is set),
+        the stored tuple is the PREVIOUS run's and is treated as stale:
+        ``None`` is returned, so the previous run's trace id is never
+        presented as the new run's. The line shows a trace id again only
+        after a new run actually completes.
+        """
+        if self._last_test_error is not None:
+            return None  # last issue attempt failed — stored run is stale
+        if not isinstance(self._last_test_run, tuple) or len(
+            self._last_test_run
+        ) != 3:
+            return None
+        result = self._last_test_run[2]
+        try:
+            # Stdlib-only contract module; never imported at construction
+            # (the no-run guard in the trace renderer prevents that).
+            from core.dispatch_contracts import DispatchResult
+        except ImportError:  # pragma: no cover — fail-closed
+            return None
+        if not isinstance(result, DispatchResult):
+            return None
+        trace_id = result.trace_id
+        if not isinstance(trace_id, str):
+            return None
+        text = trace_id.strip()
+        return text or None
 
     def _refresh_diagnostic_display(self):
         """
@@ -1878,11 +1962,14 @@ class OrderConfigurationPage(QWidget):
         The content is the per-order execution verdict of the last Test
         pass — the SAME verdicts the Task 3 Test Results area shows,
         derived from the REAL ``OrderExecutionResult`` objects
-        (``_result_status_label``), in the exact result order. No new
-        measurement is taken, no value is invented: without a Test pass
-        the section shows its real empty state. Called on the single
-        final refresh of a run and on visibility changes, never from
-        construction or navigation.
+        (``_result_status_label``), in the exact result order — plus the
+        ONE dispatch-level Trace ID line (UI-6 Task 2: the Core-built
+        ``DispatchResult.trace_id`` of THIS run, never a new or substitute
+        id, never attributed to a single order). No new measurement is
+        taken, no value is invented: without a Test pass the section
+        shows its real empty state. Called on the single final refresh of
+        a run and on visibility changes, never from construction or
+        navigation.
         """
         self.diagnostic_list.clear()
         entries = self._last_test_entries or []
@@ -1919,6 +2006,39 @@ class OrderConfigurationPage(QWidget):
             )
         else:
             self.diagnostic_status_label.setText(DIAGNOSTIC_EMPTY_STATE)
+        # UI-6 Task 2: keep the dispatch-level Trace ID line in sync with
+        # the run this verdicts belong to.
+        self._refresh_diagnostic_trace_display()
+
+    def _refresh_diagnostic_trace_display(self):
+        """
+        Render the ONE dispatch-level Trace ID line (UI-6 Task 2).
+
+        The value is ``_diagnostic_trace_id()`` — the Core-built
+        ``DispatchResult.trace_id`` of THIS run, verbatim. Nothing here
+        creates, derives, defaults or substitutes an id: without a real
+        trace id (no dispatch, a stopped run, a failed issue attempt,
+        ``None``, blank, a non-result object) the line shows the real
+        unavailable marker. ``execution_id`` — a DIFFERENT identifier —
+        is never shown in its place. Rendering only updates one label; no
+        ordering/execution behavior is touched. The no-run early return
+        keeps window construction free of any ``core.*`` import (the
+        extractor's lazy import runs only once a run actually exists).
+        """
+        if self._last_test_run is None:
+            self.trace_id_label.setText(
+                DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+            )
+            return
+        trace_id = self._diagnostic_trace_id()
+        if trace_id:
+            self.trace_id_label.setText(
+                DIAGNOSTIC_TRACE_LABEL + trace_id
+            )
+        else:
+            self.trace_id_label.setText(
+                DIAGNOSTIC_TRACE_LABEL + DIAGNOSTIC_TRACE_UNAVAILABLE
+            )
 
     def _refresh_order_log_display(self):
         """
