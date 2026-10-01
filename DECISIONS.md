@@ -1056,7 +1056,7 @@ Account identity already exists as a validated domain concept (Task 6.1). Duplic
 
 ## Decision 025 — Order Feedback, Queue Position, and the Task 4 Log Are Staged
 
-**Status:** Accepted — planning decision; Stage 1 has been implemented and verified; Stage 2 has been implemented and verified; the Stage 3 prerequisite (OMS/NATS feedback activation bridge) is COMPLETED. The Stage 3 UI table is NOT STARTED and is the next step.
+**Status:** Accepted — Stage 1 and Stage 2 are implemented and verified; the Stage 3 prerequisite (OMS/NATS feedback activation bridge) is COMPLETED; the Stage 3 UI table is also IMPLEMENTED, VERIFIED, and committed as `ecfa5cf`.
 
 ### Decision 025 — Implementation Update: Stage 1
 
@@ -1158,11 +1158,38 @@ feedback:  Order 2 -> Order 1 -> Order 3     (each updates only its own order)
 
 **Stage 3 — UI-5 Task 4 User-Facing Log (UI):**
 
-* Implemented **only after** Stages 1 and 2 are available.
-* The table is a live user-facing monitor, not a technical debug log.
-* Rows are created in **send order** and updated **asynchronously** as feedback arrives; the send loop continues independently while earlier orders are waiting for feedback.
-* A successful/green row means the order is **actually confirmed as registered in the trading core**; an initial broker/API response alone is not sufficient.
-* No persistence, database, export, new logging framework, or new trading architecture.
+**Status: IMPLEMENTED and VERIFIED — commit `ecfa5cf`.**
+
+The user-facing order log table is a live UI monitor that consumes the contracts from Stages 1 and 2 plus the completed feedback activation bridge.
+
+Required seven columns:
+1. `زمان ارسال`
+2. `حساب`
+3. `نماد`
+4. `توضیح`
+5. `زمان دریافت توسط کارگزاری`
+6. `زمان ثبت در هسته معاملاتی در صورت وجود`
+7. `وضعیت صف`
+
+Verified behavior:
+- Rows are appended in send order and remain in that order.
+- Column 5 consumes the existing Stage 1 broker-receipt timestamp.
+- Column 6 is populated only by matching-engine registration feedback; `AcceptedByBourse` (action=5) is the only green/registration trigger.
+- `SavedInAsa` (action=2) does not green or stamp the row as registered in the trading core.
+- Column 7 consumes only the existing Stage 2 queue-position signal through `decisionId` correlation; the UI performs no queue polling or queue-position calculation.
+- Unknown/invalid queue feedback is fail-closed and duplicate identical delivery is idempotent.
+- `decisionId` is internal correlation state and is never rendered.
+- No persistence, export, new logging framework, or trading logic was introduced.
+- Real trading remains disabled.
+
+Verification:
+- Focused Stage 3 Task 4 tests: 10 PASS.
+- Related Stage 3 suite: 126 PASS.
+- Combined Stage 3 verification: 136 PASS.
+- `git diff --check`: clean before commit.
+
+**Deferred to UI-6:** latency/diagnostic/trace-style presentation and detailed execution timing.
+
 
 **Conflicts resolved by this decision:**
 
@@ -1211,7 +1238,7 @@ Order feedback and queue position are broker- and core-level facts. They cannot 
 
 ## Stage 3 Prerequisite Implementation Evidence — Feedback Activation Bridge (COMPLETED)
 
-The lifecycle gap recorded above is now closed. The Stage 3 **prerequisite** is COMPLETED; the Stage 3 UI table itself is NOT STARTED and is the next step.
+The lifecycle gap recorded above is now closed. The Stage 3 prerequisite and the Stage 3 UI table are COMPLETED; the UI table is committed as `ecfa5cf`.
 
 * Implementation files: `ui/order_feedback_service.py` (new — `OrderFeedbackService`), `ui/main_window.py`, `ui/test_runner.py`, `brokers/agaah/broker.py`, `brokers/agaah/queue_position.py`
 * Lifecycle is ACTIVE: the service starts on entering Order Configuration (`select_page`) and stops on window close (`closeEvent`).
@@ -1219,4 +1246,4 @@ The lifecycle gap recorded above is now closed. The Stage 3 **prerequisite** is 
 * `AcceptedByBourse` (action=5) is the ONLY trigger for core order-registration (`on_order_registered` fires only from `_handle_accepted_by_bourse`); `SavedInAsa` (action=2) does not trigger core registration.
 * The asyncio/NATS loop runs on a dedicated background `QThread`; it never touches the GUI thread and never blocks order sends. Receiving path only — no scheduler, no order sending.
 * Verification tests (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32) PASS; full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS. Fully offline — no real Agah/NATS/network.
-* Status: PREREQUISITE COMPLETED — Stage 3 UI table NOT STARTED (next step).
+* Status: COMPLETED — Stage 3 UI table implemented and verified in `ecfa5cf`.

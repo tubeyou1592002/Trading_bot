@@ -337,8 +337,8 @@ UI-5 Task 4 Stage 1 completed — Order feedback & timing capture.
 
 UI-5 Task 4 Stage 2 completed — Queue position via Agah NATS/OMS.
 
-UI-5 Task 4 Stage 3 PREREQUISITE completed — OMS/NATS feedback activation bridge finalized.
-  The Stage 3 UI table itself is NOT STARTED and is the next step:
+UI-5 Task 4 Stage 3 completed — user-facing order log table implemented and verified.
+  The Stage 3 UI table is COMPLETED; the following prerequisite facts remain part of the implemented feedback path:
   - OrderFeedbackService lifecycle is ACTIVE: start on entering Order Configuration, stop on window close.
   - TestRunner and OrderFeedbackService use the SAME shared BrokerManager / AgaahBroker instance — same broker identity for both order execution path and OMS feedback path.
   - `AcceptedByBourse` (action=5) is the only trigger for green registration in the core.
@@ -348,7 +348,7 @@ UI-5 Task 4 Stage 3 PREREQUISITE completed — OMS/NATS feedback activation brid
 
   - Verification tests passed (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32); full UI regression 206; core regression (M5/M6/engine/provider/broker manager) 152.
 
-  - Status: PREREQUISITE COMPLETED — Stage 3 UI table NOT STARTED (next step)
+  - Status: COMPLETED — Stage 3 UI table implemented and verified in `ecfa5cf`.
 
 Milestone 4-B committed as `9713360` — تمام تست‌ها 45/45 PASS. Milestone بعدی با دستور مستقل تعریف می‌شود:
 * پیاده‌سازی واقعی `get_trading_state` برای آگاه (Decision 017) پس از شناسایی منبع معتبر.

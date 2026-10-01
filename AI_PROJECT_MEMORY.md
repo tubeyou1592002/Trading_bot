@@ -2255,14 +2255,16 @@ The following are explicitly **not** part of M6-E:
 - UI-5 Task 4 Stage 1 (Core — order feedback & timing capture): **COMPLETED** (`822c46d`)
 - UI-5 Task 4 Stage 2 (Core — queue position via Agah NATS/OMS): **COMPLETED**
 - UI-5 Task 4 Stage 3 PREREQUISITE — OMS/NATS feedback activation bridge: **COMPLETED**
-    * `ui/order_feedback_service.py` (`OrderFeedbackService`): lifecycle is ACTIVE — starts on entering Order Configuration, stops on window close.
-    * `TestRunner` and `OrderFeedbackService` use the SAME shared `BrokerManager` / `AgaahBroker` instance — one broker identity for both the order execution path and the OMS feedback path.
-    * `AcceptedByBourse` (action=5) is the ONLY trigger for core order registration; `SavedInAsa` (action=2) does NOT trigger core registration.
-    * The asyncio/NATS loop runs on a dedicated background `QThread`; receiving path only — never blocks order sends.
-    * Lifecycle tests are fully offline (no real Agah/NATS/network).
-    * Verification (actual runs): 122 PASS (UI-5 core 90 + UI-3.1 regression 32); full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS.
-- UI-5 Task 4 Stage 3 (UI — user-facing log table): **NOT STARTED — this is the next step.**
-- Next roadmap step: **UI-5 Task 4 Stage 3 — the UI user-facing log table** (consumes Stage 1/2 contracts and the Stage 3 prerequisite bridge). Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
+- UI-5 Task 4 Stage 3 (UI — user-facing order log table): **COMPLETED** (`ecfa5cf`)
+  * Seven columns are rendered: `زمان ارسال`, `حساب`, `نماد`, `توضیح`, `زمان دریافت توسط کارگزاری`, `زمان ثبت در هسته معاملاتی در صورت وجود`, `وضعیت صف`.
+  * Column 5 consumes the existing Stage 1 broker-receipt timestamp; column 6 is stamped only by matching-engine registration feedback (`AcceptedByBourse`, action=5).
+  * `SavedInAsa` (action=2) does not mark a row registered in the trading core.
+  * Column 7 consumes only the existing Stage 2 queue-position signal, correlated by `decisionId`; no new queue polling/calculation was added.
+  * Rows preserve send order; duplicate/unknown/invalid queue feedback is handled fail-closed; `decisionId` is never rendered.
+  * Verification: focused Stage 3 Task 4 tests 10 PASS; related Stage 3 suite 126 PASS; combined Stage 3 verification 136 PASS.
+  * Real trading remains disabled and verification is offline/deterministic.
+- Deferred to UI-6: latency/diagnostics/trace-style presentation and detailed execution timing.
+- Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap). Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
 
 
 
