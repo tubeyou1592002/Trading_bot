@@ -72,8 +72,13 @@ Presentation of the order-configuration form:
                       EXACT matching order is stamped with the event's real
                       timestamp in «زمان ثبت در هسته معاملاتی» and rendered
                       highlighted (green). Unknown decisionIds create/change
-                      nothing; the id itself is never displayed. Queue status is
-                      a later task (Stage 3 Task 4).
+                      nothing; the id itself is never displayed.
+                      Stage 3 Task 4: the same bound feedback object also
+                      carries the EXISTING queue-position feedback signal; its
+                      value fills the row's «وضعیت صف» cell through the same
+                      decisionId correlation. No queue-position logic is
+                      implemented here — the page only consumes what the
+                      existing Stage 2 path already computed.
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
@@ -138,7 +143,13 @@ from ui.symbol_search_worker import (
     SymbolSearchWorker,
 )
 from ui.trading_state_worker import TradingStateWorker
-from ui.user_log import ORDER_LOG_COLUMNS, OrderLog, OrderLogRow
+from ui.user_log import (
+    COLUMN_QUEUE_STATUS,
+    EMPTY_CELL,
+    ORDER_LOG_COLUMNS,
+    OrderLog,
+    OrderLogRow,
+)
 
 # User-facing side labels — mapped 1:1 to the real project constants.
 SIDE_LABELS = ((BUY, "خرید"), (SELL, "فروش"))
@@ -217,10 +228,13 @@ RESULT_SYMBOL_UNKNOWN = "\u2014"
 # The seven columns and their order live in ui.user_log.ORDER_LOG_COLUMNS; the
 # rows come from the in-memory ui.user_log.OrderLog, one row appended per
 # SENT order in send order. Information that does not exist yet is rendered
-# as "—" (never invented). The ONLY feedback consumer is the Stage 3 Task 3
+# as "—" (never invented). The feedback consumers are the Stage 3 Task 3
 # trading-core registration stamp (a real matching-engine registration event
 # resolved through the page's decisionId correlation, bound via the injected
-# feedback-binder factory); queue-status logic is a later task.
+# feedback-binder factory) and the Stage 3 Task 4 queue-status value (the
+# EXISTING queue-position feedback signal of the SAME bound object). No queue
+# logic is implemented here — the page only consumes what the existing Stage
+# 2 path already computed.
 ORDER_LOG_GROUP_TITLE = "Order Log"
 
 # UI-5 Task 4 Stage 3 Task 3 — the highlight of a row whose order was REALLY
@@ -531,6 +545,19 @@ class OrderConfigurationPage(QWidget):
         # never rendered, never displayed.
         self._decision_id_by_order = {}
         self._order_by_decision_id = {}
+        # Stage 3 Task 4 — the id() identities of the orders a REAL send
+        # produced and correlated (mirrors the append loop). A queue-status
+        # event is only ever routed to an order this set holds: an order
+        # the page's own send path produced, never an invented one.
+        self._queued_order_ids = set()
+        # Stage 3 Task 4 — the queue-status DISPLAY state of the page's UI
+        # layer, keyed by the exact sent order's ``id(order)`` identity.
+        # The value is ONLY what the EXISTING Stage 2 feedback signal
+        # delivered (verbatim, as display text). It is UI-layer state:
+        # ``OrderLog`` stays append-only with its Task 3 contract intact
+        # and the model never stores or invents a queue value. A cell whose
+        # order holds no entry renders ``—`` (fail-closed).
+        self._queue_status_text_by_order = {}
 
         root_layout.addWidget(form_group)
 
@@ -1524,9 +1551,14 @@ class OrderConfigurationPage(QWidget):
         The row also carries its correlation key — the exact sent ``Order``
         object — and, when this send's real result carried a ``decisionId``,
         that id is recorded in the page's decisionId maps (routing state
-        only; the id itself is NEVER rendered). The broker-receipt,
-        trading-core-registration and queue-status fields stay ``None``:
-        they are filled ONLY later, by real feedback events. Rows are
+        only; the id itself is NEVER rendered) and in the queued-order-id
+        set for the queue-status consumer. The queue-status field stays
+        ``None`` (filled ONLY later by the existing Stage 2 queue-position
+        feedback, rendered from the page's UI-layer display state) and the
+        trading-core-registration field stays ``None``: they are filled
+        ONLY later, by real feedback events. The broker-receipt moment, by
+        contrast, is filled NOW when this send's real result already
+        carried ``broker_received_at``. Rows are
         appended in send order and are never reordered or removed.
         """
         results = results if isinstance(results, list) else None
@@ -1537,12 +1569,20 @@ class OrderConfigurationPage(QWidget):
             if results is not None and 0 <= index < len(results):
                 result = results[index]
             symbol = self._order_symbols.get(id(order))
+            # Stage 3 Task 4 — the broker-receipt moment the send's real
+            # result already carried (captured in the Core at the
+            # ``place_order`` return boundary). Rendered verbatim; never
+            # recomputed, never guessed, never a UI clock read.
+            broker_received = getattr(result, "broker_received_at", None)
+            if not isinstance(broker_received, datetime):
+                broker_received = None
             self.order_log.append(
                 OrderLogRow(
                     sent_at=sent_at,
                     account_id=entry.account_id,
                     symbol=symbol if symbol else None,
                     description=self._order_log_description(result),
+                    broker_received_at=broker_received,
                     key=order,
                 )
             )
@@ -1559,6 +1599,7 @@ class OrderConfigurationPage(QWidget):
                 # convention the page already uses for ``_order_symbols``.
                 self._decision_id_by_order[id(order)] = decision_id
                 self._order_by_decision_id[decision_id] = order
+                self._queued_order_ids.add(id(order))
         self._refresh_order_log_display()
 
     def _decision_ids_for_last_run(self):
@@ -1594,12 +1635,14 @@ class OrderConfigurationPage(QWidget):
         Bind the page to the EXISTING order-feedback signal exactly once.
 
         The factory returns an object that already exposes the existing
-        ``order_registered`` signal (production wires the shared feedback
-        service object). It is called lazily at the first real send — never
-        at construction — so a page without a factory simply never binds
-        (fail-closed, the base Stage 3 behavior). The page only ever uses
-        that signal's existence: it never imports, names or starts any
-        feedback/transport module. Any binding failure is swallowed as a
+        ``order_registered`` and ``queue_position`` signals (production
+        wires the shared feedback service object). It is called lazily at
+        the first real send — never at construction — so a page without a
+        factory simply never binds (fail-closed, the base Stage 3
+        behavior). The page only ever uses those signals' existence: it
+        never imports, names or starts any feedback/transport module and
+        implements no queue logic — it only consumes what the existing
+        path already computed. Any binding failure is swallowed as a
         no-op so the send path can never be disturbed by display wiring.
         """
         if self._feedback_binder is not None:
@@ -1615,7 +1658,53 @@ class OrderConfigurationPage(QWidget):
         if signal is None:
             return
         signal.connect(self._on_order_registered_from_feedback)
+        # Stage 3 Task 4 — the SAME bound object's EXISTING queue-position
+        # signal, consumed only when it actually exists (an object that
+        # carries no such signal simply binds the registration signal
+        # alone — fail-closed, never an AttributeError).
+        queue_signal = getattr(binder, "queue_position", None)
+        if queue_signal is not None:
+            queue_signal.connect(self._on_queue_position_from_feedback)
         self._feedback_binder = binder
+
+    def _on_queue_position_from_feedback(self, decision_id, position):
+        """
+        The EXISTING Stage 2 queue-position feedback arrived.
+
+        ``decision_id`` resolves to the row of the EXACT sent order through
+        the page's own map, and the position value it already computed fills
+        that row's «وضعیت صف» cell. Guards (all fail-closed):
+
+          * a non-string / blank decisionId is ignored;
+          * a non-integer position (bool included) is ignored — nothing
+            is fabricated;
+          * an unknown decisionId never creates or changes any row;
+          * an order without a real decisionId is never routed to;
+          * a duplicate delivery of the same value overwrites it with the
+            SAME value — a no-op, idempotent.
+
+        The value is stored in the page's UI-layer display state (keyed by
+        the exact sent order's identity) and rendered into the row's
+        «وضعیت صف» cell at the next refresh. ``OrderLog`` is never
+        touched: its append-only Task 3 contract stays intact, no new row
+        is created, the row count and order never change. The decisionId
+        itself is never rendered in any cell.
+        """
+        if not isinstance(decision_id, str):
+            return
+        decision_id = decision_id.strip()
+        if not decision_id:
+            return
+        if isinstance(position, bool) or not isinstance(position, int):
+            return
+        order = self._order_by_decision_id.get(decision_id)
+        if order is None:
+            return  # unknown correlation key — the UI stays untouched
+        if id(order) not in self._queued_order_ids:
+            return  # only orders a real send produced may be routed to
+        # UI-layer display state only — the OrderLog model is untouched.
+        self._queue_status_text_by_order[id(order)] = str(position)
+        self._refresh_order_log_display()
 
     def _on_order_registered_from_feedback(
         self, decision_id, accepted_at_ts, order_info
@@ -1667,21 +1756,38 @@ class OrderConfigurationPage(QWidget):
 
     def _refresh_order_log_display(self):
         """
-        Re-render the order-log table ONLY from the in-memory ``OrderLog``.
+        Re-render the order-log table ONLY from the in-memory ``OrderLog``
+        plus the page's UI-layer queue-status display state.
 
         The table is rebuilt from ``OrderLog.rows()`` — the rows in send
-        order — with each row's seven cells placed by its own column order.
-        This render never creates, updates or invents a row: it mirrors what
-        the send action appended plus the one registration value a real
-        feedback event may have stamped. Rows whose order was REALLY
-        registered in the trading core (a real matching-engine
+        order — with each row's seven cells placed by its own column order;
+        the «وضعیت صف» cell shows ONLY the value the EXISTING Stage 2
+        feedback signal delivered for that exact order (UI-layer state,
+        keyed by the row's order identity) or ``—`` when none arrived.
+        This render never creates, updates or invents a row: it mirrors
+        what the send action appended plus the two feedback values (the
+        matching-engine registration stamp — model state — and the
+        queue-position value — UI-layer display state). Rows whose order
+        was REALLY registered in the trading core (a real matching-engine
         registration event) are rendered with the registered highlight
         (green); every other row is unhighlighted.
         """
         rows = self.order_log.rows()
         self.order_log_table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
-            for column, text in enumerate(row.cells()):
+            cells = list(row.cells())
+            # Stage 3 Task 4 — the queue-status cell renders the page's
+            # UI-layer display state for THIS row's order (only what the
+            # existing Stage 2 signal delivered); ``—`` when nothing did.
+            # The model row is read-only here: no contract change, no
+            # invented value.
+            position_text = self._queue_status_text_by_order.get(
+                id(row.key)
+            )
+            cells[COLUMN_QUEUE_STATUS] = (
+                position_text if position_text else EMPTY_CELL
+            )
+            for column, text in enumerate(cells):
                 self.order_log_table.setItem(
                     row_index, column, QTableWidgetItem(text)
                 )
