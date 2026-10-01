@@ -40,6 +40,23 @@ Contract coverage:
               run's trace id as the new run's; display changes never touch
               send/UI-5 behavior.
 
+    Task 3  — the latency/execution diagnostics of THIS run's EXISTING
+              Block 8 ``DispatchLatencyReport`` (the runner's own
+              ``last_report``): the total dispatch window, the four
+              individual internal stage durations and Broker/API calls
+              from each order record with explicit order/call labels
+              (the FULL call — never labelled network latency, never
+              summed with stages/total). Categories stay separate; ns ->
+              ms is display-only with the unit stated; per-order detail
+              is matched ONLY by the real ``Order`` object identity
+              (never by list order or symbol); a missing report/stage,
+              ``None``/cross-clock values render ناموجود — never a
+              fabricated zero; a failed issue attempt never presents the
+              previous run's timings as the new run's; NORMAL hides the
+              whole section (Trace ID + latencies); display changes never
+              touch send/UI-5 behavior; construction still imports no
+              core.* module.
+
 These tests are fully offline:
   - no network
   - no login
@@ -55,6 +72,7 @@ Run:
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -70,9 +88,11 @@ from ui.account_store import AccountStore
 from ui.main_window import ApplicationMode, MainWindow
 from ui.order_configuration_page import (
     DIAGNOSTIC_EMPTY_STATE,
+    DIAGNOSTIC_LATENCY_TOTAL_LABEL,
     DIAGNOSTIC_SECTION_TITLE,
     DIAGNOSTIC_TRACE_LABEL,
     DIAGNOSTIC_TRACE_UNAVAILABLE,
+    DIAGNOSTIC_VALUE_UNAVAILABLE,
     OrderConfigurationPage,
 )
 
@@ -112,24 +132,87 @@ class _StubRunner:
     """
     The existing runner surface, offline and pure-Python: run() returns
     real OrderExecutionResult models (dry-run shaped, never live) and
-    exposes ``last_order_results`` exactly like the real runner.
+    exposes ``last_order_results`` exactly like the real runner. Task 3:
+    it also exposes the runner's existing ``last_report`` contract — an
+    OPTIONAL report of THIS run (``None`` on the plain/test-double path,
+    exactly like the real runner).
     """
 
     last_order_results = None
+    last_report = None
 
-    def __init__(self, results, dispatch_result=None):
+    def __init__(self, results, dispatch_result=None, report=None):
         self._results = results
         self._dispatch_result = dispatch_result
+        self.report = report
         self.run_calls = []
 
     def run(self, entries, account=None):
         self.run_calls.append((list(entries), account))
+        # Order identity: each result owns the SAME Order object the
+        # queue entry carries — the per-order matching rule (Task 3).
         self.last_order_results = list(self._results)
+        self.last_report = self.report
         # The existing runner returns (plan, execution_id, result); the
         # stub keeps that exact surface so the page's pass runs unchanged.
         # The third member is the run's real DispatchResult (it may carry
         # the Core-built trace_id — UI-6 Task 2).
         return None, "exec-ui5-1", self._dispatch_result
+
+
+def _latency_report(result, application_side_ns=1_500_000):
+    """
+    A REAL Block 8 ``DispatchLatencyReport`` (offline — pure stdlib
+    dataclasses, no dispatch, no clock, no broker): one measured order
+    with the four recorded stages, one recorded Broker/API round trip
+    and the collector's own application-side value. The record's
+    ``execution_result`` owns the SAME ``Order`` the run dispatched (the
+    per-order identity rule).
+    """
+    from core.latency_instrumentation import (
+        BrokerApiCallTiming,
+        DispatchLatencyReport,
+        OrderLatency,
+        StageTiming,
+    )
+
+    order = result.order
+    record = OrderLatency(
+        sequence=1,
+        account_id="ACC-001",
+        broker_name=BROKER,
+        ins_code="1",
+        stages=[
+            StageTiming("plan_item", 0, 1_000_000),
+            StageTiming("plan_account", 1_000_000, 2_500_000),
+            StageTiming("instrument_resolution", 2_500_000, 4_000_000),
+            StageTiming("order_engine_path", 4_000_000, 11_000_000),
+        ],
+        execution_result=result,
+        broker_api_calls=[
+            BrokerApiCallTiming("place_order", 4_500_000, 9_000_000)
+        ],
+        application_side_ns=application_side_ns,
+    )
+    return DispatchLatencyReport(
+        trace_id="TRACE-UI6-0001",
+        dispatch_start=0,
+        dispatch_end=12_345_678,
+        orders=[record],
+    )
+
+
+class _StubNscSeam:
+    """
+    Mimics the broker InstrumentProvider surface (``get_nsc_id``) — the
+    same offline stub convention as the UI-4 queue tests. No network.
+    """
+
+    def __init__(self, nsc_id="NSC-ID-1"):
+        self.nsc_id = nsc_id
+
+    def get_nsc_id(self, ins_code):
+        return self.nsc_id
 
 
 def _dry_run_result(order, success=True):
@@ -158,9 +241,11 @@ def _dispatch_result(trace_id="TRACE-UI6-0001"):
     )
 
 
-def _wire_and_run(page, orders, results, dispatch_result=None):
+def _wire_and_run(page, orders, results, dispatch_result=None, report=None):
     """The EXISTING pass path: wire a stub runner, prepare the queue, run."""
-    runner = _StubRunner(results, dispatch_result=dispatch_result)
+    runner = _StubRunner(
+        results, dispatch_result=dispatch_result, report=report
+    )
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -882,3 +967,358 @@ def test_extra_main_window_construction_stays_offline():
     )
     assert result.returncode == 0, result.stderr
     assert "UI6_OFFLINE_OK" in result.stdout
+
+# ============================================================
+# UI-6 Task 3 — latency & execution diagnostics (Block 8 report)
+# ============================================================
+
+
+class TestDiagnosticLatencyDisplay:
+    """
+    The latency/execution diagnostics are THIS run's EXISTING Block 8
+    ``DispatchLatencyReport`` — consumed (rendered), never re-measured or
+    re-derived: the total dispatch window, individual internal stage
+    durations and Broker/API calls from each order record with explicit
+    order/call labels (the FULL call — never network latency, never
+    combined across orders or summed with the other categories), and
+    the application split ONLY as the report itself states it. Categories
+    stay separate; ns->ms is display-only; the per-order identity is the
+    real ``Order`` object; missing stages/values and a missing report or
+    failed issue render ناموجود — never a fabricated zero — and the
+    previous run's data is never presented as the new run's.
+    """
+
+    STAGE_MS = {
+        "plan_item": "1.000 ms",
+        "plan_account": "1.500 ms",
+        "instrument_resolution": "1.500 ms",
+        "order_engine_path": "7.000 ms",
+    }
+
+    def _diag_texts(self, page):
+        return [
+            page.latency_detail_list.item(i).text()
+            for i in range(page.latency_detail_list.count())
+        ]
+
+    def _stage_rows(self, page):
+        return {
+            (text.split("مرحله ", 1)[1].split(":", 1)[0]): text
+            for text in self._diag_texts(page)
+            if "مرحله " in text
+        }
+
+    def _run_with_report(self, qapp, order=None, application_side_ns=1500000):
+        order = order or Order(nsc_id="NSC-L1", side=BUY, price=7, quantity=1)
+        result = _dry_run_result(order)
+        report = _latency_report(
+            result, application_side_ns=application_side_ns
+        )
+        page = make_page(qapp)
+        _wire_and_run(
+            page,
+            [order],
+            [result],
+            dispatch_result=_dispatch_result(),
+            report=report,
+        )
+        page.apply_mode(ApplicationMode.DIAGNOSTIC)
+        return page
+
+    def test_1_this_runs_report_shown_in_diagnostic(self, qapp):
+        # The REAL Add-to-Queue path records the identity-keyed symbol for
+        # THIS exact Order object (the per-order identity rule — never a
+        # list-position or symbol guess).
+        page = make_page(qapp)
+        page.set_order_identity_factory(lambda: _StubNscSeam("NSC-ID-1"))
+        page.config.select_instrument(
+            Instrument(
+                symbol="آکو",
+                name="آکو",
+                ins_code="1",
+            )
+        )
+        page.config.set_side(BUY)
+        page.config.set_price(7)
+        page.config.set_quantity(1)
+        page._start_order_identity_resolution(
+            page.config.selected_instrument
+        )
+        page.wait_for_order_identity_workers(timeout_ms=10000)
+        # The same event-loop pulse convention as the UI-4 queue tests:
+        # the identity signal is delivered through the queued connection.
+        for _ in range(30):
+            qapp.processEvents()
+            time.sleep(0.005)
+        qapp.processEvents()
+        assert page._on_add_to_queue() is True
+        order = page.order_queue.list_pending()[0].order
+        result = _dry_run_result(order)
+        report = _latency_report(result)
+        runner = _StubRunner(
+            [result],
+            dispatch_result=_dispatch_result(),
+            report=report,
+        )
+        page.set_test_runner_factory(lambda: runner)
+        page._test_mode = True
+        page._run_test_pass()
+        page.apply_mode(ApplicationMode.DIAGNOSTIC)
+        assert page.is_diagnostic_visible() is True
+        # The report of THIS run, converted for display only.
+        assert page.latency_total_label.text().endswith("12.346 ms")
+        stage_rows = self._stage_rows(page)
+        for stage, ms in self.STAGE_MS.items():
+            assert stage_rows[stage].endswith(ms), stage_rows
+        assert any(
+            "Broker/API place_order #1" in t and t.endswith("4.500 ms")
+            for t in self._diag_texts(page)
+        )
+        # The order label is the IDENTITY-KEYED symbol of THIS run's own
+        # Order object.
+        assert any(
+            "Order آکو" in t
+            and t.endswith("1.500 ms")   # application_side_ns of THIS record
+            for t in self._diag_texts(page)
+        )
+
+    def test_2_normal_mode_hides_all_latency_data(self, qapp):
+        page = self._run_with_report(qapp)
+        assert page.latency_total_label.text().endswith("12.346 ms")
+        assert page.latency_detail_list.count() > 0
+        page.apply_mode(ApplicationMode.NORMAL)
+        assert page.is_diagnostic_visible() is False
+        # The latency widgets live INSIDE the mode-gated section: the
+        # boundary hides them all (the run's data stays rendered on the
+        # widgets, but nothing is visible in NORMAL).
+        assert page.diagnostic_section.isVisibleTo(page) is False
+        assert page.latency_detail_list.isVisibleTo(page) is False
+        assert page.latency_total_label.isVisibleTo(page) is False
+        assert page.latency_detail_list.count() > 0
+
+    def test_3_categories_rendered_separately_not_summed(self, qapp):
+        page = self._run_with_report(qapp)
+        texts = self._diag_texts(page)
+        total = page.latency_total_label.text()
+        # Every value is its own category's own measurement (exact ms of
+        # the report's own numbers) — never the total or another
+        # category's sum.
+        assert total.endswith("12.346 ms")           # dispatch window
+        assert self._stage_rows(page)["order_engine_path"].endswith(
+            "7.000 ms"                                # engine stage alone
+        )
+        assert any(
+            "Broker/API place_order #1" in t and t.endswith("4.500 ms")
+            for t in texts
+        )  # individual broker call
+        assert any(t.endswith("1.500 ms") for t in texts)   # app-side value
+        # No display line carries an artificial sum (e.g. the 11.500 ms of
+        # stage + broker) and no line is labelled network latency.
+        assert not any("11.500" in t or "15.500" in t for t in texts)
+        assert not any(
+            "network" in t or "\u0634\u0628\u06a9\u0647" in t for t in texts
+        )
+
+    def test_4_missing_values_and_missing_report_stay_unavailable(self, qapp):
+        # (a) missing application values on the record: the split lines
+        # render the unavailable marker (never 0, never estimated).
+        page = self._run_with_report(qapp, application_side_ns=None)
+        app_rows = [t for t in self._diag_texts(page) if "application" in t]
+        assert len(app_rows) == 3
+        assert all(t.endswith(DIAGNOSTIC_VALUE_UNAVAILABLE) for t in app_rows)
+        assert not any(
+            ".000 ms" in t and "application" in t
+            for t in self._diag_texts(page)
+        )
+        # A missing named stage is explicit rather than omitted or zero.
+        report = page._last_latency_report
+        report.orders[0].stages = [
+            timing for timing in report.orders[0].stages
+            if timing.stage_name != "plan_account"
+        ]
+        page._refresh_diagnostic_latency_display()
+        missing_stage = next(
+            t for t in self._diag_texts(page)
+            if "مرحله plan_account" in t
+        )
+        assert missing_stage.endswith(DIAGNOSTIC_VALUE_UNAVAILABLE)
+        assert ".000 ms" not in missing_stage
+        # (b) NO report at all (plain/test-double runner path): the total
+        # shows ناموجود and the detail list stays empty — no fabricated
+        # zero anywhere.
+        order = Order(nsc_id="NSC-L2", side=BUY, price=3, quantity=1)
+        result = _dry_run_result(order)
+        page2 = make_page(qapp)
+        _wire_and_run(
+            page2,
+            [order],
+            [result],
+            dispatch_result=_dispatch_result(),
+            report=None,
+        )
+        page2.apply_mode(ApplicationMode.DIAGNOSTIC)
+        assert page2.latency_total_label.text() == (
+            DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
+        )
+        assert page2.latency_detail_list.count() == 0
+
+    def test_8_multiple_orders_and_calls_are_individually_labeled(self, qapp):
+        from core.latency_instrumentation import BrokerApiCallTiming
+
+        order_a = Order(nsc_id="NSC-A", side=BUY, price=7, quantity=1)
+        order_b = Order(nsc_id="NSC-B", side=BUY, price=8, quantity=1)
+        result_a = _dry_run_result(order_a)
+        result_b = _dry_run_result(order_b)
+        report = _latency_report(result_a)
+        record_b = _latency_report(result_b).orders[0]
+        record_b.stages[0] = type(record_b.stages[0])(
+            "plan_item", 0, 3_000_000
+        )
+        record_b.broker_api_calls = [
+            BrokerApiCallTiming("place_order", 0, 2_000_000),
+            BrokerApiCallTiming("place_order", 2_000_000, 5_000_000),
+        ]
+        report.orders.append(record_b)
+
+        page = make_page(qapp)
+        page._order_symbols[id(order_a)] = "ORDER-A"
+        page._order_symbols[id(order_b)] = "ORDER-B"
+        _wire_and_run(
+            page,
+            [order_a, order_b],
+            [result_a, result_b],
+            dispatch_result=_dispatch_result(),
+            report=report,
+        )
+        page.apply_mode(ApplicationMode.DIAGNOSTIC)
+        texts = self._diag_texts(page)
+
+        assert any(
+            "Order ORDER-A" in t and "مرحله plan_item" in t
+            and t.endswith("1.000 ms") for t in texts
+        )
+        assert any(
+            "Order ORDER-B" in t and "مرحله plan_item" in t
+            and t.endswith("3.000 ms") for t in texts
+        )
+        # Same operation name is not collapsed into a cross-order sum;
+        # each measured call has its own order and call number.
+        assert any(
+            "Order ORDER-A" in t and "place_order #1" in t
+            and t.endswith("4.500 ms") for t in texts
+        )
+        assert any(
+            "Order ORDER-B" in t and "place_order #1" in t
+            and t.endswith("2.000 ms") for t in texts
+        )
+        assert any(
+            "Order ORDER-B" in t and "place_order #2" in t
+            and t.endswith("3.000 ms") for t in texts
+        )
+        assert not any(t.endswith("9.500 ms") for t in texts)
+
+    def test_5_failed_issue_never_shows_previous_run_data(self, qapp):
+        page = self._run_with_report(qapp)   # run 1: full data on display
+        assert page.latency_total_label.text().endswith("12.346 ms")
+        assert page.latency_detail_list.count() > 0
+
+        class _FailingRunner:
+            last_order_results = None
+            last_report = None
+
+            def run(self, entries, account=None):
+                raise RuntimeError("issue failed before dispatch")
+
+        # The page caches its runner (existing UI-5 contract); the test
+        # resets the cache to inject the failing runner for the NEXT pass.
+        page._test_runner_instance = None
+        page.set_test_runner_factory(lambda: _FailingRunner())
+        page._test_mode = True
+        page._run_test_pass()
+
+        # No mode change, no extra action: the previous run's timings are
+        # gone immediately — total ناموجود, detail list empty, and none of
+        # run 1's values anywhere on display.
+        assert page._last_test_error is not None
+        assert page.latency_total_label.text() == (
+            DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
+        )
+        assert page.latency_detail_list.count() == 0
+        assert "12.346" not in page.latency_total_label.text()
+        for i in range(page.latency_detail_list.count()):
+            assert "12.346" not in page.latency_detail_list.item(i).text()
+        # Existing failure behavior intact: the error is surfaced, no new
+        # dispatch happened, and a completed NEW run shows its own data.
+        assert "could not be issued" in page.queue_status_label.text()
+        order2 = Order(nsc_id="NSC-L3", side=BUY, price=2, quantity=1)
+        result2 = _dry_run_result(order2)
+        page._order_symbols[id(order2)] = "\u0641\u0648\u0644\u0627\u062f"
+        page._test_runner_instance = None
+        page.set_test_runner_factory(
+            lambda: _StubRunner(
+                [result2],
+                dispatch_result=_dispatch_result(),
+                report=_latency_report(result2, application_side_ns=2000000),
+            )
+        )
+        page._test_mode = True
+        page._run_test_pass()
+        assert page.latency_total_label.text().endswith("12.346 ms")
+        assert page.latency_detail_list.count() > 0
+
+    def test_6_display_changes_touch_no_send_behavior(self, qapp):
+        order = Order(nsc_id="NSC-L4", side=BUY, price=5, quantity=1)
+        result = _dry_run_result(order)
+        page = make_page(qapp)
+        runner = _wire_and_run(
+            page,
+            [order],
+            [result],
+            dispatch_result=_dispatch_result(),
+            report=_latency_report(result),
+        )
+        calls_before = len(runner.run_calls)
+        entries_before = len(page.order_queue.list_pending())
+        for mode in (ApplicationMode.DIAGNOSTIC, ApplicationMode.NORMAL):
+            page.apply_mode(mode)
+            page.latency_detail_list.clear()
+            page._refresh_diagnostic_latency_display()
+        # Mode/display changes never re-run or re-dispatch anything, never
+        # touch the queue, the Test state or the order log (UI-5).
+        assert len(runner.run_calls) == calls_before == 1
+        assert len(page.order_queue.list_pending()) == entries_before == 1
+        assert page._test_mode is True
+        assert len(page.order_log.rows()) == 1
+        assert page.latency_detail_list.count() > 0
+
+    def test_7_construction_imports_no_core_module(self):
+        code = "\n".join(
+            [
+                "import sys",
+                "import ui.app as ui_app",
+                "from ui.main_window import MainWindow",
+                "app = ui_app.create_app([])",
+                "window = MainWindow()",
+                "banned = ('brokers', 'market', 'core', 'main')",
+                "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
+                "assert not leaked, f'UI imported trading modules: {leaked}'",
+                "page = window.order_configuration_page",
+                "assert page.latency_total_label.text().endswith(",
+                "    '\u0646\u0627\u0645\u0648\u062c\u0648\u062f'",
+                ")",
+                "assert page.latency_detail_list.count() == 0",
+                "print('UI6_T3_OFFLINE_OK')",
+            ]
+        )
+        env = dict(os.environ)
+        env.setdefault("QT_QPA_PLATFORM", "offscreen")
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=REPO_ROOT,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "UI6_T3_OFFLINE_OK" in result.stdout

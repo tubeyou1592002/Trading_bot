@@ -2783,7 +2783,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-6 — Test / Diagnostic Mode
 
-**Status:** IN PROGRESS. UI-6 has exactly four implementation tasks. Tasks 1–2 are COMPLETED; Tasks 3–4 are NOT STARTED. The next task is UI-6 Task 3 — Latency & Execution Diagnostics.
+**Status:** IN PROGRESS. UI-6 has exactly four implementation tasks. Tasks 1–3 are COMPLETED; Task 4 is NOT STARTED and is the next task. UI-6 itself is not complete.
 
 **UI-6 Task 1 — Diagnostic Mode Foundation**
 **Status:** COMPLETED. The existing `ApplicationMode` is switchable through the UI; the minimal diagnostic section is hidden in NORMAL and shown in DIAGNOSTIC mode. Invalid mode values fail closed by hiding the section. Mode changes do not change execution behavior.
@@ -2792,9 +2792,7 @@ Next step: UI-4 — Order Queue
 **Status:** COMPLETED. The Diagnostic section displays the current run's existing `DispatchResult.trace_id` at dispatch level, only in DIAGNOSTIC mode. It rejects invalid results, shows unavailable when the ID is missing, and clears a stale ID immediately if a new runner attempt fails. No ID is generated or substituted by the UI.
 
 **UI-6 Task 3 — Latency & Execution Diagnostics**
-- Reuse the existing Block 8 latency infrastructure and present already-available latency/execution timing in Diagnostic Mode.
-- Keep latency categories conceptually separate.
-- Do not add a second measurement system, fabricate missing timestamps/values, or combine unrelated timing layers into one artificial number. Missing or cross-clock values remain unavailable.
+**Status:** COMPLETED. The Diagnostic section presents this run's existing Block 8 report: dispatch duration, each recorded internal stage per order, each Broker/API call per order, and the report's application-side fields. Stage and call rows are labeled with the order identity; API calls also show their operation and call number. Missing stages/values remain unavailable. No cross-order stage medians or Broker/API sums are presented as single-order values; no second measurement system or synthetic latency is added.
 
 **UI-6 Task 4 — Integration, Regression & Documentation**
 - Verify Normal/Diagnostic behavior, Trace ID presentation, and latency/diagnostic presentation.
@@ -2803,7 +2801,7 @@ Next step: UI-4 — Order Queue
 
 **Explicit boundaries:** Schedule / Countdown belongs to UI-7; End-to-End Integration & Acceptance belongs to UI-8. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and order splitting (M6-F) are excluded from UI-6.
 
-**Verification:** Task 1 focused tests: 12 passed; related UI regression: 182 passed. Task 2 focused tests: 20 passed; related UI regression: 190 passed (reported implementation runs).
+**Verification:** Task 1 focused tests: 12 passed; related UI regression: 182 passed. Task 2 focused tests: 20 passed; related UI regression: 190 passed (reported implementation runs). Task 3 focused tests: 28 passed; regression selection (UI-1, UI-3.2A/B, UI-4, UI-5): 289 passed. UI-3.1 was excluded because its modal-dialog test hangs in this offscreen environment, including on baseline.
 
 #### UI-7 — Schedule & Countdown
 

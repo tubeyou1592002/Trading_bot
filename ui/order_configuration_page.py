@@ -298,6 +298,67 @@ DIAGNOSTIC_EMPTY_STATE = (
 DIAGNOSTIC_TRACE_LABEL = "Trace ID: "
 DIAGNOSTIC_TRACE_UNAVAILABLE = "\u2014"  # ناموجود / نامشخص
 
+# UI-6 Task 3 — latency/execution diagnostics of the EXISTING Block 8
+# report (``DispatchLatencyReport`` of THIS run). The UI only RENDERS the
+# report's own measurements — it never measures, re-derives, sums unlike
+# categories or invents a value. Each category keeps its own name and
+# scope; ns values are displayed converted to ms (display-only).
+DIAGNOSTIC_LATENCY_TOTAL_LABEL = "\u0632\u0645\u0627\u0646 \u06a9\u0644 dispatch: "
+DIAGNOSTIC_VALUE_UNAVAILABLE = "\u0646\u0627\u0645\u0648\u062c\u0648\u062f"
+
+# The four internal dispatch stages (Block 8 Task 8.2 — exactly these).
+DIAGNOSTIC_LATENCY_STAGES = (
+    "plan_item",
+    "plan_account",
+    "instrument_resolution",
+    "order_engine_path",
+)
+DIAGNOSTIC_LATENCY_STAGE_PREFIX = (
+    "Order {order} \u2014 \u0645\u0631\u062d\u0644\u0647 {stage}: "
+)
+
+# Broker/API round trip — the FULL measured call, never "network latency".
+DIAGNOSTIC_LATENCY_BROKER_PREFIX = (
+    "Order {order} \u2014 Broker/API {operation} #{call_number} "
+    "(\u0631\u0641\u062a\u0648\u0628\u0631\u06af\u0634\u062a): "
+)
+DIAGNOSTIC_LATENCY_BROKER_NONE = (
+    "Order {order} \u2014 Broker/API: "
+    "\u0641\u0631\u0627\u062e\u0648\u0627\u0646\u06cc \u062b\u0628\u062a\u200c\u0634\u062f\u0647\u200c\u0627\u06cc \u0646\u06cc\u0633\u062a"
+)
+
+# Application/Broker split values — rendered only as the record itself
+# carries them; a cross-clock ``None`` stays ناموجود (never estimated,
+# never 0).
+DIAGNOSTIC_LATENCY_APP_SIDE = (
+    "Order {order} \u2014 \u0632\u0645\u0627\u0646 \u0633\u0645\u062a \u0628\u0631\u0646\u0627\u0645\u0647 (application_side): "
+)
+DIAGNOSTIC_LATENCY_APP_BEFORE = (
+    "Order {order} \u2014 \u0628\u0631\u0646\u0627\u0645\u0647 \u0642\u0628\u0644 \u0627\u0632 Broker (application_before_broker): "
+)
+DIAGNOSTIC_LATENCY_APP_AFTER = (
+    "Order {order} \u2014 \u0628\u0631\u0646\u0627\u0645\u0647 \u0628\u0639\u062f \u0627\u0632 Broker (application_after_broker): "
+)
+DIAGNOSTIC_LATENCY_APP_FIELDS = (
+    (DIAGNOSTIC_LATENCY_APP_SIDE, "application_side_ns"),
+    (DIAGNOSTIC_LATENCY_APP_BEFORE, "application_before_broker_ns"),
+    (DIAGNOSTIC_LATENCY_APP_AFTER, "application_after_broker_ns"),
+)
+
+
+def _ns_to_ms_text(value):
+    """
+    Display-only conversion of a REAL measured ns value to ms text.
+
+    Pure representation of a value the report already carries — no
+    measurement, no rounding of the stored data, no derived arithmetic.
+    Anything but a real number (``None``, bool, ...) yields ``None`` so the
+    renderer can show the unavailable marker instead of a fabricated 0.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return f"{value / 1_000_000:.3f} ms"
+
 def _epoch_to_local_datetime(value):
     """
     The local ``datetime`` of a REAL epoch-seconds feedback timestamp.
@@ -578,6 +639,11 @@ class OrderConfigurationPage(QWidget):
         # when the wired runner exposed no per-order results (display then
         # fails closed per row — never fabricated).
         self._last_order_results = None
+        # UI-6 Task 3: THIS run's EXISTING Block 8 report (the runner's
+        # own ``last_report`` — taken only from the completed run; cleared
+        # when an issue attempt fails so a previous run's timings are
+        # never presented as the new run's).
+        self._last_latency_report = None
         # UI-layer symbol map for one queued Order: captured at the exact
         # Add-to-Queue action from the selected REAL Instrument, keyed by the
         # order object's identity. ``Order`` has no symbol field and nscId /
@@ -698,14 +764,17 @@ class OrderConfigurationPage(QWidget):
         root_layout.addWidget(results_group)
 
         # ---------------------------------------------
-        # Diagnostic section (UI-6 Task 1) — REAL content, mode-gated
+        # Diagnostic section (UI-6 Tasks 1-3) — REAL content, mode-gated
         # ---------------------------------------------
         # ONE minimal diagnostic section proving the display boundary: in
         # NORMAL mode it is hidden; in DIAGNOSTIC mode it may be shown.
-        # Its content is real (the per-order execution verdicts of the
-        # last Test pass, from the actual OrderExecutionResult objects) —
-        # never fabricated. No latency, no Trace ID, no technical payload
-        # (later UI-6 tasks).
+        # Its content is real — the per-order execution verdicts of the
+        # last Test pass (from the actual OrderExecutionResult objects),
+        # the dispatch-level Trace ID (UI-6 Task 2) and the latency/
+        # execution diagnostics of THIS run's EXISTING Block 8 report
+        # (UI-6 Task 3: total dispatch, internal stages, Broker/API round
+        # trips, application split — rendered, never re-measured). No
+        # technical payload is ever attached to the list items.
 
         self.diagnostic_section = QGroupBox(
             DIAGNOSTIC_SECTION_TITLE, self
@@ -723,6 +792,22 @@ class OrderConfigurationPage(QWidget):
             self.diagnostic_section,
         )
         diagnostic_layout.addWidget(self.trace_id_label)
+
+        # UI-6 Task 3: the latency/execution diagnostics of THIS run's
+        # EXISTING Block 8 report — a section-level total line plus ONE
+        # per-order detail list. Categories stay separate (dispatch total,
+        # internal stages, Broker/API round trips, application split); the
+        # UI renders the report's own values only and inherits the
+        # section's mode-gated visibility.
+        self.latency_total_label = QLabel(
+            DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE,
+            self.diagnostic_section,
+        )
+        diagnostic_layout.addWidget(self.latency_total_label)
+
+        self.latency_detail_list = QListWidget(self.diagnostic_section)
+        self.latency_detail_list.setMaximumHeight(160)
+        diagnostic_layout.addWidget(self.latency_detail_list)
 
         self.diagnostic_list = QListWidget(self.diagnostic_section)
         self.diagnostic_list.setMaximumHeight(120)
@@ -1602,16 +1687,25 @@ class OrderConfigurationPage(QWidget):
             self._show_queue_status(
                 f"Test run could not be issued: {exc}"
             )
-            # UI-6 Task 2: with the error recorded, the stored tuple is the
-            # PREVIOUS run's — stale for display. Refresh the trace line
-            # RIGHT HERE so a stale trace id never lingers on screen until
-            # the next mode change (one label update — no execution impact).
+            # UI-6 Task 2/3: with the error recorded, the stored tuple is
+            # the PREVIOUS run's — stale for display. Clear the stored
+            # report and refresh the trace line and latency display RIGHT
+            # HERE so no stale value (trace id or a previous run's
+            # timings) ever lingers on screen until the next mode change
+            # (label/list updates only — no execution impact).
+            self._last_latency_report = None
             self._refresh_diagnostic_trace_display()
+            self._refresh_diagnostic_latency_display()
             return
 
         self._last_test_run = (plan, execution_id, result)
         self._last_test_entries = list(entries)
         self._last_test_error = None
+        # UI-6 Task 3: THIS run's EXISTING Block 8 report — the runner's
+        # own ``last_report`` (None on the plain/test-double path). Taken
+        # only from the runner of THIS completed run; a failed issue
+        # attempt never leaves a previous run's report on display.
+        self._last_latency_report = getattr(runner, "last_report", None)
         # UI-5 Task 3: capture this run's per-order results (aligned to the
         # entries) and render them exactly once — the single final refresh
         # of THIS Test run. The rows fully replace any previous run's rows
@@ -1897,10 +1991,12 @@ class OrderConfigurationPage(QWidget):
             visible = False
         self._diagnostic_section_visible = visible
         self.diagnostic_section.setVisible(visible)
-        # UI-6 Task 2: the Trace ID line re-renders on every visibility
-        # change, so a shown value is always the current run's value at
-        # the moment the boundary lets it be seen.
+        # UI-6 Task 2/3: the Trace ID line and the latency display
+        # re-render on every visibility change, so a shown value is always
+        # the current run's value at the moment the boundary lets it be
+        # seen.
         self._refresh_diagnostic_trace_display()
+        self._refresh_diagnostic_latency_display()
 
     def is_diagnostic_visible(self):
         """The current diagnostic-section visibility (the page boundary)."""
@@ -2006,9 +2102,164 @@ class OrderConfigurationPage(QWidget):
             )
         else:
             self.diagnostic_status_label.setText(DIAGNOSTIC_EMPTY_STATE)
-        # UI-6 Task 2: keep the dispatch-level Trace ID line in sync with
-        # the run this verdicts belong to.
+        # UI-6 Task 2/3: keep the dispatch-level Trace ID line and the
+        # latency/execution diagnostics in sync with the run these
+        # verdicts belong to (both render only when the display boundary
+        # lets them be seen).
         self._refresh_diagnostic_trace_display()
+        self._refresh_diagnostic_latency_display()
+
+    def _diagnostic_latency_report(self):
+        """
+        THIS run's EXISTING Block 8 report — or ``None``.
+
+        Source of truth: the runner's own ``last_report`` of THIS
+        completed run (stored in ``_last_latency_report`` at run time —
+        the ``DispatchLatencyReport`` the Core's
+        ``dispatch_with_latency`` already built). Read-only: the UI never
+        measures, re-derives, sums unlike categories or invents a value;
+        without a completed run (failed issue, no run, plain/test-double
+        path) ``None`` is returned so the previous run's timings are
+        never shown as the new run's.
+        """
+        if self._last_test_error is not None:
+            return None  # failed issue: never present stale timings
+        return self._last_latency_report
+
+    def _refresh_diagnostic_latency_display(self):
+        """
+        Render the latency/execution diagnostics of THIS run's EXISTING
+        Block 8 report (UI-6 Task 3) — the four SEPARATE categories:
+
+        1. the total dispatch window (``dispatch_duration``);
+        2. each recorded internal stage duration per order (``plan_item``,
+           ``plan_account``, ``instrument_resolution``, ``order_engine_path``),
+           with missing stages explicitly unavailable;
+        3. the Broker/API round trips the report actually recorded, with
+           the recorded operation name — the FULL measured call, never
+           labelled network latency, never summed into the stages;
+        4. the application/Broker split ONLY as the report itself states
+           it (``application_side_ns`` per record; ``None`` — e.g. across
+           different clocks — stays ناموجود, never estimated).
+
+        Source: the runner's own ``last_report`` of THIS completed run.
+        Per-order detail is matched ONLY by the real ``Order`` object
+        identity (never by list order or symbol text); an unmatched order
+        shows ناموجود. Without a report (no run, failed issue, plain
+        path) everything shows ناموجود — never a fabricated zero. The
+        no-report early return keeps construction free of any ``core.*``
+        import. Rendering only updates widgets; no ordering/execution
+        behavior is touched.
+        """
+        self.latency_detail_list.clear()
+        report = self._diagnostic_latency_report()
+        if report is None:
+            self.latency_total_label.setText(
+                DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
+            )
+            return
+
+        total_ms = _ns_to_ms_text(
+            getattr(report, "dispatch_duration", None)
+        )
+        self.latency_total_label.setText(
+            DIAGNOSTIC_LATENCY_TOTAL_LABEL
+            + (total_ms if total_ms is not None else DIAGNOSTIC_VALUE_UNAVAILABLE)
+        )
+
+        # Categories 2/3 are rendered from each record and call, not from
+        # distributions or cross-order totals. Each value therefore has
+        # an explicit order identity and cannot be mistaken for a median,
+        # sum, or single call representing several orders.
+
+        # Category 4 — the application/Broker split, ONLY as the report
+        # states it (shared-clock values; a cross-clock ``None`` stays
+        # ناموجود — never estimated, never 0). Per-order identity: the
+        # record's execution_result owns the SAME Order object the run
+        # dispatched; the display label is that order's identity-keyed
+        # symbol (the page's own map — never a list-position or symbol
+        # guess).
+        records = getattr(report, "orders", None) or []
+        for record in records:
+            result = getattr(record, "execution_result", None)
+            order = getattr(result, "order", None)
+            order_text = (
+                self._order_symbols.get(id(order), "")
+                if order is not None
+                else ""
+            ) or RESULT_SYMBOL_UNKNOWN
+
+            # Category 2 — the recorded duration for each named stage of
+            # THIS order. Missing stages are explicit, never treated as 0.
+            for stage in DIAGNOSTIC_LATENCY_STAGES:
+                duration = record.duration_ns(stage)
+                stage_ms = _ns_to_ms_text(duration)
+                self._add_diagnostic_latency_item(
+                    DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
+                        order=order_text, stage=stage
+                    )
+                    + (
+                        stage_ms
+                        if stage_ms is not None
+                        else DIAGNOSTIC_VALUE_UNAVAILABLE
+                    )
+                )
+
+            # Category 3 — every measured Broker/API call for THIS order,
+            # kept as an individual full call with its recorded operation.
+            for call_number, call in enumerate(
+                getattr(record, "broker_api_calls", None) or [], start=1
+            ):
+                call_ms = _ns_to_ms_text(getattr(call, "duration_ns", None))
+                self._add_diagnostic_latency_item(
+                    DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
+                        order=order_text,
+                        operation=getattr(call, "operation", "unknown"),
+                        call_number=call_number,
+                    )
+                    + (
+                        call_ms
+                        if call_ms is not None
+                        else DIAGNOSTIC_VALUE_UNAVAILABLE
+                    )
+                )
+            if not (getattr(record, "broker_api_calls", None) or []):
+                self._add_diagnostic_latency_item(
+                    DIAGNOSTIC_LATENCY_BROKER_NONE.format(order=order_text)
+                )
+
+            for label, field_name in DIAGNOSTIC_LATENCY_APP_FIELDS:
+                value_ms = _ns_to_ms_text(
+                    getattr(record, field_name, None)
+                )
+                self._add_diagnostic_latency_item(
+                    label.format(order=order_text)
+                    + (
+                        value_ms
+                        if value_ms is not None
+                        else DIAGNOSTIC_VALUE_UNAVAILABLE
+                    )
+                )
+        if not records:
+            # A report without order records has no stage or Broker/API
+            # measurements; make that absence visible rather than implying
+            # a zero or silently dropping the categories.
+            for stage in DIAGNOSTIC_LATENCY_STAGES:
+                self._add_diagnostic_latency_item(
+                    DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
+                        order=RESULT_SYMBOL_UNKNOWN, stage=stage
+                    ) + DIAGNOSTIC_VALUE_UNAVAILABLE
+                )
+            self._add_diagnostic_latency_item(
+                DIAGNOSTIC_LATENCY_BROKER_NONE.format(
+                    order=RESULT_SYMBOL_UNKNOWN
+                )
+            )
+
+    def _add_diagnostic_latency_item(self, text):
+        """ONE read-only list row; never carries a technical payload."""
+        item = QListWidgetItem(text, self.latency_detail_list)
+        item.setData(Qt.UserRole, None)
 
     def _refresh_diagnostic_trace_display(self):
         """
