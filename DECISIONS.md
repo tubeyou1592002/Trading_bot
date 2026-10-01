@@ -1248,20 +1248,30 @@ The lifecycle gap recorded above is now closed. The Stage 3 prerequisite and the
 * Verification tests (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32) PASS; full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS. Fully offline — no real Agah/NATS/network.
 * Status: COMPLETED — Stage 3 UI table implemented and verified in `ecfa5cf`.
 
-## Decision 026 — UI-6 Final Four-Task Roadmap
+---
 
-**Status:** FINALIZED / DOCUMENTATION BASELINE
+## Decision 026 — Finalized UI-6 Roadmap (Four Tasks)
 
-UI-6 is the next phase after the completed UI-5 Task 4 Stage 3. To keep implementation small, independently verifiable, and consistent with the existing roadmap, UI-6 is fixed at **exactly 4 tasks**:
+**Status:** Accepted — finalized roadmap; UI-6 implementation is in progress.
 
-1. **Diagnostic Mode Foundation** — establish the NORMAL/DIAGNOSTIC presentation boundary without changing trading or execution behavior.
-2. **Trace ID** — expose the existing execution `trace_id` only in Diagnostic Mode; do not create a second UI-specific Trace ID.
-3. **Latency & Execution Diagnostics** — reuse Block 8 latency infrastructure and present existing timing information without a second measurement system, fabricated values, or an artificial combined latency value.
-4. **Integration, Regression & Documentation** — verify Diagnostic Mode, Trace ID, latency/diagnostic presentation, UI-5 regression safety, and documentation before UI-6 is marked complete.
+**Decision:**
 
-**Out of scope:** UI-7 Schedule/Countdown, UI-8 End-to-End Integration & Acceptance, Central Server/Admin Panel, new latency instrumentation, new trading logic, historical persistence/export/filtering, and M6-F order splitting.
+UI-6 — Test / Diagnostic Mode consists of exactly four implementation tasks:
 
-**Roadmap:** `UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8 → Central Server`
+1. **Diagnostic Mode Foundation** — establish the `NORMAL` / `DIAGNOSTIC` presentation boundary; keep technical information hidden in Normal Mode; do not change trading/execution behavior or add latency measurement.
+2. **Trace ID** — expose and display the existing execution `trace_id` only in Diagnostic Mode; do not generate a UI-specific Trace ID.
+3. **Latency & Execution Diagnostics** — present only timing already available from Block 8 in Diagnostic Mode; preserve separate latency categories and leave missing/cross-clock values unavailable. Do not duplicate instrumentation, fabricate values, or combine unrelated timing layers.
+4. **Integration, Regression & Documentation** — verify both modes, Trace ID, diagnostics, and unchanged UI-5 behavior; run relevant regressions; mark UI-6 complete only after verification.
 
-**Architectural rule:** UI-6 is a presentation/diagnostic layer over existing execution and Block 8 latency infrastructure. Missing or cross-clock values remain unavailable rather than being synthesized.
+**Roadmap order:** `UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8 → Central Server`.
 
+UI-5 remains COMPLETED. UI-6 Task 1 is completed; Tasks 2–4 remain not started. UI-7 owns Schedule / Countdown, and UI-8 owns End-to-End Integration & Acceptance. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and M6-F order splitting are outside UI-6.
+
+**Architectural rule:** UI-6 consumes and presents existing Block 8 execution/latency information. It does not redesign or duplicate Block 8. Its latency layers remain separate; unavailable or cross-clock values are not synthesized.
+
+**Evidence:**
+
+* Roadmap details are recorded in `AI_HANDOFF.md` §9 and summarized in `AI_PROJECT_MEMORY.md`.
+* This decision records the roadmap scope; task completion is tracked in the current status update below.
+
+**Current implementation status update (2026-10-01):** UI-6 Task 1 — Diagnostic Mode Foundation is COMPLETED. The existing `ApplicationMode` controls the presentation boundary; invalid values hide the diagnostic section. Reported verification: 12 focused tests and 182 related UI regression tests passed. UI-6 Tasks 2–4 remain NOT STARTED; UI-6 as a whole is not complete. This status update does not change the four-task scope or Block 8 boundaries above.

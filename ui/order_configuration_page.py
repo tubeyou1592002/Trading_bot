@@ -79,6 +79,17 @@ Presentation of the order-configuration form:
                       decisionId correlation. No queue-position logic is
                       implemented here — the page only consumes what the
                       existing Stage 2 path already computed.
+    * Diagnostic section — UI-6 Task 1: ONE minimal, REAL diagnostic
+                      section (the per-order execution verdicts of the last
+                      Test pass, built ONLY from the REAL
+                      ``OrderExecutionResult`` objects that pass already
+                      produced — no new measurement, no fabricated value).
+                      This is the display boundary the mode governs: the
+                      section is hidden in NORMAL mode (the application
+                      default) and may be shown in DIAGNOSTIC mode. The mode
+                      state itself stays on ``MainWindow`` (the existing
+                      ``ApplicationMode`` holder); the page only applies the
+                      visibility that state asks for.
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
@@ -244,6 +255,37 @@ ORDER_LOG_GROUP_TITLE = "Order Log"
 # by the real event) — never from a timer, a guess or any other outcome.
 CORE_REGISTERED_ROW_COLOR = "#d9f2d9"
 
+
+# ----------------------------------------------------------------------
+# UI-6 Task 1 — Diagnostic Mode display boundary (minimal, real)
+# ----------------------------------------------------------------------
+# The application ships in NORMAL mode and MainWindow owns the single
+# ApplicationMode state (ui.main_window.ApplicationMode). This page owns
+# only the DISPLAY BOUNDARY of diagnostic information: the section below
+# is hidden in NORMAL mode and may be shown in DIAGNOSTIC mode. Its only
+# content is REAL diagnostic output the page already produces — the
+# per-order execution verdicts of the last Test pass, derived from the
+# actual ``OrderExecutionResult`` objects (core models, not invented UI
+# text). No latency measurement, Trace ID, endpoint or broker payload is
+# added here (later UI-6 tasks).
+DIAGNOSTIC_SECTION_TITLE = "Diagnostic — Execution Details (Test Pass)"
+
+# Head of every diagnostic entry: the user-visible 1-based position of the
+# order in the last Test pass (its index in the existing per-order result
+# rows), never a technical id.
+DIAGNOSTIC_ENTRY_PREFIX = "Order #{position}: "
+
+# The verdict line comes from the EXISTING fail-closed result labels of
+# Task 3 (موفق / مسدودشده / ناموفق) — the same ``_result_status_label``
+# the Test Results area renders. No new verdict vocabulary is created.
+DIAGNOSTIC_VERDICT_PREFIX = "Execution verdict: "
+
+# Diagnostic empty state — a real statement about the absence of a Test
+# pass, not a fabricated value.
+DIAGNOSTIC_EMPTY_STATE = (
+    "\u0647\u0646\u0648\u0632 \u062d\u0627\u0644\u062a Test \u0627\u062c\u0631\u0627 "
+    "\u0646\u0634\u062f\u0647 \u0627\u0633\u062a."
+)
 
 def _epoch_to_local_datetime(value):
     """
@@ -559,6 +601,13 @@ class OrderConfigurationPage(QWidget):
         # order holds no entry renders ``—`` (fail-closed).
         self._queue_status_text_by_order = {}
 
+        # --- UI-6 Task 1: diagnostic-section visibility state ---------
+        # The single display-boundary flag of this page. NORMAL (the
+        # application default) keeps the section hidden; it may be shown
+        # only when the application mode is DIAGNOSTIC (MainWindow calls
+        # ``apply_mode`` on this page on every mode change).
+        self._diagnostic_section_visible = False
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -636,6 +685,33 @@ class OrderConfigurationPage(QWidget):
         results_layout.addWidget(self.result_list)
 
         root_layout.addWidget(results_group)
+
+        # ---------------------------------------------
+        # Diagnostic section (UI-6 Task 1) — REAL content, mode-gated
+        # ---------------------------------------------
+        # ONE minimal diagnostic section proving the display boundary: in
+        # NORMAL mode it is hidden; in DIAGNOSTIC mode it may be shown.
+        # Its content is real (the per-order execution verdicts of the
+        # last Test pass, from the actual OrderExecutionResult objects) —
+        # never fabricated. No latency, no Trace ID, no technical payload
+        # (later UI-6 tasks).
+
+        self.diagnostic_section = QGroupBox(
+            DIAGNOSTIC_SECTION_TITLE, self
+        )
+        diagnostic_layout = QVBoxLayout(self.diagnostic_section)
+
+        self.diagnostic_list = QListWidget(self.diagnostic_section)
+        self.diagnostic_list.setMaximumHeight(120)
+        diagnostic_layout.addWidget(self.diagnostic_list)
+
+        self.diagnostic_status_label = QLabel(
+            DIAGNOSTIC_EMPTY_STATE, self.diagnostic_section
+        )
+        diagnostic_layout.addWidget(self.diagnostic_status_label)
+
+        root_layout.addWidget(self.diagnostic_section)
+        self.diagnostic_section.setVisible(False)  # NORMAL-mode default
 
         # ---------------------------------------------
         # Order Log (UI-5 Task 4, base display)
@@ -1754,6 +1830,96 @@ class OrderConfigurationPage(QWidget):
             return None
         return _result_reason_for_status(_result_status_label(result))
 
+    # ---------------------------------------------------------
+    # UI-6 Task 1 — Diagnostic Mode display boundary
+    # ---------------------------------------------------------
+
+    def apply_mode(self, mode):
+        """
+        Apply the application's display boundary for ``mode`` (UI-6 Task 1).
+
+        The mode STATE itself never lives here — it stays on MainWindow
+        (the existing ``ui.main_window.ApplicationMode`` holder). This
+        page only applies the DISPLAY consequence the mode asks for:
+
+            * ``ApplicationMode.NORMAL``    → the diagnostic section is
+              hidden.
+            * ``ApplicationMode.DIAGNOSTIC`` → the diagnostic section may
+              be shown.
+            * Anything else (not one of the two real application modes) →
+              the diagnostic section is HIDDEN and the internal visibility
+              state is synced accordingly (fail-closed: an unknown value
+              never leaves the section unmasked).
+
+        Ordering, queue, result and feedback behavior are untouched:
+        this is a visibility change only.
+        """
+        # ``ui.main_window`` is already imported at module level (the two
+        # modules form one package surface since UI-1); the name is bound
+        # here so this module never depends on the window class itself.
+        global ApplicationMode
+        if "ApplicationMode" not in globals():
+            from ui.main_window import ApplicationMode  # noqa: local bind
+        if mode is ApplicationMode.DIAGNOSTIC:
+            visible = True
+        else:  # ApplicationMode.NORMAL — and any non-valid value
+            visible = False
+        self._diagnostic_section_visible = visible
+        self.diagnostic_section.setVisible(visible)
+
+    def is_diagnostic_visible(self):
+        """The current diagnostic-section visibility (the page boundary)."""
+        return self._diagnostic_section_visible
+
+    def _refresh_diagnostic_display(self):
+        """
+        Render the diagnostic section ONLY from real execution results.
+
+        The content is the per-order execution verdict of the last Test
+        pass — the SAME verdicts the Task 3 Test Results area shows,
+        derived from the REAL ``OrderExecutionResult`` objects
+        (``_result_status_label``), in the exact result order. No new
+        measurement is taken, no value is invented: without a Test pass
+        the section shows its real empty state. Called on the single
+        final refresh of a run and on visibility changes, never from
+        construction or navigation.
+        """
+        self.diagnostic_list.clear()
+        entries = self._last_test_entries or []
+        results = self._last_order_results
+        for index, entry in enumerate(entries):
+            result = None
+            if isinstance(results, list) and 0 <= index < len(results):
+                result = results[index]
+            order = entry.order
+            symbol = (
+                self._order_symbols.get(id(order), "")
+                or RESULT_SYMBOL_UNKNOWN
+            )
+            side_label = dict(SIDE_LABELS).get(
+                getattr(order, "side", None),
+                str(getattr(order, "side", "")),
+            )
+            verdict = _result_status_label(result)
+            text = (
+                DIAGNOSTIC_ENTRY_PREFIX.format(position=index + 1)
+                + f"{symbol} | {side_label} | "
+                + DIAGNOSTIC_VERDICT_PREFIX
+                + verdict
+            )
+            item = QListWidgetItem(text, self.diagnostic_list)
+            # Fail-closed display guard: the diagnostic section is still a
+            # user-facing surface — no technical payload (exception text,
+            # mode name, broker response, decisionId, Trace ID) is ever
+            # attached to its items.
+            item.setData(Qt.UserRole, None)
+        if entries:
+            self.diagnostic_status_label.setText(
+                f"{len(entries)} order(s) in the last Test pass"
+            )
+        else:
+            self.diagnostic_status_label.setText(DIAGNOSTIC_EMPTY_STATE)
+
     def _refresh_order_log_display(self):
         """
         Re-render the order-log table ONLY from the in-memory ``OrderLog``
@@ -1848,6 +2014,10 @@ class OrderConfigurationPage(QWidget):
             )
         else:
             self.result_status_label.setText(RESULT_EMPTY_STATE)
+        # UI-6 Task 1: the diagnostic section mirrors the same real
+        # verdicts at the single final refresh (it renders only when the
+        # display boundary lets it — visibility is mode-gated).
+        self._refresh_diagnostic_display()
 
     def _refresh_test_button_state(self):
         """

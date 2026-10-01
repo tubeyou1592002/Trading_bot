@@ -24,7 +24,10 @@ Page architecture (since UI-2.1):
       mirrors the in-memory AccountStore (Decision 024).
     * Only the mode STATE and STRUCTURE exist; real Diagnostic capabilities
       (Trace ID, Latency, Execution details, Core/Broker/M6 diagnostics)
-      belong to UI-6.
+      belong to later UI-6 tasks. UI-6 Task 1 adds the DISPLAY BOUNDARY of
+      those capabilities: a minimal, REAL diagnostic section on the Order
+      Configuration page that is hidden in NORMAL mode and may be shown in
+      DIAGNOSTIC mode, plus the mode toggle in the status bar.
     * No brokers/, market/ or main.py import and no network, login,
       credential, broker API or TSETMC access of any kind.
 """
@@ -230,8 +233,27 @@ class MainWindow(QMainWindow):
         self.mode_label = QLabel(self)
         self.statusBar().addPermanentWidget(self.mode_label)
         self._update_mode_label()
+        # UI-6 Task 1: sync the page's diagnostic display boundary with the
+        # INITIAL mode (NORMAL by default → section stays hidden).
+        self.order_configuration_page.apply_mode(self.mode)
 
         # ---------------------------------------------
+        # UI-6 Task 1 — the mode CHANGER of the existing Application Mode
+        # ---------------------------------------------
+        # UI-1 stored and displayed the mode state only; UI-6 Task 1 adds
+        # the UI mechanism that changes it. The toggle mirrors the EXISTING
+        # ApplicationMode state holder (self.mode / set_mode) — no new
+        # architecture, no settings system, no separate state object.
+        self.mode_toggle = QPushButton("Diagnostic Mode", self)
+        self.mode_toggle.setCheckable(True)
+        self.mode_toggle.setToolTip(
+            "Switch between the NORMAL and DIAGNOSTIC application modes "
+            "(UI-6): Diagnostic mode may show technical execution "
+            "diagnostics."
+        )
+        self.mode_toggle.clicked.connect(self._on_mode_toggle_clicked)
+        self.statusBar().addPermanentWidget(self.mode_toggle)
+        self._sync_mode_toggle()
 
     # ---------------------------------------------------------
     # Navigation (single navigation mechanism, unchanged)
@@ -363,8 +385,13 @@ class MainWindow(QMainWindow):
         """
         Set the application mode.
 
-        UI-1 stores and simply displays the mode only; no diagnostic
-        feature is attached to it in this task (UI-6 scope).
+        Set the application mode.
+
+        The state holder and label are the existing UI-1 mechanism.
+        UI-6 Task 1 additionally keeps the Diagnostic-section display
+        boundary of the Order Configuration page in sync with the mode:
+        the section is hidden in NORMAL mode and may be shown in
+        DIAGNOSTIC mode.
         """
         if not isinstance(mode, ApplicationMode):
             raise ValueError(
@@ -373,7 +400,33 @@ class MainWindow(QMainWindow):
             )
         self.mode = mode
         self._update_mode_label()
+        self._sync_mode_toggle()
+        # UI-6 Task 1: the display boundary of the real diagnostic section
+        # follows the mode on every change (visibility only — the page's
+        # ordering/queue/result/feedback behavior is never touched).
+        self.order_configuration_page.apply_mode(mode)
         return self.mode
 
     def _update_mode_label(self):
         self.mode_label.setText(f"Mode: {self.mode.value}")
+
+    # ---------------------------------------------------------
+    # UI-6 Task 1 — mode changer (reuses the existing ApplicationMode)
+    # ---------------------------------------------------------
+
+    def _on_mode_toggle_clicked(self, checked=False):
+        """
+        Apply the mode the user picked with the toggle.
+
+        The single mode state stays ``self.mode`` (the existing UI-1
+        holder, updated through the existing ``set_mode``); the toggle
+        is the UI mirror of that state, nothing else.
+        """
+        self.set_mode(
+            ApplicationMode.DIAGNOSTIC if self.mode_toggle.isChecked()
+            else ApplicationMode.NORMAL
+        )
+
+    def _sync_mode_toggle(self):
+        """Mirror the current mode state onto the toggle button."""
+        self.mode_toggle.setChecked(self.mode is ApplicationMode.DIAGNOSTIC)
