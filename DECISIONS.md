@@ -1247,3 +1247,21 @@ The lifecycle gap recorded above is now closed. The Stage 3 prerequisite and the
 * The asyncio/NATS loop runs on a dedicated background `QThread`; it never touches the GUI thread and never blocks order sends. Receiving path only — no scheduler, no order sending.
 * Verification tests (actual runs): 122 (UI-5 core 90 + UI-3.1 regression 32) PASS; full UI regression 206 PASS; core regression (M5/M6/engine/provider/broker manager) 152 PASS. Fully offline — no real Agah/NATS/network.
 * Status: COMPLETED — Stage 3 UI table implemented and verified in `ecfa5cf`.
+
+## Decision 026 — UI-6 Final Four-Task Roadmap
+
+**Status:** FINALIZED / DOCUMENTATION BASELINE
+
+UI-6 is the next phase after the completed UI-5 Task 4 Stage 3. To keep implementation small, independently verifiable, and consistent with the existing roadmap, UI-6 is fixed at **exactly 4 tasks**:
+
+1. **Diagnostic Mode Foundation** — establish the NORMAL/DIAGNOSTIC presentation boundary without changing trading or execution behavior.
+2. **Trace ID** — expose the existing execution `trace_id` only in Diagnostic Mode; do not create a second UI-specific Trace ID.
+3. **Latency & Execution Diagnostics** — reuse Block 8 latency infrastructure and present existing timing information without a second measurement system, fabricated values, or an artificial combined latency value.
+4. **Integration, Regression & Documentation** — verify Diagnostic Mode, Trace ID, latency/diagnostic presentation, UI-5 regression safety, and documentation before UI-6 is marked complete.
+
+**Out of scope:** UI-7 Schedule/Countdown, UI-8 End-to-End Integration & Acceptance, Central Server/Admin Panel, new latency instrumentation, new trading logic, historical persistence/export/filtering, and M6-F order splitting.
+
+**Roadmap:** `UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8 → Central Server`
+
+**Architectural rule:** UI-6 is a presentation/diagnostic layer over existing execution and Block 8 latency infrastructure. Missing or cross-clock values remain unavailable rather than being synthesized.
+

@@ -2264,6 +2264,16 @@ The following are explicitly **not** part of M6-E:
   * Verification: focused Stage 3 Task 4 tests 10 PASS; related Stage 3 suite 126 PASS; combined Stage 3 verification 136 PASS.
   * Real trading remains disabled and verification is offline/deterministic.
 - Deferred to UI-6: latency/diagnostics/trace-style presentation and detailed execution timing.
+
+### UI-6 Roadmap — Finalized
+UI-6 is the next roadmap phase and consists of **exactly 4 implementation tasks**:
+
+1. **Diagnostic Mode Foundation** — establish the NORMAL/DIAGNOSTIC presentation boundary; technical information remains hidden in Normal Mode; no trading/execution behavior changes.
+2. **Trace ID** — expose the existing execution `trace_id` only in Diagnostic Mode; no second UI-specific Trace ID.
+3. **Latency & Execution Diagnostics** — reuse existing Block 8 latency infrastructure; present existing timing data without creating a second measurement system or fabricating/merging values.
+4. **Integration, Regression & Documentation** — verify Diagnostic Mode, Trace ID, latency/diagnostic presentation, UI-5 regression safety, and complete documentation before marking UI-6 complete.
+
+UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Central Server/Admin Panel, new latency instrumentation, new trading logic, historical persistence/export/filtering, or M6-F order splitting.
 - Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap). Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
 
 
