@@ -61,15 +61,19 @@ Presentation of the order-configuration form:
                       no DispatchIntegration/DispatchCore/OrderEngine, no
                       broker call, no network activity (Task 2 owns
                       execution).
-    * Order Log      — UI-5 Task 4 (base display): a read-only seven-column
+    * Order Log      — UI-5 Task 4 (Stage 3): a read-only seven-column
                       table (زمان ارسال / حساب / نماد / توضیح / زمان دریافت
                       توسط کارگزاری / زمان ثبت در هسته معاملاتی / وضعیت صف)
                       with ONE row appended per SENT order, in send order,
                       rendered only from the in-memory ``ui.user_log.OrderLog``.
-                      It shows what the send already produced and shows "—"
-                      for everything that does not exist yet: no NATS/OMS
-                      connection, no asynchronous feedback, no row update, no
-                      green row and no queue-status logic is wired here.
+                      Stage 3 Task 3: when a REAL matching-engine registration
+                      event arrives (through the existing feedback signal bound
+                      via the injected feedback-binder factory), the row of the
+                      EXACT matching order is stamped with the event's real
+                      timestamp in «زمان ثبت در هسته معاملاتی» and rendered
+                      highlighted (green). Unknown decisionIds create/change
+                      nothing; the id itself is never displayed. Queue status is
+                      a later task (Stage 3 Task 4).
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
@@ -102,6 +106,7 @@ from models.trading_state import (
 )
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -208,16 +213,39 @@ RESULT_EMPTY_STATE = (
 # no record of (never a technical nscId / tseId) and an unknown side label.
 RESULT_SYMBOL_UNKNOWN = "\u2014"
 
-# UI-5 Task 4 (Stage 3, base display) — the user-facing order log table.
+# UI-5 Task 4 (Stage 3) — the user-facing order log table.
 # The seven columns and their order live in ui.user_log.ORDER_LOG_COLUMNS; the
 # rows come from the in-memory ui.user_log.OrderLog, one row appended per
 # SENT order in send order. Information that does not exist yet is rendered
-# as "—" (never invented). This base display has NO feedback consumer: no
-# NATS/OMS connection, no asynchronous update of an appended row, no green
-# row and no queue-status logic — the broker-receipt, trading-core-registration
-# and queue-status columns therefore stay empty until a later task supplies a
-# verified value.
+# as "—" (never invented). The ONLY feedback consumer is the Stage 3 Task 3
+# trading-core registration stamp (a real matching-engine registration event
+# resolved through the page's decisionId correlation, bound via the injected
+# feedback-binder factory); queue-status logic is a later task.
 ORDER_LOG_GROUP_TITLE = "Order Log"
+
+# UI-5 Task 4 Stage 3 Task 3 — the highlight of a row whose order was REALLY
+# registered in the trading core: a genuine matching-engine registration
+# event arrived for that exact order and was stamped on the row. The highlight
+# is derived ONLY from the row's ``registered_in_core`` flag (model state set
+# by the real event) — never from a timer, a guess or any other outcome.
+CORE_REGISTERED_ROW_COLOR = "#d9f2d9"
+
+
+def _epoch_to_local_datetime(value):
+    """
+    The local ``datetime`` of a REAL epoch-seconds feedback timestamp.
+
+    Accepts int/float epoch seconds (the feedback path's ``time.time()``
+    values). Anything else — ``None``, bool, non-numeric — returns ``None``
+    (fail-closed: no fabricated time). The conversion is a pure
+    representation of the received moment; no clock is read here.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _result_status_label(result):
@@ -489,6 +517,20 @@ class OrderConfigurationPage(QWidget):
         # tseId must never reach a result row, so the symbol the user picked
         # is kept here in the UI layer only.
         self._order_symbols = {}
+
+        # --- UI-5 Task 4 Stage 3 Task 3: matching-engine (trading core)
+        # registration feedback state. The page binds to the EXISTING
+        # order-feedback path ONLY through the injected factory seam below
+        # (never at construction — offline contracts preserved; no feedback
+        # module is ever imported or named here).
+        self._feedback_binder_factory = None  # set via set_feedback_binder_factory()
+        self._feedback_binder = None
+        # decisionId correlation (the Stage 1 binding, filled at append time):
+        # the exact sent Order object (by identity, like _order_symbols) ->
+        # its real decisionId, and the reverse map. Pure routing state —
+        # never rendered, never displayed.
+        self._decision_id_by_order = {}
+        self._order_by_decision_id = {}
 
         root_layout.addWidget(form_group)
 
@@ -1318,6 +1360,22 @@ class OrderConfigurationPage(QWidget):
         """
         self._test_runner_factory = factory
 
+    def set_feedback_binder_factory(self, factory):
+        """
+        Provide the factory that binds this page to the EXISTING order
+        feedback path (UI-5 Task 4 Stage 3 Task 3).
+
+        Production MainWindow supplies ``page.set_feedback_binder_factory(
+        lambda: self.feedback_service)`` and the returned service object —
+        which already exposes ``order_registered`` — is connected here.
+        The factory is called lazily on the FIRST real send (never at
+        construction), so the page stays fully offline without it.
+        Tests inject a fake exposing the same ``order_registered`` signal.
+        The page only ever uses the signal's existence — it never imports,
+        names or starts any feedback/transport module itself.
+        """
+        self._feedback_binder_factory = factory
+
     def _test_runner(self):
         """
         Lazily build the wired Test runner (exactly once per factory).
@@ -1402,6 +1460,13 @@ class OrderConfigurationPage(QWidget):
         # again after the send (the send itself never waits for it).
         sent_at = datetime.now()
 
+        # UI-5 Task 4 Stage 3 Task 3 — corrective contract: the feedback
+        # binding is established BEFORE the send pass starts (lazily, once,
+        # nothing new is started). A matching-engine registration event
+        # emitted while the send is in flight must already find this
+        # page's listener connected — never a lost event.
+        self._ensure_feedback_binding()
+
         try:
             plan, execution_id, result = runner.run(
                 entries, account=account
@@ -1427,6 +1492,8 @@ class OrderConfigurationPage(QWidget):
         self._append_order_log_rows(
             self._last_test_entries, sent_at, self._last_order_results
         )
+        # UI-5 Task 4 Stage 3 Task 3: bound to the EXISTING order-feedback
+        # signal BEFORE the send pass started (see above).
         self._refresh_result_display()
         self._show_queue_status(
             f"Test run issued (dry-run): execution {execution_id}"
@@ -1454,13 +1521,16 @@ class OrderConfigurationPage(QWidget):
                               per-order result exists;
             * ``sent_at``    — the UI's wall-clock send moment.
 
-        The broker-receipt, trading-core-registration and queue-status fields
-        stay ``None``: this base display has no feedback consumer and no
-        queue-status logic, so those columns render empty (``—``) rather than
-        carrying an invented value. Rows are append-only — an appended row is
-        never updated, reordered or removed.
+        The row also carries its correlation key — the exact sent ``Order``
+        object — and, when this send's real result carried a ``decisionId``,
+        that id is recorded in the page's decisionId maps (routing state
+        only; the id itself is NEVER rendered). The broker-receipt,
+        trading-core-registration and queue-status fields stay ``None``:
+        they are filled ONLY later, by real feedback events. Rows are
+        appended in send order and are never reordered or removed.
         """
         results = results if isinstance(results, list) else None
+        decision_ids = self._decision_ids_for_last_run()
         for index, entry in enumerate(entries):
             order = entry.order
             result = None
@@ -1473,8 +1543,111 @@ class OrderConfigurationPage(QWidget):
                     account_id=entry.account_id,
                     symbol=symbol if symbol else None,
                     description=self._order_log_description(result),
+                    key=order,
                 )
             )
+            decision_id = (
+                decision_ids[index]
+                if decision_ids is not None
+                and 0 <= index < len(decision_ids)
+                else None
+            )
+            if decision_id:
+                # decisionId correlation (Stage 1 binding) only — never
+                # rendered in any table cell. ``Order`` is an unhashable
+                # dataclass, so the identity is ``id(order)`` — the same
+                # convention the page already uses for ``_order_symbols``.
+                self._decision_id_by_order[id(order)] = decision_id
+                self._order_by_decision_id[decision_id] = order
+        self._refresh_order_log_display()
+
+    def _decision_ids_for_last_run(self):
+        """
+        The decisionIds of the last send pass, aligned 1:1 to its entries.
+
+        Read ONLY from what the real send produced: each entry's
+        per-order ``OrderExecutionResult`` — a live success response carries
+        ``data.decisionId`` (the existing Stage 1 field). A position with no
+        real id stays ``None`` (dry-run, blocked or failed — there is no
+        broker identity to route, and none is invented).
+        """
+        entries = self._last_test_entries or []
+        results = self._last_order_results
+        decision_ids = [None] * len(entries)
+        for index in range(len(entries)):
+            result = None
+            if isinstance(results, list) and 0 <= index < len(results):
+                result = results[index]
+            response = getattr(result, "response", None)
+            if not isinstance(response, dict):
+                continue
+            data = response.get("data")
+            if not isinstance(data, dict):
+                continue
+            decision_id = data.get("decisionId")
+            if isinstance(decision_id, str) and decision_id.strip():
+                decision_ids[index] = decision_id
+        return decision_ids
+
+    def _ensure_feedback_binding(self):
+        """
+        Bind the page to the EXISTING order-feedback signal exactly once.
+
+        The factory returns an object that already exposes the existing
+        ``order_registered`` signal (production wires the shared feedback
+        service object). It is called lazily at the first real send — never
+        at construction — so a page without a factory simply never binds
+        (fail-closed, the base Stage 3 behavior). The page only ever uses
+        that signal's existence: it never imports, names or starts any
+        feedback/transport module. Any binding failure is swallowed as a
+        no-op so the send path can never be disturbed by display wiring.
+        """
+        if self._feedback_binder is not None:
+            return
+        factory = self._feedback_binder_factory
+        if factory is None:
+            return
+        try:
+            binder = factory()
+        except Exception:  # noqa: BLE001 — display wiring never breaks the send
+            return
+        signal = getattr(binder, "order_registered", None)
+        if signal is None:
+            return
+        signal.connect(self._on_order_registered_from_feedback)
+        self._feedback_binder = binder
+
+    def _on_order_registered_from_feedback(
+        self, decision_id, accepted_at_ts, order_info
+    ):
+        """
+        A real matching-engine registration event arrived.
+
+        ``decision_id`` is the Stage 1 correlation key. It is resolved to
+        the row of the EXACT sent order through the page's own map, and the
+        REAL event timestamp (``accepted_at_ts`` — the epoch-seconds moment
+        the event itself was received, carried through the existing feedback
+        path) is stamped on that row, which then renders highlighted
+        (green). Guards (all fail-closed):
+
+          * a non-string / blank decisionId is ignored;
+          * an unknown decisionId never creates or changes any row;
+          * an event without a real timestamp stamps nothing;
+          * a duplicate event carrying the same timestamp is a no-op —
+            idempotent.
+        """
+        if not isinstance(decision_id, str):
+            return
+        decision_id = decision_id.strip()
+        if not decision_id:
+            return
+        order = self._order_by_decision_id.get(decision_id)
+        if order is None:
+            return  # unknown correlation key — the UI stays untouched
+        accepted_at = _epoch_to_local_datetime(accepted_at_ts)
+        if accepted_at is None:
+            return  # no real event timestamp — nothing may be invented
+        self.order_log.update_core_registration(order, accepted_at)
         self._refresh_order_log_display()
 
     @staticmethod
@@ -1498,8 +1671,12 @@ class OrderConfigurationPage(QWidget):
 
         The table is rebuilt from ``OrderLog.rows()`` — the rows in send
         order — with each row's seven cells placed by its own column order.
-        This render never creates, updates or invents a row: it only mirrors
-        what the send action already appended.
+        This render never creates, updates or invents a row: it mirrors what
+        the send action appended plus the one registration value a real
+        feedback event may have stamped. Rows whose order was REALLY
+        registered in the trading core (a real matching-engine
+        registration event) are rendered with the registered highlight
+        (green); every other row is unhighlighted.
         """
         rows = self.order_log.rows()
         self.order_log_table.setRowCount(len(rows))
@@ -1508,6 +1685,13 @@ class OrderConfigurationPage(QWidget):
                 self.order_log_table.setItem(
                     row_index, column, QTableWidgetItem(text)
                 )
+            if row.registered_in_core is True:
+                for column in range(len(ORDER_LOG_COLUMNS)):
+                    item = self.order_log_table.item(row_index, column)
+                    if item is not None:
+                        item.setBackground(
+                            QColor(CORE_REGISTERED_ROW_COLOR)
+                        )
 
     def _refresh_result_display(self):
         """
