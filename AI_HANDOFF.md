@@ -2821,13 +2821,40 @@ Next step: UI-4 — Order Queue
 
 #### UI-7 — Schedule & Countdown
 
-* Start Time
-* End Time
-* Interval
-* Apply Schedule
-* Countdown
-* غیرفعال شدن کنترل‌های تغییر سفارش بعد از شروع
-* اجرای سفارش از مسیر Core موجود
+**Status:** IN PROGRESS — Task 1 COMPLETED (2026-10-02); Task 2 is next. UI-7 has exactly four implementation tasks. It reuses the existing Block 3 timing contracts and deterministic timestamp generator; it adds no duplicate schedule-generation logic. The existing Block 3 components do not provide a runtime timer/loop, so UI-7 owns the UI-side countdown and due-time coordination.
+
+**UI-7 Task 1 — Schedule Configuration & Validation**
+- Provide Start Time, End Time, and Interval inputs and an Apply Schedule action.
+- Reuse `DispatchTiming` validation and `TimedDispatchScheduler` timestamp generation; reject invalid or incomplete input without silently correcting or inventing values.
+- Establish the clock foundation: use the NTP-disciplined system clock for high-resolution, continuous timekeeping, and periodically compare/calibrate it against the TSETMC market-time endpoint. Estimate request-time offset with the request's elapsed time accounted for; apply bounded, gradual correction only to the application's logical clock, never by abruptly changing the operating-system clock. The available TSETMC body has seconds-only precision, so document its uncertainty and do not promise zero-millisecond alignment or manufacture sub-second accuracy from it. Keep elapsed-time/countdown measurement monotonic so clock-source changes or corrections cannot cause early, duplicate, or catch-up dispatches.
+- Use the stock-market site's server time as the preferred clock. User-provided Chrome DevTools capture identifies `GET https://cdn.tsetmc.com/api/StaticData/GetTime` (no authentication) with a `200` plain-text response in `MM/DD/YYYY HH:MM:SS` Gregorian format and second precision. The user confirmed that the payload time is Tehran time (`Asia/Tehran`); the HTTP `Date` header is GMT/UTC and is not the payload's timezone. This is an unofficial, undocumented endpoint with no stability/SLA guarantee and may be restricted to Iranian IP ranges. Validate status, content type, exact format, timestamp, timeout, and freshness. Inspect `Age`, `Cache-Control`, `Date`, and optional `Expires` / `Last-Modified`; do not treat a cached/stale response as current. Do not claim millisecond precision from this seconds-only payload.
+- If the start time is already past but the end time is still ahead, show a non-blocking notice and begin once immediately; do not replay missed intervals in a burst, then continue only with future scheduled times. If the end time has passed, mark the schedule expired and do not dispatch.
+- Determine timezone interpretation from the verified clock contract; never silently mix local, UTC, or exchange-local times.
+- Show a clear summary of the accepted schedule before it starts.
+
+**UI-7 Task 2 — Countdown & Schedule State**
+- Show the time remaining until the next scheduled timestamp and update it from the target time so UI refresh delays do not accumulate countdown drift.
+- When the site clock is unavailable, invalid, or stale, fall back to the system clock with a soft, non-blocking notice. When valid, fresh site time returns, switch back to the exchange/market clock and notify the user.
+- The fallback system clock is expected to be NTP-disciplined when available; if its synchronization is unavailable, disclose that reduced confidence in the soft notice. Keep application-level corrections gradual and preserve the monotonic schedule cursor.
+- Track clock-source changes and the last dispatched schedule slot so a clock switch cannot cause a duplicate dispatch or a burst of missed slots; recalculate the displayed countdown from the active source.
+- Model the minimum schedule lifecycle needed by Apply Schedule and the countdown; do not add pause/cancel/retry behavior unless separately approved.
+- Once the schedule starts, disable controls that could change the queued orders or schedule inputs; prevent repeated Apply actions from creating duplicate active schedules.
+
+**UI-7 Task 3 — Timed Dispatch Integration**
+- Coordinate the generated timestamps with the existing UI/Core dispatch path and dispatch only when a scheduled time is due, within the configured window.
+- Preserve the existing Account/Broker/order identities and all Core/SafetyGate/M6-A…M6-E checks. Prevent early, late, duplicate, or post-End-Time dispatches.
+- Source-time failure or recovery must never replay an already dispatched timestamp or compress several missed timestamps into immediate executions.
+- Keep Test Mode separate from Apply Schedule. Do not add new trading/execution logic, bypass existing gates, enable live trading, or duplicate Block 3 schedule calculations.
+
+**UI-7 Task 4 — Integration, Regression & Documentation**
+- Verify input validation, timezone behavior, countdown accuracy, start/end boundaries, and exactly-once dispatch with deterministic clock/timer tests and no real broker/network.
+- Verify site-clock timeout/invalid-response/stale-cache fallback to system time, user notices, recovery to site time, and no duplicate/catch-up dispatch across either transition.
+- Verify UI-5 and UI-6 behavior remains unchanged; run relevant regression tests and document actual results and limitations.
+- Mark UI-7 complete only after the required verification passes. UI-8 retains end-to-end integration and acceptance.
+
+**Boundaries:** UI-7 owns schedule configuration, countdown, and timed invocation of the existing execution path. It does not redesign Block 3 contracts or timestamp generation, create trading logic, bypass Core/SafetyGate/M6-A…M6-E, add retries or order splitting (M6-F), or absorb UI-8 end-to-end Broker-boundary acceptance.
+
+**Task 1 completion record (2026-10-02):** Added `ui/market_clock.py` for the TSETMC clock contract, response/freshness validation, offset uncertainty, application-level bounded correction, monotonic non-rewinding time, and system-clock fallback; added `ui/schedule_settings.py` to parse settings fail-closed and reuse `DispatchTiming` / `TimedDispatchScheduler`; added the Schedule group and asynchronous Apply-time clock refresh to `ui/order_configuration_page.py`; added `test_ui7_task1_schedule_clock.py`. No Core, Block 3, Broker, UI-5, or UI-6 implementation was changed. Verification reported: UI-7 focused suite **102 passed**; UI-1/UI-2.1/UI-3.2/UI-6 regression selection **97 passed**; UI-4/UI-5 runnable subset **155 passed**; offline import guard clean. The baseline selections matched those same counts. Limitations: `test_ui3_1_order_configuration.py` did not complete because `test_5` hangs in this environment, also on baseline; `test_ui5_task4_stage3_task4_ui_table.py` could not run because `nats` is unavailable. Thus full UI-3.1 and UI-5 Stage 3 coverage is not claimed as verified. Same-day Tehran windows only; overnight windows are rejected under the existing Block 3 contract. The real TSETMC endpoint was not contacted in tests; production CDN header behavior remains unverified. `git diff --check` was reported clean for the task changes. UI-7 remains in progress; Task 2 is next.
 
 #### UI-8 — End-to-End Integration & Acceptance
 

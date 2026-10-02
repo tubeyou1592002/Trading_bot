@@ -143,10 +143,32 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui.market_clock import (
+    MarketClockService,
+    MarketClockWorker,
+    describe_clock,
+)
 from ui.order_config_state import (
     SYMBOL_STATUS_NOT_AVAILABLE,
     OrderConfigError,
     OrderConfiguration,
+)
+from ui.schedule_settings import (
+    END_INPUT_LABEL,
+    INTERVAL_INPUT_LABEL,
+    INTERVAL_INPUT_PLACEHOLDER,
+    SCHEDULE_GROUP_TITLE,
+    SCHEDULE_UNAVAILABLE,
+    START_INPUT_LABEL,
+    TIME_INPUT_PLACEHOLDER,
+    TIMEZONE_NOTE,
+    ScheduleValidationError,
+    assess_schedule_window,
+    build_dispatch_timing,
+    build_schedule_summary,
+    describe_summary,
+    generate_schedule_times,
+    parse_schedule_inputs,
 )
 from ui.symbol_search_worker import (
     SYMBOL_SEARCH_DEBOUNCE_MS,
@@ -685,6 +707,22 @@ class OrderConfigurationPage(QWidget):
         # ``apply_mode`` on this page on every mode change).
         self._diagnostic_section_visible = False
 
+        # --- UI-7 Task 1: clock + schedule state ------------------------
+        # The clock service and its worker are created lazily so that
+        # constructing this page stays offline (no ``requests``, no market
+        # or core import until a clock refresh or an Apply actually runs).
+        self._clock_service = None
+        self._clock_service_factory = None
+        self._clock_transport = None
+        self._clock_worker = None
+        self._clock_thread = None
+        self._clock_status = None
+        self._pending_schedule = None
+        self._schedule_parsed = None
+        self._schedule_timing = None
+        self._schedule_times = ()
+        self._schedule_assessment = None
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -762,6 +800,56 @@ class OrderConfigurationPage(QWidget):
         results_layout.addWidget(self.result_list)
 
         root_layout.addWidget(results_group)
+
+        # ---------------------------------------------
+        # Schedule configuration (UI-7 Task 1)
+        # ---------------------------------------------
+        # Start Time / End Time / Interval inputs plus the Apply Schedule
+        # action, the clock-source status line, and the confirmation
+        # summary. Nothing here starts a schedule, counts down, or sends an
+        # order: the countdown lifecycle is UI-7 Task 2 and wiring due
+        # times to the send path is UI-7 Task 3.
+
+        self.schedule_group = QGroupBox(SCHEDULE_GROUP_TITLE, self)
+        schedule_form = QFormLayout(self.schedule_group)
+
+        self.schedule_timezone_label = QLabel(TIMEZONE_NOTE, self.schedule_group)
+        schedule_form.addRow("Timezone:", self.schedule_timezone_label)
+
+        self.schedule_start_input = QLineEdit(self.schedule_group)
+        self.schedule_start_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
+        schedule_form.addRow(START_INPUT_LABEL, self.schedule_start_input)
+
+        self.schedule_end_input = QLineEdit(self.schedule_group)
+        self.schedule_end_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
+        schedule_form.addRow(END_INPUT_LABEL, self.schedule_end_input)
+
+        self.schedule_interval_input = QLineEdit(self.schedule_group)
+        self.schedule_interval_input.setPlaceholderText(INTERVAL_INPUT_PLACEHOLDER)
+        schedule_form.addRow(INTERVAL_INPUT_LABEL, self.schedule_interval_input)
+
+        schedule_buttons = QWidget(self.schedule_group)
+        schedule_buttons_layout = QHBoxLayout(schedule_buttons)
+        schedule_buttons_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.apply_schedule_button = QPushButton("Apply Schedule", schedule_buttons)
+        self.apply_schedule_button.clicked.connect(self._on_apply_schedule)
+        schedule_buttons_layout.addWidget(self.apply_schedule_button)
+
+        self.refresh_clock_button = QPushButton("Refresh Clock", schedule_buttons)
+        self.refresh_clock_button.clicked.connect(self._on_refresh_clock)
+        schedule_buttons_layout.addWidget(self.refresh_clock_button)
+        schedule_form.addRow(schedule_buttons)
+
+        self.clock_status_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
+        self.clock_status_label.setWordWrap(True)
+        schedule_form.addRow("Clock:", self.clock_status_label)
+
+        self.schedule_summary_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
+        self.schedule_summary_label.setWordWrap(True)
+        schedule_form.addRow("Summary:", self.schedule_summary_label)
+
+        root_layout.addWidget(self.schedule_group)
 
         # ---------------------------------------------
         # Diagnostic section (UI-6 Tasks 1-3) — REAL content, mode-gated
@@ -2478,6 +2566,201 @@ class OrderConfigurationPage(QWidget):
         except (OrderConfigError, ValueError) as exc:
             QMessageBox.warning(self, "Invalid quantity", str(exc))
         self._refresh_amounts()
+
+    # ---------------------------------------------------------
+    # Schedule & clock (UI-7 Task 1)
+    # ---------------------------------------------------------
+    # Configuration and validation only. Nothing here starts a schedule,
+    # counts down, or sends an order (Task 2 / Task 3). Applying a schedule
+    # validates the inputs through the existing Block 3 ``DispatchTiming``
+    # contract, generates the moments with the existing
+    # ``TimedDispatchScheduler``, and shows the result before anything runs.
+
+    def set_clock_service_factory(self, factory):
+        """
+        Inject the clock-service seam (production and tests).
+
+        The factory receives the injectable transport and returns a
+        ``MarketClockService``. Leaving it ``None`` keeps the default
+        lazily-created service, which still performs no network call until
+        a refresh is requested.
+        """
+        self._clock_service_factory = factory
+
+    def set_clock_transport(self, transport):
+        """
+        Inject the HTTP transport used by the default clock service.
+
+        Replacing the transport rebuilds the clock service, so a new
+        transport can never be silently ignored by an already-built
+        service. The displayed clock status is cleared with it: a reading
+        taken through the previous transport does not describe the new one.
+        """
+        self._clock_transport = transport
+        self._clock_service = None
+        self._clock_status = None
+
+    def clock_service(self):
+        """Return the page's clock service, creating it on first use."""
+        if self._clock_service is None:
+            factory = self._clock_service_factory
+            if factory is not None:
+                self._clock_service = factory(self._clock_transport)
+            else:
+                self._clock_service = MarketClockService(
+                    transport=self._clock_transport
+                )
+            self._clock_transport = self._clock_service.transport
+        return self._clock_service
+
+    def _refresh_clock_display(self):
+        status = self._clock_status
+        if status is None:
+            status = self.clock_service().status()
+            self._clock_status = status
+        self.clock_status_label.setText(describe_clock(status))
+
+    def _on_clock_succeeded(self, sample):
+        self._clock_status = self.clock_service().observe(sample)
+        self._refresh_clock_display()
+        self._apply_pending_schedule_if_any()
+
+    def _on_clock_failed(self, reason):
+        self._clock_status = self.clock_service().mark_market_unavailable(reason)
+        self._refresh_clock_display()
+        self._apply_pending_schedule_if_any()
+
+    def _start_clock_refresh(self):
+        """
+        Begin one non-blocking clock refresh; ``False`` if already running.
+
+        The network call always happens on a worker thread, never on the
+        GUI thread, so Apply and Refresh both stay responsive.
+        """
+        service = self.clock_service()
+        if self._clock_thread is not None and self._clock_thread.isRunning():
+            return False
+        worker = MarketClockWorker(
+            transport=service.transport,
+            now_utc=service.now_utc,
+            parent=self,
+        )
+        self._clock_worker = worker
+        worker.clock_succeeded.connect(self._on_clock_succeeded)
+        worker.clock_failed.connect(self._on_clock_failed)
+        worker.finished.connect(self._on_clock_worker_finished)
+        self._clock_thread = worker
+        worker.start()
+        return True
+
+    def _on_refresh_clock(self):
+        """Fetch market time off the GUI thread; never blocks the UI."""
+        self._start_clock_refresh()
+
+    def _on_clock_worker_finished(self):
+        worker = self._clock_worker
+        self._clock_worker = None
+        self._clock_thread = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _on_apply_schedule(self):
+        """
+        Validate the inputs, then evaluate the window on a fresh clock.
+
+        The user must never silently get a schedule assessed on the system
+        clock while the market clock has never been checked, so Apply
+        refreshes the market clock FIRST — on a worker thread, never on the
+        GUI thread — and evaluates the window only once the answer arrives
+        (valid+fresh, or refused with the system-clock fallback and a soft
+        notice).
+
+        Fail-closed: an incomplete or malformed input produces a visible
+        rejection immediately and never reaches the network; a rejected
+        input never leaves a stale schedule looking accepted.
+        """
+        try:
+            parsed = parse_schedule_inputs(
+                self.schedule_start_input.text(),
+                self.schedule_end_input.text(),
+                self.schedule_interval_input.text(),
+            )
+        except ScheduleValidationError as exc:
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self.schedule_summary_label.setText(f"Schedule rejected — {exc}")
+            return
+
+        self._pending_schedule = parsed
+        # The window is evaluated by ``_apply_pending_schedule_if_any`` from
+        # the worker's completion handler, never inline here: the refresh
+        # may already have finished, and evaluating against a not-yet-
+        # updated clock is exactly the bug this ordering prevents.
+        self._start_clock_refresh()
+
+    def _apply_pending_schedule_if_any(self):
+        """
+        Evaluate the pending inputs once a clock refresh has completed.
+
+        Does nothing until a refresh has actually landed, so the window is
+        always assessed against the freshest valid clock state.
+        """
+        parsed = self._pending_schedule
+        if parsed is None:
+            return
+
+        service = self.clock_service()
+        status = self._clock_status if self._clock_status is not None else service.status()
+
+        try:
+            now_tehran = service.now_tehran()
+            timing = build_dispatch_timing(parsed, now_tehran)
+            times = generate_schedule_times(timing)
+            assessment = assess_schedule_window(timing, now_tehran, times)
+        except ScheduleValidationError as exc:
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self.schedule_summary_label.setText(f"Schedule rejected — {exc}")
+            return
+
+        self._pending_schedule = None
+        self._schedule_parsed = parsed
+        self._schedule_timing = timing
+        self._schedule_times = tuple(times)
+        self._schedule_assessment = assessment
+
+        summary = build_schedule_summary(
+            parsed,
+            timing,
+            assessment,
+            describe_clock(status),
+            moments=times,
+        )
+        self.schedule_summary_label.setText(describe_summary(summary))
+
+    def _clear_accepted_schedule(self):
+        self._schedule_parsed = None
+        self._schedule_timing = None
+        self._schedule_times = ()
+        self._schedule_assessment = None
+
+    def schedule_state(self):
+        """Public read-only access to the accepted schedule (or ``None``)."""
+        return self._schedule_assessment
+
+    def schedule_timing(self):
+        """Public read-only access to the accepted ``DispatchTiming``."""
+        return self._schedule_timing
+
+    def schedule_times(self):
+        """Public read-only access to the accepted run moments."""
+        return self._schedule_times
+
+    def clock_status(self):
+        """Public read-only access to the current clock status."""
+        if self._clock_status is None:
+            self._clock_status = self.clock_service().status()
+        return self._clock_status
 
     # ---------------------------------------------------------
     # Amounts
