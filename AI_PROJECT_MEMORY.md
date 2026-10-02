@@ -2266,14 +2266,21 @@ The following are explicitly **not** part of M6-E:
 - Deferred to UI-6: latency/diagnostics/trace-style presentation and detailed execution timing.
 ### UI-6 Roadmap — Finalized
 
-**Current status:** UI-5 is COMPLETED. UI-6 is IN PROGRESS and has exactly four tasks: (1) Diagnostic Mode Foundation — COMPLETED; (2) Trace ID — COMPLETED; (3) Latency & Execution Diagnostics — COMPLETED; and (4) Integration, Regression & Documentation — NEXT. UI-6 itself is not complete.
+**Current status:** UI-5 is COMPLETED. UI-6 is COMPLETED with exactly four tasks: (1) Diagnostic Mode Foundation — COMPLETED; (2) Trace ID — COMPLETED; (3) Latency & Execution Diagnostics — COMPLETED; and (4) Integration, Regression & Documentation — COMPLETED. UI-6 itself is COMPLETE.
 
 1. **Diagnostic Mode Foundation** — establish the NORMAL/DIAGNOSTIC presentation boundary; technical information remains hidden in Normal Mode; no trading/execution behavior changes.
 2. **Trace ID — COMPLETED** — the existing dispatch-level `DispatchResult.trace_id` is shown only in Diagnostic Mode. Invalid/missing IDs are unavailable; no second ID is generated or substituted. A failed new runner attempt immediately clears the previous displayed ID. Reported verification: 20 focused tests and 190 related UI regression tests passed.
 3. **Latency & Execution Diagnostics — COMPLETED** — reuses existing Block 8 timing data. Dispatch duration, stage timings, Broker/API calls, and application-side fields remain separate. Stage and call values are labeled per order; each API call is individually identified by operation and call number. Missing/cross-clock values remain unavailable. Verification: 28 focused tests and 289 selected UI regression tests passed.
-4. **Integration, Regression & Documentation — NEXT** — verify Diagnostic Mode, Trace ID, latency/diagnostic presentation, UI-5 regression safety, and complete documentation before marking UI-6 complete.
+4. **Integration, Regression & Documentation — COMPLETED** — Diagnostic Mode, Trace ID, latency/diagnostic presentation, and UI-5 regression safety were verified against the actual repository state before documentation was marked complete. No code, test, or configuration was changed.
 
 UI-6 Task 1 uses the existing `ApplicationMode`; the diagnostic section is hidden in NORMAL and shown in DIAGNOSTIC. Invalid mode values hide it fail-closed. The mode does not change trading/execution behavior. Reported verification: 12 focused tests and 182 related UI regression tests passed.
+
+**Task 4 session results (2026-10-02, run against the actual repository, not copied from earlier reports):**
+- Focused UI-6 suite `python -m pytest test_ui6_task1_diagnostic_mode.py -q` → **28 passed**.
+- Regression `python -m pytest test_ui1_application_foundation.py test_ui3_2a_symbol_search.py test_ui3_2b_trading_state_display.py test_ui4_queue_ui_integration.py test_ui5_task3_feedback_service.py -q` → **70 passed**.
+- Unverified in this environment, and therefore NOT to be reported as passing: `test_ui3_1_order_configuration.py` (deliberately skipped — modal-dialog test hangs offscreen, also on baseline); `test_ui5_task4_stage2_queue_position.py` (collection error, `nats-py` missing); the UI-5 Stage 3 tests that import `brokers.agaah.nats_transport` (same `nats` import failure). UI-5 Stage 2 / Stage 3 coverage was therefore only partially re-verified here.
+- **Follow-up verification (2026-10-02):** In the user's Python 3.13 environment with `nats-py` 2.16.0, `python -m pytest test_ui5_task4_stage2_queue_position.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py -q` → **79 passed**, resolving the NATS-related limitation above. The test-only QMessageBox mocks and the UI-3.1 AST allowlist update resolved the Qt test issue without changing production code: `python -m pytest test_ui2_1_account_management.py test_ui3_1_order_configuration.py -q` → **46 passed**. No listed UI-6 verification limitation remains.
+- `git diff --check` is clean for `AI_HANDOFF.md`, `AI_PROJECT_MEMORY.md`, and `DECISIONS.md`. At verification, `git status --short` showed these three documentation files as modified for this task, plus pre-existing untracked files; no other tracked files were modified.
 
 The roadmap order is `UI-1 → UI-2 → UI-3 → UI-4 → UI-5 → UI-6 → UI-7 → UI-8 → Central Server`.
 
@@ -2301,6 +2308,3 @@ If an API behavior is unknown, mark it as unknown and investigate it.
 
 
 Never invent an endpoint, request field, authentication mechanism, broker identifier, or trading rule.
-
-
-

@@ -2783,7 +2783,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-6 — Test / Diagnostic Mode
 
-**Status:** IN PROGRESS. UI-6 has exactly four implementation tasks. Tasks 1–3 are COMPLETED; Task 4 is NOT STARTED and is the next task. UI-6 itself is not complete.
+**Status:** COMPLETED. UI-6 has exactly four implementation tasks: Task 1 (Diagnostic Mode Foundation) — COMPLETED; Task 2 (Trace ID) — COMPLETED; Task 3 (Latency & Execution Diagnostics) — COMPLETED; Task 4 (Integration, Regression & Documentation) — COMPLETED. UI-6 itself is COMPLETE.
 
 **UI-6 Task 1 — Diagnostic Mode Foundation**
 **Status:** COMPLETED. The existing `ApplicationMode` is switchable through the UI; the minimal diagnostic section is hidden in NORMAL and shown in DIAGNOSTIC mode. Invalid mode values fail closed by hiding the section. Mode changes do not change execution behavior.
@@ -2795,13 +2795,29 @@ Next step: UI-4 — Order Queue
 **Status:** COMPLETED. The Diagnostic section presents this run's existing Block 8 report: dispatch duration, each recorded internal stage per order, each Broker/API call per order, and the report's application-side fields. Stage and call rows are labeled with the order identity; API calls also show their operation and call number. Missing stages/values remain unavailable. No cross-order stage medians or Broker/API sums are presented as single-order values; no second measurement system or synthetic latency is added.
 
 **UI-6 Task 4 — Integration, Regression & Documentation**
-- Verify Normal/Diagnostic behavior, Trace ID presentation, and latency/diagnostic presentation.
-- Verify UI-5 remains unchanged and run relevant regression tests.
-- Complete UI-6 documentation and mark UI-6 complete only after verification.
+**Status:** COMPLETED. Normal/Diagnostic behavior, Trace ID presentation, and latency/diagnostic presentation were verified against the actual repository state; UI-5 behavior was confirmed unchanged; UI-6 documentation is complete. No code, test, or configuration was changed in Task 4.
+- Verify Normal/Diagnostic behavior, Trace ID presentation, and latency/diagnostic presentation. **Verified** by the focused suite.
+- Verify UI-5 remains unchanged and run relevant regression tests. **Verified** by the UI-1 / UI-3.2A / UI-3.2B / UI-4 / UI-5 regression run (see limitations).
+- Complete UI-6 documentation and mark UI-6 complete only after verification. **Done** — documentation completed after verification, not before.
+
+**Task 4 acceptance-criteria verification (2026-10-02, actual session run):**
+- NORMAL hides all diagnostic information; DIAGNOSTIC shows only the current run's real data — confirmed.
+- Trace ID is the existing run identifier; a failed new runner attempt does not leave the previous run's Trace ID behind — confirmed.
+- Latency categories stay separate; missing or cross-clock values are never fabricated or estimated — confirmed.
+- Toggling the diagnostic mode does not change order send/execution behavior or UI-5 behavior — confirmed.
+
+**Task 4 recorded test results and limitations:**
+- `python -m pytest test_ui6_task1_diagnostic_mode.py -q` → **28 passed**.
+- Regression `python -m pytest test_ui1_application_foundation.py test_ui3_2a_symbol_search.py test_ui3_2b_trading_state_display.py test_ui4_queue_ui_integration.py test_ui5_task3_feedback_service.py -q` → **70 passed**.
+- `test_ui3_1_order_configuration.py` was **deliberately not run** — its modal-dialog test hangs in this offscreen environment, including on the baseline. This is a pre-existing environment limitation, not a UI-6 result.
+- `test_ui5_task4_stage2_queue_position.py` cannot be collected in this environment (`ModuleNotFoundError: No module named 'nats'`; `nats-py` is not installed).
+- The remaining UI-5 tests that import `brokers.agaah.nats_transport` (`test_ui5_task4_stage3_task3_core_registration.py`, and `test_ui5_task4_stage3_task4_ui_table.py::TestGreenRegistration::test_saved_in_asa_never_greens_or_stamps`) fail at that same import. These are environment-level import failures unrelated to the UI-6 code paths, but they mean UI-5 Stage 2 / Stage 3 coverage was **not** fully re-verified in this session and must not be reported as passing.
 
 **Explicit boundaries:** Schedule / Countdown belongs to UI-7; End-to-End Integration & Acceptance belongs to UI-8. Central Server, Admin Panel, new latency instrumentation, new execution/trading logic, historical log persistence, export/filtering, and order splitting (M6-F) are excluded from UI-6.
 
-**Verification:** Task 1 focused tests: 12 passed; related UI regression: 182 passed. Task 2 focused tests: 20 passed; related UI regression: 190 passed (reported implementation runs). Task 3 focused tests: 28 passed; regression selection (UI-1, UI-3.2A/B, UI-4, UI-5): 289 passed. UI-3.1 was excluded because its modal-dialog test hangs in this offscreen environment, including on baseline.
+**Verification:** Task 1 focused tests: 12 passed; related UI regression: 182 passed. Task 2 focused tests: 20 passed; related UI regression: 190 passed (reported implementation runs). Task 3 focused tests: 28 passed; regression selection (UI-1, UI-3.2A/B, UI-4, UI-5): 289 passed. UI-3.1 was excluded because its modal-dialog test hangs in this offscreen environment, including on baseline. Task 4 re-ran the focused suite (28 passed) and the regression selection (70 passed) directly against the repository; the `nats`-dependent UI-5 Stage 2/Stage 3 tests and UI-3.1 remain unverified here for the environment reasons recorded under Task 4 above.
+
+**Follow-up verification (2026-10-02):** Using the user's Python 3.13 environment with `nats-py` 2.16.0 available, the NATS-dependent UI-5 suites were rerun: `python -m pytest test_ui5_task4_stage2_queue_position.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py -q` → **79 passed**. This resolves the earlier NATS import limitation. The two previously blocked Qt tests were made non-modal in the tests (the warning calls are mocked and asserted; production behavior is unchanged), and the UI-3.1 AST allowlist now includes the existing lazy `core.dispatch_contracts` import used for Trace ID validation. Full affected files: `python -m pytest test_ui2_1_account_management.py test_ui3_1_order_configuration.py -q` → **46 passed**. The offscreen modal-dialog test limitation is resolved.
 
 #### UI-7 — Schedule & Countdown
 
@@ -2860,4 +2876,3 @@ Next step: UI-4 — Order Queue
 `UI / User Application — IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed)`
 
 ---
-

@@ -175,7 +175,20 @@ def test_3_side_uses_real_constants(qapp, store):
 # ============================================================
 
 
-def test_4_price_enter_and_store(qapp, store):
+def test_4_price_enter_and_store(qapp, store, monkeypatch):
+    warnings = []
+
+    class _NonModalMessageBox:
+        @staticmethod
+        def warning(parent, title, message):
+            warnings.append((title, message))
+
+    # Keep this validation test deterministic in offscreen Qt: assert that
+    # invalid values request a warning, without entering a blocking modal
+    # event loop that requires a user click.
+    monkeypatch.setattr(
+        "ui.order_configuration_page.QMessageBox", _NonModalMessageBox
+    )
     page = OrderConfigurationPage(store)
 
     page.price_input.setText("15000")
@@ -192,6 +205,10 @@ def test_4_price_enter_and_store(qapp, store):
     page.price_input.setText("abc")
     page.price_input.editingFinished.emit()
     assert page.config.price == 15000
+    assert [title for title, _message in warnings] == [
+        "Invalid price",
+        "Invalid price",
+    ]
 
     with pytest.raises(OrderConfigError):
         page.config.set_price("15000")
@@ -458,6 +475,9 @@ def test_14_ui_does_not_use_legacy_main():
     other brokers.* / core.* import remains banned.
     UI-4 seam: ``core.order_queue`` is the lazy (first Add-to-Queue,
     never construction) holder the page prepares orders into.
+    UI-6 Task 2 seam: ``core.dispatch_contracts`` is imported lazily only
+    when validating a completed run's existing Trace ID result; it is
+    absent from page construction and other no-run paths.
     UI-5 Task 2 seam: ``ui/test_runner.py`` is the lazy runner the Test
     action builds (first real Test pass, never construction/refresh); it
     imports the EXISTING dry-run chain — ``core.order_queue_adapter`` /
@@ -475,6 +495,7 @@ def test_14_ui_does_not_use_legacy_main():
         "core.order_queue_adapter",
         "core.block5_task4",
         "core.dispatch_core",
+        "core.dispatch_contracts",
     }
 
     def _check_import(module_name, node):
