@@ -2864,7 +2864,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-8 — End-to-End Integration & Acceptance
 
-**Status:** IN PROGRESS — UI-7 is complete; UI-8 Task 1 is complete and Task 2 is next. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
+**Status:** IN PROGRESS — UI-7 is complete; UI-8 Tasks 1 and 2 are complete, and Task 3 is next. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
 
 **UI-8 Task 1 — Single-Account / Single-Broker End-to-End Path**
 - Verify the existing UI → TestRunner → Core → Broker boundary using offline doubles; check order input, plan creation, dispatch result, and user-visible result/feedback as one flow.
@@ -2888,6 +2888,8 @@ Next step: UI-4 — Order Queue
 **UI-8 acceptance boundary:** End at the existing Broker boundary using test doubles; it does not authorize live trading, real broker credentials, or production orders. Central Server, Admin Panel, License/Activation, and multi-user rollout remain later phases.
 
 **UI-8 Task 1 completion record (2026-10-03):** Added `test_ui8_task1_single_broker_e2e.py`, a focused offline end-to-end test for one order, one account, and one broker. The test drives the real OrderConfigurationPage queue and Test action through TestRunner, DispatchIntegration, DispatchCore, OrderEngine, and SimulationBroker; checks order/account/broker identity, exactly one dry-run broker call (`live=False`), and the user-visible result; and blocks real broker/network construction paths. It does not require a SafetyGate to be attached, so it does not depend on the pre-existing uncommitted `ui/test_runner.py` change. Reported verification: focused test **1 passed**; focused test plus UI-5 Task 2/3 result tests **42 passed**; test also passed from a temporary copy of committed HEAD without the local `ui/test_runner.py` modification. The user-facing environment could not independently rerun the test because Python is unavailable there. No production code, configuration, or existing test was changed; no live order or network request was made. Task 1 is complete; UI-8 remains in progress and Task 2 is next.
+
+**UI-8 Task 2 completion record (2026-10-03):** Added `test_ui8_task2_multi_account_multi_broker_e2e.py` with two focused offline tests. The routing test uses the real page queue/Test action, TestRunner, Core, OrderEngine, and two simulation broker/provider pairs to verify three orders across two accounts and two brokers in separate supported single-account passes; order identity, destination binding, per-broker call counts, dry-run results, and UI result attribution are checked. A second test builds a mixed-account/mixed-broker queue and records the existing fail-closed behavior: the page skips the run with its current message, the runner rejects the mixed entries, neither simulator receives an order, and the queue remains intact. **A single Test pass over a mixed-destination queue is not supported by the current product.** This limitation is documented, not bypassed or changed; enabling mixed-queue dispatch requires a separately scoped product decision and implementation. Reported verification: Task 2 file **2 passed**; Task 1 + Task 2 files **3 passed**. No production code, configuration, or other test was changed; no real broker, network, or live order was used. Task 2 verification is complete; Task 3 is next; UI-8 remains in progress.
 
 #### اصول ثابت
 
@@ -2920,6 +2922,6 @@ Next step: UI-4 — Order Queue
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — UI-7 COMPLETE; UI-8 IN PROGRESS (Task 1 complete; Task 2 next)`
+`UI / User Application — UI-7 COMPLETE; UI-8 IN PROGRESS (Tasks 1–2 complete; Task 3 next)`
 
 ---
