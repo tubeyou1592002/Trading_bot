@@ -483,6 +483,13 @@ def test_14_ui_does_not_use_legacy_main():
     imports the EXISTING dry-run chain — ``core.order_queue_adapter`` /
     ``core.block5_task4`` / ``core.dispatch_core`` — only to dispatch, and
     only in dry-run (``live`` stays False end-to-end).
+    UI-7 seam: ``core.timing_contracts`` and
+    ``core.timed_dispatch_scheduler`` are the EXISTING Block 3 window
+    contract and deterministic moment generator that UI-7 reuses instead of
+    re-implementing any schedule math. Like ``market.symbol_resolver``,
+    they must stay LAZY — imported inside a function body, never at module
+    import time — so merely importing ``ui.schedule_settings`` or building
+    the page stays offline and construction-time side-effect free.
     """
     import ast
 
@@ -496,6 +503,17 @@ def test_14_ui_does_not_use_legacy_main():
         "core.block5_task4",
         "core.dispatch_core",
         "core.dispatch_contracts",
+        # UI-7: the EXISTING Block 3 timing contract and moment generator.
+        "core.timing_contracts",
+        "core.timed_dispatch_scheduler",
+    }
+    #: Seams that must never be imported at MODULE level, so that importing
+    #: a ui/ module (or constructing the page) stays offline and free of
+    #: construction-time side effects.
+    must_stay_lazy = {
+        "market.symbol_resolver",
+        "core.timing_contracts",
+        "core.timed_dispatch_scheduler",
     }
 
     def _check_import(module_name, node):
@@ -549,22 +567,26 @@ def test_14_ui_does_not_use_legacy_main():
             continue
         path = os.path.join(ui_dir, file_name)
         tree = ast.parse(open(path, encoding="utf-8").read())
-        # market.symbol_resolver must be imported lazily — inside a
-        # function body, never at module import time.
+        # market.symbol_resolver and the two Block 3 timing seams must be
+        # imported lazily — inside a function body, never at module import
+        # time — so importing a ui/ module or building the page stays
+        # offline and free of construction-time side effects.
         for node in tree.body:  # module-level statements only
-            if isinstance(node, ast.ImportFrom) and node.module == (
-                "market.symbol_resolver"
-            ):
+            if isinstance(node, ast.ImportFrom) and node.module in must_stay_lazy:
                 raise AssertionError(
-                    f"ui/{file_name} imports market.symbol_resolver at "
+                    f"ui/{file_name} imports {node.module} at "
                     "module level — the seam must stay lazy/offline"
                 )
             if isinstance(node, ast.Import) and any(
-                alias.name == "market.symbol_resolver"
-                for alias in node.names
+                alias.name in must_stay_lazy for alias in node.names
             ):
+                offender = sorted(
+                    alias.name
+                    for alias in node.names
+                    if alias.name in must_stay_lazy
+                )[0]
                 raise AssertionError(
-                    f"ui/{file_name} imports market.symbol_resolver at "
+                    f"ui/{file_name} imports {offender} at "
                     "module level — the seam must stay lazy/offline"
                 )
         for node in ast.walk(tree):
