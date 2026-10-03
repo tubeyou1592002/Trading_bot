@@ -2864,7 +2864,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-8 — End-to-End Integration & Acceptance
 
-**Status:** NEXT — UI-7 is complete. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
+**Status:** IN PROGRESS — UI-7 is complete; UI-8 Task 1 is complete and Task 2 is next. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
 
 **UI-8 Task 1 — Single-Account / Single-Broker End-to-End Path**
 - Verify the existing UI → TestRunner → Core → Broker boundary using offline doubles; check order input, plan creation, dispatch result, and user-visible result/feedback as one flow.
@@ -2886,6 +2886,8 @@ Next step: UI-4 — Order Queue
 - Update current roadmap/status documentation and mark UI-8 complete only after the required acceptance checks pass. If a code or test change is needed, stop and request a separately scoped repair task before changing it.
 
 **UI-8 acceptance boundary:** End at the existing Broker boundary using test doubles; it does not authorize live trading, real broker credentials, or production orders. Central Server, Admin Panel, License/Activation, and multi-user rollout remain later phases.
+
+**UI-8 Task 1 completion record (2026-10-03):** Added `test_ui8_task1_single_broker_e2e.py`, a focused offline end-to-end test for one order, one account, and one broker. The test drives the real OrderConfigurationPage queue and Test action through TestRunner, DispatchIntegration, DispatchCore, OrderEngine, and SimulationBroker; checks order/account/broker identity, exactly one dry-run broker call (`live=False`), and the user-visible result; and blocks real broker/network construction paths. It does not require a SafetyGate to be attached, so it does not depend on the pre-existing uncommitted `ui/test_runner.py` change. Reported verification: focused test **1 passed**; focused test plus UI-5 Task 2/3 result tests **42 passed**; test also passed from a temporary copy of committed HEAD without the local `ui/test_runner.py` modification. The user-facing environment could not independently rerun the test because Python is unavailable there. No production code, configuration, or existing test was changed; no live order or network request was made. Task 1 is complete; UI-8 remains in progress and Task 2 is next.
 
 #### اصول ثابت
 
@@ -2918,6 +2920,6 @@ Next step: UI-4 — Order Queue
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — UI-7 COMPLETE; UI-8 NEXT (End-to-End Integration & Acceptance)`
+`UI / User Application — UI-7 COMPLETE; UI-8 IN PROGRESS (Task 1 complete; Task 2 next)`
 
 ---

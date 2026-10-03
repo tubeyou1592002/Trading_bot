@@ -2307,7 +2307,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### UI-8 Roadmap — End-to-End Integration & Acceptance
 
-**Status:** NEXT; UI-7 is complete. UI-8 has exactly four tasks and is the final User Application acceptance phase before Central Server work.
+**Status:** IN PROGRESS; UI-7 is complete and UI-8 Task 1 is complete. Task 2 is next. UI-8 has exactly four tasks and is the final User Application acceptance phase before Central Server work.
 
 1. **Single-Account / Single-Broker End-to-End Path** — verify the existing UI → TestRunner → Core → Broker-boundary flow with offline doubles, including order input, plan/dispatch result, and user-visible feedback.
 2. **Multi-Account / Multi-Broker Routing and Identity** — verify each order remains bound to its intended account and broker through planning, dispatch, result collection, and UI feedback, including mixed destinations and failure cases.
@@ -2315,6 +2315,8 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 4. **Regression, Acceptance, and Documentation** — run and record relevant UI-1…UI-7, M6, and Block 8 regressions; confirm no UI-5…UI-7 regression or safety bypass; document exact results and limitations. Mark UI-8 complete only after required acceptance checks pass.
 
 **Scope and safety:** Acceptance runs use offline doubles and stop at the existing Broker boundary. No real order, broker credential, or Live permission is authorized. UI-8 does not redesign Core, M6, Block 8, or UI-7. Central Server, Admin Panel, License/Activation, and multi-user rollout remain later phases. If an acceptance gap requires code or test changes, request a separately scoped repair before making them.
+
+**UI-8 Task 1 completion record (2026-10-03):** Added `test_ui8_task1_single_broker_e2e.py` as one focused offline E2E test. It exercises the real page queue/Test action through TestRunner, DispatchIntegration, DispatchCore, OrderEngine, and SimulationBroker for one order/account/broker; asserts preserved identities, exactly one `live=False` broker call, no live-send result, and the result rendered in the UI. Network and real-broker entry points are blocked by the test. The test does not assume a SafetyGate is attached and passed in a temporary committed-HEAD tree without the pre-existing local `ui/test_runner.py` modification. Reported verification: focused test **1 passed**; together with directly related UI-5 Task 2/3 tests **42 passed**. No production/configuration/documentation other than this status record was changed by the implementation; no real order or network call was made. Task 1 is complete; Task 2 is next. No UI-8 completion claim is made.
 
 - Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap). Full per-task detail lives in `AI_HANDOFF.md` §9 (User Application / UI Architecture & Roadmap).
 

@@ -1315,7 +1315,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 028 — UI-8 End-to-End Integration & Acceptance Roadmap (Four Tasks)
 
-**Status:** Accepted as the next phase after completed UI-7. UI-8 has exactly four tasks and is not started.
+**Status:** Accepted and in progress after completed UI-7. UI-8 has exactly four tasks; Task 1 is complete and Task 2 is next.
 
 **Decision:** Split UI-8 acceptance into four bounded tasks:
 
@@ -1325,3 +1325,5 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 4. **Regression, Acceptance, and Documentation** — run and record relevant UI-1…UI-7, M6, and Block 8 regressions; confirm no behavior regression or safety bypass; document actual results and limitations; mark UI-8 complete only after required acceptance checks pass.
 
 **Boundaries:** Use offline doubles and stop at the existing Broker boundary. No real order, broker credentials, or Live permission is authorized. Do not redesign Core, M6, Block 8, or UI-7. Central Server, Admin Panel, License/Activation, and multi-user rollout remain later phases. If acceptance reveals a code/test gap, request a separately scoped repair before changing files.
+
+**UI-8 Task 1 completion record (2026-10-03):** Added `test_ui8_task1_single_broker_e2e.py`, one offline E2E test covering one order/account/broker from the actual UI queue and Test action through TestRunner, DispatchIntegration, DispatchCore, OrderEngine, and SimulationBroker. It checks identity preservation, exactly one `live=False` broker call, dry-run result fields, and visible UI feedback; real network and broker construction paths are guarded. The test does not assume a SafetyGate is attached and was reported passing both in the working tree and in a temporary copy of committed HEAD without the pre-existing local `ui/test_runner.py` modification. Focused test: **1 passed**; focused test plus directly related UI-5 Task 2/3 tests: **42 passed**. No production code, settings, or existing tests changed; no live order/network access occurred. Task 1 is complete; Task 2 is next. UI-8 remains in progress.
