@@ -92,6 +92,20 @@ from PySide6.QtCore import QThread, Signal
 
 
 # ---------------------------------------------------------------------------
+# UI-7 Task 2 — schedule sync freshness constants
+# ---------------------------------------------------------------------------
+# These constants belong in market_clock.py because they govern when a
+# MarketClockService reading is fresh enough to be used for a schedule
+# Apply. They are named, documented, and never silently changed.
+# ---------------------------------------------------------------------------
+
+#: Maximum age of a successful market clock sync before it is considered
+#: stale for schedule Apply. A sync older than this cannot be used as the
+#: basis for a new schedule; the user must re-sync.
+SCHEDULE_SYNC_MAX_AGE_SECONDS = 30.0
+
+
+# ---------------------------------------------------------------------------
 # Contract constants (named, documented, never changed silently)
 # ---------------------------------------------------------------------------
 
@@ -689,6 +703,17 @@ class ClockStatus:
     notice: str
     precision_note: str
 
+    # UI-7 Task 2 — sync tracking for manual sync display
+    last_successful_sync: Optional[datetime] = None
+    last_sync_attempt: Optional[datetime] = None
+    last_sync_ok: bool = False
+
+    # UI-7 Task 2 — age of the last SUCCESSFUL sync, measured on the
+    # MONOTONIC clock (never on the wall clock, which a system-clock step
+    # could move and thereby make a stale reading look fresh). ``None``
+    # when no successful sync has ever completed.
+    sync_age_seconds: Optional[float] = None
+
     @property
     def offset_seconds(self) -> float:
         return self.applied_offset.total_seconds()
@@ -741,6 +766,17 @@ class MarketClockService:
         self._wall_anchor = self._now_utc()
         self._mono_anchor = self._mono()
         self._last_now: Optional[datetime] = None
+
+        # UI-7 Task 2 — sync tracking for schedule freshness
+        self._last_successful_sync: Optional[datetime] = None
+        self._last_sync_attempt: Optional[datetime] = None
+        self._last_sync_ok: bool = False
+        # Monotonic readings taken at those same moments. Freshness for a
+        # schedule Apply is ALWAYS judged on these, never on the wall
+        # clock: an NTP step must neither renew a stale reading nor expire
+        # a fresh one.
+        self._last_successful_sync_mono: Optional[float] = None
+        self._last_sync_attempt_mono: Optional[float] = None
 
     # -- state ------------------------------------------------------------
 
@@ -819,7 +855,64 @@ class MarketClockService:
                 if self._source is ClockSource.MARKET
                 else "system clock"
             ),
+            last_successful_sync=self._last_successful_sync,
+            last_sync_attempt=self._last_sync_attempt,
+            last_sync_ok=self._last_sync_ok,
+            sync_age_seconds=self._sync_age_seconds(),
         )
+
+    # UI-7 Task 2 — sync freshness tracking
+    # ------------------------------------
+    @property
+    def last_successful_sync(self) -> Optional[datetime]:
+        """UTC time of the last successful market clock sync, or None."""
+        return self._last_successful_sync
+
+    @property
+    def last_sync_attempt(self) -> Optional[datetime]:
+        """UTC time of the last sync attempt (success or failure), or None."""
+        return self._last_sync_attempt
+
+    @property
+    def last_sync_ok(self) -> bool:
+        """True if the last sync attempt succeeded."""
+        return self._last_sync_ok
+
+    def _sync_age_seconds(self) -> Optional[float]:
+        """Age of the last successful sync on the MONOTONIC clock."""
+        if self._last_successful_sync_mono is None:
+            return None
+        age = self._mono() - self._last_successful_sync_mono
+        if age < 0.0:
+            # A monotonic clock never goes backwards; clamp anyway so a
+            # swapped monotonic source can never report a negative age.
+            age = 0.0
+        return age
+
+    def sync_age_seconds(self) -> Optional[float]:
+        """
+        Age of the last successful sync in seconds, or ``None`` if the
+        service has never completed one.
+
+        Measured with the monotonic clock, so adjusting the system clock
+        cannot make an old reading look fresh or a fresh one look old.
+        """
+        return self._sync_age_seconds()
+
+    def is_sync_fresh(
+        self, max_age_seconds: float = SCHEDULE_SYNC_MAX_AGE_SECONDS
+    ) -> bool:
+        """
+        Is the last successful sync fresh enough for a schedule Apply?
+
+        ``False`` when no sync has ever completed successfully, or when
+        the monotonic age exceeds ``max_age_seconds``. The wall clock is
+        deliberately not consulted.
+        """
+        age = self._sync_age_seconds()
+        if age is None:
+            return False
+        return age <= max_age_seconds
 
     # -- observations -----------------------------------------------------
 
@@ -856,6 +949,31 @@ class MarketClockService:
             f"uncertainty +/-{sample.uncertainty_seconds:.2f}s, "
             f"{MARKET_PRECISION_NOTE})"
         )
+        # UI-7 Task 2 — record successful sync time (wall + monotonic)
+        self._last_successful_sync = self._now_utc()
+        self._last_successful_sync_mono = self._mono()
+        self._last_sync_attempt = self._last_successful_sync
+        self._last_sync_attempt_mono = self._last_successful_sync_mono
+        self._last_sync_ok = True
+        return self.status()
+
+    def note_unavailable(self, reason: str) -> ClockStatus:
+        """
+        State explicitly that no usable market clock reading is available.
+
+        Falls back to the system clock with a soft notice, exactly like
+        :meth:`mark_market_unavailable`, but records NO sync attempt: it is
+        for the UI to say "there is nothing fresh to schedule against"
+        without pretending a request had been made.
+        """
+        self._source = ClockSource.SYSTEM
+        self._uncertainty = None
+        self._last_error = str(reason)
+        self._applied_offset = self._step_toward(timedelta(0))
+        self._notice = (
+            f"{CLOCK_NOTICE_SYSTEM} — market time unavailable "
+            f"({reason}); using system clock"
+        )
         return self.status()
 
     def mark_market_unavailable(self, reason: str) -> ClockStatus:
@@ -866,14 +984,11 @@ class MarketClockService:
         the transition is gradual; because the returned time is clamped,
         the application clock holds rather than rewinding.
         """
-        self._source = ClockSource.SYSTEM
-        self._uncertainty = None
-        self._last_error = str(reason)
-        self._applied_offset = self._step_toward(timedelta(0))
-        self._notice = (
-            f"{CLOCK_NOTICE_SYSTEM} — market time unavailable "
-            f"({reason}); using system clock"
-        )
+        self.note_unavailable(reason)
+        # UI-7 Task 2 — record failed sync attempt (wall + monotonic)
+        self._last_sync_attempt = self._now_utc()
+        self._last_sync_attempt_mono = self._mono()
+        self._last_sync_ok = False
         return self.status()
 
     def apply_sample_or_fallback(
@@ -967,7 +1082,13 @@ def format_uncertainty(value: Optional[timedelta]) -> str:
 
 
 def describe_clock(status: ClockStatus) -> str:
-    """One honest, non-technical line describing the active clock source."""
+    """
+    One honest, non-technical line describing the active clock source.
+
+    The sync age shown here comes from ``status.sync_age_seconds``, which
+    the service measured on the monotonic clock — this function never reads
+    the wall clock itself, so a system-clock step cannot rewrite history.
+    """
     parts = [
         f"Source: {status.source.value}",
         status.notice,
@@ -975,12 +1096,24 @@ def describe_clock(status: ClockStatus) -> str:
         f"Uncertainty: {format_uncertainty(status.uncertainty)}",
         f"Precision: {status.precision_note}",
     ]
+    # UI-7 Task 2 — add sync info if available
+    if status.last_successful_sync is not None:
+        age = status.sync_age_seconds
+        parts.append(
+            f"Last sync: {age:.0f}s ago" if age is not None
+            else "Last sync: recorded"
+        )
+    elif status.last_sync_attempt is not None:
+        parts.append("Last sync: failed")
+    else:
+        parts.append("Last sync: none yet")
     return " | ".join(parts)
 
 
 __all__ = [
     "TEHRAN_TIMEZONE",
     "UTC",
+    "SCHEDULE_SYNC_MAX_AGE_SECONDS",
     "TSETMC_TIME_URL",
     "MARKET_TIME_FORMAT",
     "MARKET_TIME_PATTERN",

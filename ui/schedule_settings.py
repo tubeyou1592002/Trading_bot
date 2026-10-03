@@ -72,6 +72,49 @@ TIMEZONE_NOTE = "Asia/Tehran (UTC+03:30)"
 
 SCHEDULE_UNAVAILABLE = "—"
 
+# UI-7 Task 2 — schedule lifecycle and freshness constants
+# --------------------------------------------------------
+#: Maximum age of a successful clock sync before it is considered stale
+#: for schedule Apply. Named, documented, never silently changed.
+SCHEDULE_SYNC_MAX_AGE_SECONDS = 30.0
+
+#: User-facing labels for the schedule state machine. The order below is
+#: the lifecycle: configuring -> waiting -> counting (or starting once) ->
+#: stopped / expired, after which the page returns to configuring.
+SCHEDULE_STATE_CONFIG = "Configuring"
+SCHEDULE_STATE_WAITING = "Waiting for start time"
+SCHEDULE_STATE_COUNTING = "Counting down"
+SCHEDULE_STATE_START_NOW = "Start time reached — running once immediately"
+SCHEDULE_STATE_STOPPED = "Schedule stopped — configuring again"
+SCHEDULE_STATE_EXPIRED = "Schedule expired — no dispatch will be made"
+
+#: Button labels. The SAME button is Apply before a schedule is accepted
+#: and Stop afterwards (UI-7 Task 2); it is the only enabled button of the
+#: schedule/order set while a schedule is active.
+APPLY_BUTTON_LABEL = "Apply Schedule"
+STOP_BUTTON_LABEL = "Stop Schedule"
+
+#: Button labels of the independent manual sync action.
+SYNC_BUTTON_LABEL = "همگام‌سازی ساعت"
+SYNC_BUTTON_LABEL_BUSY = "در حال همگام‌سازی…"
+SYNC_BUTTON_LABEL_FAILED = "ناموفق — دوباره تلاش کنید"
+
+#: Countdown texts (UI-7 Task 2).
+COUNTDOWN_LABEL_UNAVAILABLE = SCHEDULE_UNAVAILABLE
+COUNTDOWN_LABEL_NO_UPCOMING = "No upcoming runs — schedule expired"
+COUNTDOWN_LABEL_STOPPED = "Schedule stopped — countdown cancelled"
+
+#: Sync line states (UI-7 Task 2). Each one is shown explicitly; a stale
+#: or missing reading is never dressed up as a fresh market clock.
+SYNC_STATE_IN_PROGRESS = "Sync in progress — waiting for the result…"
+SYNC_STATE_NEVER = (
+    "No market clock sync yet — press «همگام‌سازی ساعت» first "
+    "(system clock in use)"
+)
+SYNC_STATE_FAILED = (
+    "Last sync failed — market time unavailable, system clock in use"
+)
+
 
 class ScheduleValidationError(ValueError):
     """Raised when the schedule inputs are incomplete or invalid."""

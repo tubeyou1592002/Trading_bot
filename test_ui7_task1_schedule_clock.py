@@ -130,16 +130,30 @@ def fill(page, start, end, interval):
 
 def apply_schedule(page):
     """
-    Press Apply and let the non-blocking clock refresh settle.
+    Press Apply and let any pending clock work settle.
 
-    Apply is asynchronous by design: it validates synchronously, then
-    evaluates the window from the refresh completion handler. This helper
-    reproduces a user pressing Apply and waiting for the result.
+    UI-7 Task 2: Apply does NOT fetch the clock itself — it consumes the
+    last completed sync (or waits for one already in flight). This helper
+    therefore only presses Apply, waits if a worker happens to be running,
+    and drains the event loop.
     """
     page._on_apply_schedule()
     thread = page._clock_thread
     if thread is not None:
         assert thread.wait(10_000), "the clock refresh did not finish"
+    _drain_events()
+
+
+def sync_clock(page):
+    """
+    Press the independent sync button and wait for its COMPLETED result.
+
+    This is the action that produces the reading Apply later consumes.
+    """
+    page._on_sync_clock()
+    thread = page._clock_thread
+    if thread is not None:
+        assert thread.wait(10_000), "the clock sync did not finish"
     _drain_events()
 
 
@@ -1090,10 +1104,16 @@ def test_recovery_to_market_does_not_rewind(qapp):
 
 
 # ============================================================
-# 10. FIX 2 — Apply refreshes the clock, then assesses
+# 10. Apply consumes the last completed sync — it never fetches
 # ============================================================
 
-def test_apply_without_a_prior_refresh_fetches_the_clock(qapp):
+def test_apply_without_a_prior_sync_starts_no_request(qapp):
+    """
+    UI-7 Task 2: Apply itself never opens a network connection.
+
+    It consumes whatever the last completed sync produced. With no sync
+    at all the page falls back to the system clock and SAYS so.
+    """
     transport = offline_transport()
     page = make_page(qapp, transport=transport)
 
@@ -1101,22 +1121,31 @@ def test_apply_without_a_prior_refresh_fetches_the_clock(qapp):
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
-    assert len(transport.calls) == 1, "Apply must refresh the clock itself"
+    assert transport.calls == [], "Apply must not fetch the clock itself"
     assert page.schedule_timing() is not None
 
+    status = page.clock_status()
+    assert status.source.value == "SYSTEM"
+    assert "no market clock sync has completed yet" in status.notice
+    assert "unavailable" in status.notice.lower()
 
-def test_apply_is_assessed_against_its_own_fresh_response(qapp):
-    """
-    Apply's verdict must come from the answer it fetched.
 
-    The reading is accepted, so the page ends up on the MARKET source with
-    the offset stepping toward the measured one — impossible if Apply had
-    assessed the window on the system clock without asking.
+def test_apply_consumes_the_completed_sync_and_adds_no_request(qapp):
     """
-    page = make_page(qapp, transport=offline_transport())
+    After a successful manual sync, Apply uses that very result and the
+    request count does not grow.
+    """
+    transport = offline_transport()
+    page = make_page(qapp, transport=transport)
+
+    sync_clock(page)
+    assert len(transport.calls) == 1
+    assert page.clock_status().source.value == "MARKET"
+
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
+    assert len(transport.calls) == 1, "Apply added a second request"
     status = page.clock_status()
     assert status.source.value == "MARKET"
     assert status.market_time is not None
@@ -1124,19 +1153,31 @@ def test_apply_is_assessed_against_its_own_fresh_response(qapp):
     assert page.schedule_timing() is not None
 
 
+def test_the_summary_states_the_uncertainty_for_a_market_clock(qapp):
+    transport = offline_transport()
+    page = make_page(qapp, transport=transport)
+
+    sync_clock(page)
+    fill(page, "13:00:00", "13:01:00", "15")
+    apply_schedule(page)
+
+    summary = page.schedule_summary_label.text()
+    assert "+/-" in summary, f"summary hides the band: {summary!r}"
+    assert len(transport.calls) == 1
+
+
 def test_apply_refuses_a_response_that_is_too_old_to_trust(qapp):
     """
-    A body an hour older than the moment we received it is refused.
-
-    Apply must land on the system clock with a visible reason rather than
-    quietly scheduling against a stale reading.
+    A body an hour older than the moment we received it is refused by the
+    sync itself, so Apply never gets to schedule against it.
     """
-    page = make_page(
-        qapp,
-        transport=offline_transport(
-            make_result(headers=market_headers(), text="10/02/2026 11:59:00")
-        ),
+    transport = offline_transport(
+        make_result(headers=market_headers(), text="10/02/2026 11:59:00")
     )
+    page = make_page(qapp, transport=transport)
+    sync_clock(page)
+    assert page.clock_status().source.value == "SYSTEM"
+
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
@@ -1144,10 +1185,14 @@ def test_apply_refuses_a_response_that_is_too_old_to_trust(qapp):
     assert status.source.value == "SYSTEM"
     assert page.schedule_timing() is not None
     assert "unavailable" in status.notice.lower()
+    assert len(transport.calls) == 1, "Apply must not ask again"
 
 
-def test_apply_evaluates_only_after_the_response_arrives(qapp):
-    """The window must not be built while the fetch is still in flight."""
+def test_apply_waits_for_a_sync_that_is_already_in_flight(qapp):
+    """
+    Apply pressed while a sync runs waits for THAT result instead of
+    starting a second request, and never evaluates early.
+    """
     seen = []
 
     def _slow(url, timeout):
@@ -1159,13 +1204,22 @@ def test_apply_evaluates_only_after_the_response_arrives(qapp):
 
     page = make_page(qapp, transport=_slow)
     fill(page, "13:00:00", "13:01:00", "15")
-    apply_schedule(page)
+
+    page._on_sync_clock()          # the sync is now in flight
+    page._on_apply_schedule()      # Apply must wait for its result
+
+    assert page._clock_thread is not None
+    assert page.schedule_timing() is None, "Apply evaluated too early"
+
+    assert page._clock_thread.wait(10_000)
+    _drain_events()
 
     assert seen, "the transport was never used"
     assert all(value is None for value in seen), (
         "the schedule was assessed before the clock response arrived"
     )
     assert page.schedule_timing() is not None
+    assert page.clock_status().source.value == "MARKET"
 
 
 def test_apply_does_not_block_the_gui_thread(qapp):
@@ -1178,6 +1232,8 @@ def test_apply_does_not_block_the_gui_thread(qapp):
     page = make_page(qapp, transport=_slow)
     fill(page, "13:00:00", "13:01:00", "15")
 
+    page._on_sync_clock()
+
     started = _time.monotonic()
     page._on_apply_schedule()
     elapsed = _time.monotonic() - started
@@ -1187,20 +1243,27 @@ def test_apply_does_not_block_the_gui_thread(qapp):
     assert thread is not None
     assert thread.wait(10_000)
     _drain_events()
+    assert page.schedule_timing() is not None
 
 
-def test_apply_falls_back_to_the_system_clock_when_the_refresh_fails(qapp):
+def test_apply_falls_back_to_the_system_clock_when_the_sync_fails(qapp):
     page = make_page(
         qapp,
         transport=fixed_transport(raises=TimeoutError("no route to host")),
     )
+    sync_clock(page)
+    assert page.clock_status().source.value == "SYSTEM"
+
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
     status = page.clock_status()
     assert status.source.value == "SYSTEM"
     assert page.schedule_timing() is not None
-    assert page.schedule_summary_label.text()
+    summary = page.schedule_summary_label.text()
+    assert summary
+    assert "system clock" in summary.lower()
+    assert "unavailable" in status.notice.lower()
 
 
 def test_a_rejected_input_never_starts_a_clock_refresh(qapp):
@@ -1473,16 +1536,6 @@ def test_the_offset_is_reported_with_its_band_not_as_a_bare_number():
     text = sample.offset_text
     assert "+/-" in text, f"offset shown without a band: {text!r}"
     assert sample.uncertainty_seconds > 0
-
-
-def test_the_summary_states_the_uncertainty_for_a_market_clock():
-    transport = offline_transport()
-    page = make_page(qapp, transport=transport)
-    fill(page, "13:00:00", "13:01:00", "15")
-    apply_schedule(page)
-
-    summary = page.schedule_summary_label.text()
-    assert "+/-" in summary, f"summary hides the band: {summary!r}"
 
 
 def test_the_system_clock_says_its_uncertainty_is_unknown():

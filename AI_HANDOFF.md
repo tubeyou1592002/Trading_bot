@@ -2821,7 +2821,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-7 — Schedule & Countdown
 
-**Status:** IN PROGRESS — Task 1 COMPLETED (2026-10-02); Task 2 is next. UI-7 has exactly four implementation tasks. It reuses the existing Block 3 timing contracts and deterministic timestamp generator; it adds no duplicate schedule-generation logic. The existing Block 3 components do not provide a runtime timer/loop, so UI-7 owns the UI-side countdown and due-time coordination.
+**Status:** IN PROGRESS — Tasks 1 and 2 COMPLETED (Task 1: 2026-10-02; Task 2: 2026-10-03); Task 3 is next. UI-7 has exactly four implementation tasks. It reuses the existing Block 3 timing contracts and deterministic timestamp generator; it adds no duplicate schedule-generation logic. The existing Block 3 components do not provide a runtime timer/loop, so UI-7 owns the UI-side countdown and due-time coordination.
 
 **UI-7 Task 1 — Schedule Configuration & Validation**
 - Provide Start Time, End Time, and Interval inputs and an Apply Schedule action.
@@ -2833,12 +2833,12 @@ Next step: UI-4 — Order Queue
 - Show a clear summary of the accepted schedule before it starts.
 
 **UI-7 Task 2 — Countdown & Schedule State**
-- Show the time remaining until the next scheduled timestamp and update it from the target time so UI refresh delays do not accumulate countdown drift.
-- When the site clock is unavailable, invalid, or stale, fall back to the system clock with a soft, non-blocking notice. When valid, fresh site time returns, switch back to the exchange/market clock and notify the user.
-- The fallback system clock is expected to be NTP-disciplined when available; if its synchronization is unavailable, disclose that reduced confidence in the soft notice. Keep application-level corrections gradual and preserve the monotonic schedule cursor.
-- Track clock-source changes and the last dispatched schedule slot so a clock switch cannot cause a duplicate dispatch or a burst of missed slots; recalculate the displayed countdown from the active source.
-- Model the minimum schedule lifecycle needed by Apply Schedule and the countdown; do not add pause/cancel/retry behavior unless separately approved.
-- Once the schedule starts, disable controls that could change the queued orders or schedule inputs; prevent repeated Apply actions from creating duplicate active schedules.
+- Start one non-blocking market-clock sync after the MainWindow is shown, and provide a manual Sync button. Show the source, estimated offset, uncertainty, and monotonic sync age; a sync older than 30 seconds is stale for Apply.
+- Apply validates the inputs but starts no new request: it consumes the most recently completed sync, waits for a sync already in flight, and visibly falls back to the system clock with a soft notice when no fresh successful market sync is available.
+- At Apply, freeze the effective clock time and its monotonic anchor. Later syncs or system wall-clock changes must not move the active countdown.
+- Show the remaining time to the next Block 3-generated timestamp using monotonic elapsed time. Represent configuring, waiting, one-time start-now, counting, stopped, and expired states. Task 2 does not dispatch orders.
+- Immediately after valid Apply, including while waiting for an in-flight sync, lock controls that can change orders, queue, or schedule. The Apply button becomes Stop and is the only enabled control in that set. Stop cancels a pending or active countdown, clears its pending plan, and unlocks controls; expiry also unlocks them.
+- Keep the sync-age display current without making network requests or changing the locked time base/countdown. Do not add pause or retry behavior.
 
 **UI-7 Task 3 — Timed Dispatch Integration**
 - Coordinate the generated timestamps with the existing UI/Core dispatch path and dispatch only when a scheduled time is due, within the configured window.
@@ -2855,6 +2855,8 @@ Next step: UI-4 — Order Queue
 **Boundaries:** UI-7 owns schedule configuration, countdown, and timed invocation of the existing execution path. It does not redesign Block 3 contracts or timestamp generation, create trading logic, bypass Core/SafetyGate/M6-A…M6-E, add retries or order splitting (M6-F), or absorb UI-8 end-to-end Broker-boundary acceptance.
 
 **Task 1 completion record (2026-10-02):** Added `ui/market_clock.py` for the TSETMC clock contract, response/freshness validation, offset uncertainty, application-level bounded correction, monotonic non-rewinding time, and system-clock fallback; added `ui/schedule_settings.py` to parse settings fail-closed and reuse `DispatchTiming` / `TimedDispatchScheduler`; added the Schedule group and asynchronous Apply-time clock refresh to `ui/order_configuration_page.py`; added `test_ui7_task1_schedule_clock.py`. No Core, Block 3, Broker, UI-5, or UI-6 implementation was changed. Verification reported: UI-7 focused suite **102 passed**; UI-1/UI-2.1/UI-3.2/UI-6 regression selection **97 passed**; UI-4/UI-5 runnable subset **155 passed**; offline import guard clean. The baseline selections matched those same counts. Limitations: `test_ui3_1_order_configuration.py` did not complete because `test_5` hangs in this environment, also on baseline; `test_ui5_task4_stage3_task4_ui_table.py` could not run because `nats` is unavailable. Thus full UI-3.1 and UI-5 Stage 3 coverage is not claimed as verified. Same-day Tehran windows only; overnight windows are rejected under the existing Block 3 contract. The real TSETMC endpoint was not contacted in tests; production CDN header behavior remains unverified. `git diff --check` was reported clean for the task changes. UI-7 remains in progress; Task 2 is next.
+
+**Task 2 completion record (2026-10-03):** Added one-shot startup sync from `MainWindow.showEvent`, manual sync/status tracking, and a 30-second monotonic freshness limit. Apply consumes a completed sync or waits for an in-flight one; missing/stale/failed site time falls back to the system clock with a soft notice. The accepted schedule locks the effective current time plus a monotonic anchor, so subsequent wall-clock steps or syncs cannot retarget its countdown. All order/queue/schedule controls lock immediately on Apply, including while waiting for sync; the same button becomes Stop, which cancels pending or active countdown state without dispatching and unlocks controls. Expiry unlocks controls. A one-second display-only timer updates sync freshness and stops on page close. No Core, Block 3, Broker, or order-dispatch logic changed. Verification: `test_ui7_task2_countdown_state.py` **17 passed** in the user's Python 3.13 environment after installing `tzdata`; the latest correction's focused test also passed (**1 passed**). The Task 2 suite includes the selected UI-5/UI-6 subprocess regression checks. The earlier reported selected regressions were UI-1/UI-2.1/UI-3.2/UI-6 **97 passed** and UI-4/UI-5 runnable subset **155 passed**; those broader selections were not rerun after the final Task 2-only fixes. No live TSETMC request was made. UI-7 remains in progress; Task 3 is next.
 
 #### UI-8 — End-to-End Integration & Acceptance
 

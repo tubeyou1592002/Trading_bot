@@ -113,7 +113,7 @@ always fail-closed: without a selected Instrument, side, price,
 quantity, resolved nsc_id and an active account nothing is queued.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from models.order import BUY, SELL, Order
 from models.trading_state import (
@@ -121,7 +121,7 @@ from models.trading_state import (
     TradingStateUnavailable,
 )
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, Qt, Signal, QDateTime
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -147,6 +147,11 @@ from ui.market_clock import (
     MarketClockService,
     MarketClockWorker,
     describe_clock,
+    format_offset,
+    format_uncertainty,
+    SCHEDULE_SYNC_MAX_AGE_SECONDS,
+    TEHRAN_TIMEZONE,
+    ClockSource,
 )
 from ui.order_config_state import (
     SYMBOL_STATUS_NOT_AVAILABLE,
@@ -154,14 +159,32 @@ from ui.order_config_state import (
     OrderConfiguration,
 )
 from ui.schedule_settings import (
+    APPLY_BUTTON_LABEL,
+    COUNTDOWN_LABEL_NO_UPCOMING,
+    COUNTDOWN_LABEL_STOPPED,
+    COUNTDOWN_LABEL_UNAVAILABLE,
     END_INPUT_LABEL,
     INTERVAL_INPUT_LABEL,
     INTERVAL_INPUT_PLACEHOLDER,
     SCHEDULE_GROUP_TITLE,
     SCHEDULE_UNAVAILABLE,
+    SCHEDULE_STATE_CONFIG,
+    SCHEDULE_STATE_COUNTING,
+    SCHEDULE_STATE_EXPIRED,
+    SCHEDULE_STATE_START_NOW,
+    SCHEDULE_STATE_STOPPED,
+    SCHEDULE_STATE_WAITING,
     START_INPUT_LABEL,
+    STOP_BUTTON_LABEL,
+    SYNC_BUTTON_LABEL,
+    SYNC_BUTTON_LABEL_BUSY,
+    SYNC_BUTTON_LABEL_FAILED,
+    SYNC_STATE_FAILED,
+    SYNC_STATE_IN_PROGRESS,
+    SYNC_STATE_NEVER,
     TIME_INPUT_PLACEHOLDER,
     TIMEZONE_NOTE,
+    ScheduleState,
     ScheduleValidationError,
     assess_schedule_window,
     build_dispatch_timing,
@@ -200,6 +223,12 @@ RESULT_SEQUENCE_ROLE = Qt.UserRole + 1
 SEARCH_STATE_IDLE = ""
 SEARCH_STATE_SEARCHING = "Searching…"
 SEARCH_STATE_NO_RESULTS = "No symbols found"
+
+# UI-7 Task 2: how often the DISPLAY of the sync freshness line is
+# re-rendered while a reading ages. This is display-only — it never
+# starts a request — and it is deliberately shorter than the schedule
+# freshness limit so the "expired" wording appears promptly.
+SYNC_FRESHNESS_TICK_MS = 1000
 
 # UI-3.2B — user-facing trading-state labels, rendered ONLY from the
 # real ``TradingState`` the existing project path returned. The status
@@ -723,6 +752,42 @@ class OrderConfigurationPage(QWidget):
         self._schedule_times = ()
         self._schedule_assessment = None
 
+        # --- UI-7 Task 2: schedule lifecycle + countdown -----------------
+        # Locked time base for the active schedule (set at Apply time).
+        # Once locked, subsequent syncs, system-clock steps and clock
+        # service rebuilds do NOT affect the active schedule: the anchors
+        # captured here are the ones the countdown advances from.
+        self._locked_clock_source: Optional[ClockSource] = None
+        self._locked_applied_offset: Optional[timedelta] = None
+        self._locked_uncertainty: Optional[timedelta] = None
+        self._locked_market_time: Optional[datetime] = None
+        self._locked_sync_time: Optional[datetime] = None
+        self._locked_base_time: Optional[datetime] = None
+        self._locked_mono_anchor: Optional[float] = None
+        self._locked_last_now: Optional[datetime] = None
+
+        # Schedule state machine (see ui.schedule_settings for labels)
+        self._schedule_state: str = SCHEDULE_STATE_CONFIG
+        self._countdown_timer: Optional[QTimer] = None
+        # UI-7 Task 2: a LIGHT display-only timer that re-renders the sync
+        # freshness line. It never syncs, never touches the locked time
+        # base and never moves the countdown — see
+        # ``_refresh_sync_freshness_display``.
+        self._sync_freshness_timer: Optional[QTimer] = None
+        self._countdown_target: Optional[datetime] = None  # next run moment
+        # The START_NOW state is a one-shot notice: shown once for a past
+        # start, never re-entered by a later tick.
+        self._start_now_shown: bool = False
+        # While True every order/queue/schedule control of this page is
+        # locked; only the Stop action (the Apply button, relabelled) is
+        # active.
+        self._schedule_locked: bool = False
+
+        # Startup sync is triggered by MainWindow AFTER the window is
+        # shown and the event loop is running — never by this page's own
+        # visibility, and never during construction (offline contract).
+        self._startup_sync_done: bool = False
+
         root_layout.addWidget(form_group)
 
         # ---------------------------------------------
@@ -832,18 +897,52 @@ class OrderConfigurationPage(QWidget):
         schedule_buttons_layout = QHBoxLayout(schedule_buttons)
         schedule_buttons_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.apply_schedule_button = QPushButton("Apply Schedule", schedule_buttons)
-        self.apply_schedule_button.clicked.connect(self._on_apply_schedule)
+        # UI-7 Task 2: ONE button. Before a schedule is accepted it is
+        # "Apply Schedule"; after acceptance it becomes "Stop Schedule"
+        # and is the ONLY enabled button of the order/queue/schedule set.
+        self.apply_schedule_button = QPushButton(
+            APPLY_BUTTON_LABEL, schedule_buttons
+        )
+        self.apply_schedule_button.clicked.connect(
+            self._on_schedule_button_clicked
+        )
         schedule_buttons_layout.addWidget(self.apply_schedule_button)
 
         self.refresh_clock_button = QPushButton("Refresh Clock", schedule_buttons)
         self.refresh_clock_button.clicked.connect(self._on_refresh_clock)
         schedule_buttons_layout.addWidget(self.refresh_clock_button)
+
+        # UI-7 Task 2 — manual sync button
+        self.sync_clock_button = QPushButton(SYNC_BUTTON_LABEL, schedule_buttons)
+        self.sync_clock_button.clicked.connect(self._on_sync_clock)
+        self.sync_clock_button.setToolTip("Force a fresh market clock sync now")
+        schedule_buttons_layout.addWidget(self.sync_clock_button)
+
         schedule_form.addRow(schedule_buttons)
 
         self.clock_status_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.clock_status_label.setWordWrap(True)
         schedule_form.addRow("Clock:", self.clock_status_label)
+
+        # UI-7 Task 2 — the RESULT of the last sync: source, estimated
+        # offset, uncertainty band and freshness. Never millisecond-precise.
+        self.sync_status_label = QLabel(SYNC_STATE_NEVER, self.schedule_group)
+        self.sync_status_label.setWordWrap(True)
+        schedule_form.addRow("Sync:", self.sync_status_label)
+
+        # UI-7 Task 2 — lifecycle state (configuring / waiting / counting /
+        # starting once / stopped / expired).
+        self.schedule_state_label = QLabel(
+            SCHEDULE_STATE_CONFIG, self.schedule_group
+        )
+        self.schedule_state_label.setWordWrap(True)
+        schedule_form.addRow("State:", self.schedule_state_label)
+
+        # UI-7 Task 2 — countdown display for active schedule
+        self.countdown_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
+        self.countdown_label.setWordWrap(True)
+        self.countdown_label.setStyleSheet("font-family: monospace; font-size: 12pt;")
+        schedule_form.addRow("Countdown:", self.countdown_label)
 
         self.schedule_summary_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.schedule_summary_label.setWordWrap(True)
@@ -2503,6 +2602,12 @@ class OrderConfigurationPage(QWidget):
         has_account = self._active_account_record() is not None
         has_instrument = self.config.selected_instrument is not None
 
+        # UI-7 Task 2: while a schedule is accepted the Test action is one
+        # of the locked controls — Stop is the only active button then.
+        if self._schedule_locked:
+            self.test_button.setEnabled(False)
+            return
+
         self.test_button.setEnabled(has_queue and has_account and has_instrument)
 
     # ---------------------------------------------------------
@@ -2568,12 +2673,11 @@ class OrderConfigurationPage(QWidget):
         self._refresh_amounts()
 
     # ---------------------------------------------------------
-    # Schedule & clock (UI-7 Task 1)
+    # Schedule & clock (UI-7 Tasks 1 and 2)
     # ---------------------------------------------------------
-    # Configuration and validation only. Nothing here starts a schedule,
-    # counts down, or sends an order (Task 2 / Task 3). Applying a schedule
-    # validates the inputs through the existing Block 3 ``DispatchTiming``
-    # contract, generates the moments with the existing
+    # Task 1 owns the window configuration and validation: applying a
+    # schedule validates the inputs through the existing Block 3
+    # ``DispatchTiming`` contract, generates the moments with the existing
     # ``TimedDispatchScheduler``, and shows the result before anything runs.
 
     def set_clock_service_factory(self, factory):
@@ -2619,15 +2723,59 @@ class OrderConfigurationPage(QWidget):
             status = self.clock_service().status()
             self._clock_status = status
         self.clock_status_label.setText(describe_clock(status))
+        self.sync_status_label.setText(self._sync_state_text())
+
+    def _sync_state_text(self) -> str:
+        """
+        One line describing the RESULT of the last clock sync.
+
+        Shows the source, the estimated offset, the uncertainty band and
+        the freshness of the reading. Freshness comes from the service's
+        MONOTONIC measurement, so a system-clock step can neither renew a
+        stale reading nor expire a fresh one. A stale, failed or missing
+        reading is never dressed up as a market clock, and no
+        millisecond precision is ever claimed for a second-resolution
+        TSETMC answer.
+        """
+        service = self.clock_service()
+        status = (
+            self._clock_status
+            if self._clock_status is not None
+            else service.status()
+        )
+        # Freshness is always read from the LIVE service, measured on its
+        # monotonic clock, so the line ages honestly between two syncs and
+        # a system-clock step can neither renew a stale reading nor expire
+        # a fresh one.
+        age = service.sync_age_seconds()
+        if age is None:
+            return SYNC_STATE_FAILED if service.last_sync_attempt else SYNC_STATE_NEVER
+        if age > SCHEDULE_SYNC_MAX_AGE_SECONDS:
+            return (
+                f"Last sync {age:.0f}s ago is older than the "
+                f"{SCHEDULE_SYNC_MAX_AGE_SECONDS:.0f}s schedule limit — "
+                f"press «{SYNC_BUTTON_LABEL}» again (system clock in use)"
+            )
+        text = (
+            f"Synced {age:.0f}s ago — source {status.source.value}, "
+            f"offset {format_offset(status.applied_offset)}, "
+            f"uncertainty {format_uncertainty(status.uncertainty)}, "
+            f"{status.precision_note}"
+        )
+        if not service.last_sync_ok:
+            text += " (the latest attempt failed)"
+        return text
 
     def _on_clock_succeeded(self, sample):
         self._clock_status = self.clock_service().observe(sample)
         self._refresh_clock_display()
+        self._on_clock_sync_finished(True)
         self._apply_pending_schedule_if_any()
 
     def _on_clock_failed(self, reason):
         self._clock_status = self.clock_service().mark_market_unavailable(reason)
         self._refresh_clock_display()
+        self._on_clock_sync_finished(False)
         self._apply_pending_schedule_if_any()
 
     def _start_clock_refresh(self):
@@ -2650,6 +2798,7 @@ class OrderConfigurationPage(QWidget):
         worker.clock_failed.connect(self._on_clock_failed)
         worker.finished.connect(self._on_clock_worker_finished)
         self._clock_thread = worker
+        self.sync_status_label.setText(SYNC_STATE_IN_PROGRESS)
         worker.start()
         return True
 
@@ -2664,20 +2813,314 @@ class OrderConfigurationPage(QWidget):
         if worker is not None:
             worker.deleteLater()
 
+    # --- UI-7 Task 2: manual sync & startup sync --------------------------
+
+    def _clock_sync_in_progress(self) -> bool:
+        """True while a clock refresh worker is still running."""
+        thread = self._clock_thread
+        return thread is not None and thread.isRunning()
+
+    def _on_sync_clock(self):
+        """
+        Manual sync button handler. Starts a non-blocking clock refresh.
+
+        The button reads "busy" while the request is in flight and the
+        result (source, estimated offset, uncertainty, freshness) is shown
+        on the Sync line when it lands — success or failure.
+        """
+        if self._start_clock_refresh():
+            self.sync_clock_button.setText(SYNC_BUTTON_LABEL_BUSY)
+            self.sync_clock_button.setEnabled(False)
+
+    def start_startup_sync(self) -> bool:
+        """
+        Start the ONE-SHOT, non-blocking startup clock sync.
+
+        Called by ``MainWindow`` only after the window has been shown and
+        the event loop is running, so importing or constructing the UI
+        stays offline and the sync never depends on the Order
+        Configuration page being opened.
+        """
+        if self._startup_sync_done:
+            return False
+        self._startup_sync_done = True
+        return self._start_clock_refresh()
+
+    def _on_clock_sync_finished(self, success: bool):
+        """
+        Called when a clock refresh (manual, startup or Refresh Clock)
+        completes.
+
+        Restores the sync button — unless a schedule is active, in which
+        case the button stays locked and only Stop remains active.
+        """
+        if not self._schedule_locked:
+            self.sync_clock_button.setEnabled(True)
+        self.sync_clock_button.setText(
+            SYNC_BUTTON_LABEL if success else SYNC_BUTTON_LABEL_FAILED
+        )
+        self._start_sync_freshness_display()
+        self._refresh_clock_display()
+
+    # --- UI-7 Task 2: sync freshness display timer ------------------------
+
+    def _start_sync_freshness_display(self):
+        """
+        Keep the sync freshness line honest between two syncs.
+
+        The line says how long ago the last completed sync was, measured
+        on the monotonic clock. Without a timer it would keep claiming
+        "fresh" long after the reading has actually expired. This timer
+        only RE-RENDERS that text: it starts no request, never reads the
+        clock service's time base and never touches the locked schedule
+        or its countdown.
+        """
+        if self._sync_freshness_timer is None:
+            self._sync_freshness_timer = QTimer(self)
+            self._sync_freshness_timer.setInterval(SYNC_FRESHNESS_TICK_MS)
+            self._sync_freshness_timer.timeout.connect(
+                self._refresh_sync_freshness_display
+            )
+        self._sync_freshness_timer.start()
+
+    def _stop_sync_freshness_display(self):
+        """Stop the freshness timer (the timer object is reused)."""
+        if self._sync_freshness_timer is not None:
+            self._sync_freshness_timer.stop()
+
+    def _refresh_sync_freshness_display(self):
+        """
+        Re-render the sync line from the LIVE monotonic age, nothing else.
+
+        Deliberately does NOT start a sync, does not re-lock or re-freeze
+        any schedule time base and does not touch the countdown — the
+        active schedule's locked clock is completely independent of how
+        fresh the displayed sync reading is.
+        """
+        # While a request is in flight the line already says so; leave
+        # that honest message alone instead of overwriting it.
+        if self._clock_sync_in_progress():
+            return
+        self._refresh_clock_display()
+
+    def closeEvent(self, event):
+        """Stop the display timers when the page is closed/destroyed."""
+        self._stop_sync_freshness_display()
+        self._stop_countdown()
+        super().closeEvent(event)
+
+    # --- UI-7 Task 2: schedule locking & countdown ------------------------
+
+    def _clear_locked_time_base(self):
+        """Drop every value the countdown advances from."""
+        self._locked_clock_source = None
+        self._locked_applied_offset = None
+        self._locked_uncertainty = None
+        self._locked_market_time = None
+        self._locked_sync_time = None
+        self._locked_base_time = None
+        self._locked_mono_anchor = None
+        self._locked_last_now = None
+
+    def _lock_schedule_time_base(self):
+        """
+        Freeze the CURRENT clock state as the time base of the schedule.
+
+        The base is the clock service's EFFECTIVE ``now()`` at Apply —
+        the very value the countdown is measured against — plus the
+        monotonic reading taken at that same instant. Both are COPIED
+        here rather than read back from the service later, so a
+        subsequent sync — which may even rebuild the clock service —
+        can never move the accepted target or restart, rewind or shift
+        the countdown.
+
+        ``now()`` is sampled on purpose instead of re-deriving
+        ``wall_anchor + applied_offset`` here: when a gradual correction
+        has walked the applied offset down, ``now()`` HOLDS at its
+        previous value (the non-rewinding guarantee) while the raw terms
+        already sit behind it. Reconstructing from the raw terms would
+        therefore start the countdown in the past.
+        """
+        service = self.clock_service()
+        status = (
+            self._clock_status
+            if self._clock_status is not None
+            else service.status()
+        )
+        self._locked_clock_source = status.source
+        self._locked_applied_offset = status.applied_offset
+        self._locked_uncertainty = status.uncertainty
+        self._locked_market_time = status.market_time
+        self._locked_sync_time = status.last_successful_sync
+        # Monotonic FIRST, then now(): the elapsed time measured from
+        # this reading can then only be >= 0, so the locked clock can
+        # never start behind the effective time it was locked at.
+        self._locked_mono_anchor = service._mono()
+        self._locked_base_time = service.now()
+        self._locked_last_now = None
+
+    def _get_locked_now_tehran(self) -> datetime:
+        """
+        Current application time on the LOCKED time base.
+
+        Built from the stored effective base time plus the monotonic
+        time elapsed since it was taken, so it advances on the monotonic
+        clock and never jumps because of a later sync, a system-clock
+        step or a fallback.
+        """
+        if (
+            self._locked_base_time is None
+            or self._locked_mono_anchor is None
+        ):
+            return self.clock_service().now_tehran()
+
+        elapsed = self.clock_service()._mono() - self._locked_mono_anchor
+        if elapsed < 0:
+            elapsed = 0.0
+        candidate = self._locked_base_time + timedelta(seconds=elapsed)
+        if self._locked_last_now is not None and candidate < self._locked_last_now:
+            return self._locked_last_now
+        self._locked_last_now = candidate
+        return candidate.astimezone(TEHRAN_TIMEZONE)
+
+    @property
+    def countdown_active(self) -> bool:
+        """True while the countdown timer of an accepted schedule runs."""
+        return self._countdown_timer is not None and self._countdown_timer.isActive()
+
+    def _start_countdown(self):
+        """Start the countdown timer for the accepted schedule."""
+        if self._countdown_timer is None:
+            self._countdown_timer = QTimer(self)
+            self._countdown_timer.setInterval(1000)
+            self._countdown_timer.timeout.connect(self._update_countdown)
+        self._countdown_timer.start()
+        self._update_countdown()
+
+    def _stop_countdown(self):
+        """Stop the countdown timer (the timer object is reused)."""
+        if self._countdown_timer is not None:
+            self._countdown_timer.stop()
+
+    def _update_countdown(self):
+        """
+        Recompute the remaining time from the ACCEPTED target and the
+        internal monotonic clock.
+
+        Because the remaining time is always derived from the locked
+        target minus the monotonic now, a refresh delay never accumulates
+        into the countdown, and a system-clock step, a manual sync, a
+        fallback or a market-clock recovery cannot shift it.
+        """
+        timing = self._schedule_timing
+        if not self._schedule_times or timing is None:
+            self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+            return
+
+        now = self._get_locked_now_tehran()
+        next_run = None
+        for moment in self._schedule_times:
+            if moment > now:
+                next_run = moment
+                break
+
+        if next_run is None:
+            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+            self._finish_schedule(SCHEDULE_STATE_EXPIRED)
+            return
+
+        total_seconds = max(0, int((next_run - now).total_seconds()))
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        self._countdown_target = next_run
+        self.countdown_label.setText(
+            f"Next run in: {hours:02d}:{minutes:02d}:{seconds:02d} "
+            f"(at {next_run.strftime('%H:%M:%S')} Tehran)"
+        )
+
+        if now < timing.start_time:
+            self._set_schedule_state(SCHEDULE_STATE_WAITING)
+        elif now >= timing.end_time:
+            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+            self._finish_schedule(SCHEDULE_STATE_EXPIRED)
+        else:
+            self._set_schedule_state(SCHEDULE_STATE_COUNTING)
+
+    def _set_schedule_state(self, state: str):
+        """Update the lifecycle state and render it on the State row."""
+        self._schedule_state = state
+        self.schedule_state_label.setText(state)
+
+    def _finish_schedule(self, state: str):
+        """
+        End the active schedule: stop the timer, drop the locked time base
+        and the accepted plan, and free every locked control.
+
+        UI-7 Task 2 ONLY cancels the countdown: no order is sent and no
+        dispatch is performed here. Connecting Stop to suppressing later
+        sends belongs to UI-7 Task 3.
+        """
+        self._stop_countdown()
+        self._clear_locked_time_base()
+        self._pending_schedule = None
+        self._countdown_target = None
+        self._start_now_shown = False
+        self._set_schedule_locked(False)
+
+        if state == SCHEDULE_STATE_STOPPED:
+            # A stopped plan is forgotten completely: the next Apply must
+            # not inherit its timer, offset, sync or state.
+            self._schedule_parsed = None
+            self._schedule_timing = None
+            self._schedule_times = ()
+            self._schedule_assessment = None
+            self.countdown_label.setText(COUNTDOWN_LABEL_STOPPED)
+        elif state == SCHEDULE_STATE_EXPIRED:
+            # The expired window stays readable so the user can see what
+            # ran out; only the active runtime state is dropped.
+            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+        else:
+            self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+
+        self._set_schedule_state(state)
+        self._refresh_clock_display()
+
+    def _on_schedule_button_clicked(self):
+        """The single schedule button: Apply before, Stop afterwards."""
+        if self._schedule_locked:
+            self._on_stop_schedule()
+        else:
+            self._on_apply_schedule()
+
+    def _on_stop_schedule(self):
+        """
+        Cancel the active schedule and its countdown immediately.
+
+        Stops the timer, clears the active plan and the locked time base,
+        returns the page to the configuring state and re-enables every
+        locked control. It sends nothing (UI-7 Task 2).
+        """
+        self._finish_schedule(SCHEDULE_STATE_STOPPED)
+
     def _on_apply_schedule(self):
         """
-        Validate the inputs, then evaluate the window on a fresh clock.
+        Validate the inputs, then accept them using the LAST COMPLETED
+        clock sync.
 
-        The user must never silently get a schedule assessed on the system
-        clock while the market clock has never been checked, so Apply
-        refreshes the market clock FIRST — on a worker thread, never on the
-        GUI thread — and evaluates the window only once the answer arrives
-        (valid+fresh, or refused with the system-clock fallback and a soft
-        notice).
+        Apply never starts a network request of its own. Three cases:
+
+          * a sync is still in flight -> Apply waits for that very result;
+          * the last completed sync is fresh (monotonic age inside
+            ``SCHEDULE_SYNC_MAX_AGE_SECONDS``) -> it is consumed as-is;
+          * nothing fresh is available -> the page says so explicitly and
+            falls back to the system clock with a soft notice. Stale or
+            missing market data is never used as if it were current, and
+            no reading is ever invented.
 
         Fail-closed: an incomplete or malformed input produces a visible
-        rejection immediately and never reaches the network; a rejected
-        input never leaves a stale schedule looking accepted.
+        rejection immediately, never reaches the network, and leaves no
+        previously accepted schedule looking active.
         """
         try:
             parsed = parse_schedule_inputs(
@@ -2692,25 +3135,67 @@ class OrderConfigurationPage(QWidget):
             return
 
         self._pending_schedule = parsed
-        # The window is evaluated by ``_apply_pending_schedule_if_any`` from
-        # the worker's completion handler, never inline here: the refresh
-        # may already have finished, and evaluating against a not-yet-
-        # updated clock is exactly the bug this ordering prevents.
-        self._start_clock_refresh()
+        if self._clock_sync_in_progress():
+            # Wait for the result already in flight instead of starting a
+            # second request; the worker's completion handler finishes
+            # this Apply.
+            #
+            # The controls are locked IMMEDIATELY, not when the sync
+            # lands: from this moment the user has a schedule pending,
+            # so every order/queue/schedule control is frozen and the
+            # button becomes Stop. Stop drops ``_pending_schedule`` and
+            # frees the controls, and the landing sync result then finds
+            # nothing pending and can never revive a cancelled plan.
+            self.sync_status_label.setText(SYNC_STATE_IN_PROGRESS)
+            self._set_schedule_locked(True)
+            return
+        self._apply_pending_schedule_if_any()
+
+    def _ensure_usable_clock_for_apply(self, service):
+        """
+        Refuse to schedule against a stale or missing market clock.
+
+        A successful sync whose MONOTONIC age is inside the schedule limit
+        is used unchanged. Otherwise the page states the problem explicitly
+        and falls back to the system clock with a soft notice — the
+        confirmed fallback behaviour. It never fabricates a TSETMC reading
+        and never silently reuses an old one.
+        """
+        if service.is_sync_fresh():
+            return
+        age = service.sync_age_seconds()
+        status = service.status()
+        age_text = f"{age:.0f}s" if age is not None else "no recorded age"
+        if status.source is ClockSource.MARKET:
+            service.note_unavailable(
+                f"the last market clock sync is {age_text} old, older than "
+                f"the {SCHEDULE_SYNC_MAX_AGE_SECONDS:.0f}s schedule limit"
+            )
+        elif status.last_sync_attempt is None:
+            service.note_unavailable(
+                "no market clock sync has completed yet — press the sync "
+                "button before applying"
+            )
+        # A sync that already failed keeps its own, more specific reason.
 
     def _apply_pending_schedule_if_any(self):
         """
-        Evaluate the pending inputs once a clock refresh has completed.
+        Accept the pending inputs once a clock refresh has landed.
 
         Does nothing until a refresh has actually landed, so the window is
-        always assessed against the freshest valid clock state.
+        always evaluated against a real, completed sync result.
+
+        On success this LOCKS the time base, locks every order/queue/
+        schedule control (Stop stays active) and starts the countdown.
         """
         parsed = self._pending_schedule
         if parsed is None:
             return
 
         service = self.clock_service()
-        status = self._clock_status if self._clock_status is not None else service.status()
+        self._ensure_usable_clock_for_apply(service)
+        status = service.status()
+        self._clock_status = status
 
         try:
             now_tehran = service.now_tehran()
@@ -2728,6 +3213,12 @@ class OrderConfigurationPage(QWidget):
         self._schedule_timing = timing
         self._schedule_times = tuple(times)
         self._schedule_assessment = assessment
+        # A new plan never inherits the previous plan's runtime state.
+        self._schedule_state = SCHEDULE_STATE_CONFIG
+        self._start_now_shown = False
+        self._countdown_target = None
+        self._clear_locked_time_base()
+        self._lock_schedule_time_base()
 
         summary = build_schedule_summary(
             parsed,
@@ -2738,15 +3229,84 @@ class OrderConfigurationPage(QWidget):
         )
         self.schedule_summary_label.setText(describe_summary(summary))
 
+        # Lock BEFORE the first tick: an already-expired window finishes
+        # during that tick and must find its controls locked so it can
+        # free them again.
+        self._set_schedule_locked(True)
+        self._start_countdown()
+
+        # START_NOW is a one-shot notice: shown exactly once, never
+        # re-entered by a later tick, and never a dispatch (Task 2).
+        if (
+            self._schedule_locked
+            and assessment.state is ScheduleState.START_NOW
+            and not self._start_now_shown
+        ):
+            self._start_now_shown = True
+            self._set_schedule_state(SCHEDULE_STATE_START_NOW)
+
+        self._refresh_clock_display()
+
     def _clear_accepted_schedule(self):
+        """Forget the accepted schedule entirely and free every control."""
+        self._stop_countdown()
+        self._clear_locked_time_base()
         self._schedule_parsed = None
         self._schedule_timing = None
         self._schedule_times = ()
         self._schedule_assessment = None
+        self._countdown_target = None
+        self._start_now_shown = False
+        self._set_schedule_locked(False)
+        self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+        self._set_schedule_state(SCHEDULE_STATE_CONFIG)
+
+    def _set_schedule_locked(self, locked: bool):
+        """
+        Lock (or release) every control of THIS page that can change an
+        order, the queue or the schedule.
+
+        While locked the Apply button reads "Stop Schedule" and is the
+        ONLY enabled button of that set — order editing, queue changes,
+        Apply, Sync and Refresh are all disabled, and Stop is the single
+        way out.
+        """
+        self._schedule_locked = bool(locked)
+        unlocked = not self._schedule_locked
+
+        self.schedule_start_input.setEnabled(unlocked)
+        self.schedule_end_input.setEnabled(unlocked)
+        self.schedule_interval_input.setEnabled(unlocked)
+        self.sync_clock_button.setEnabled(unlocked)
+        self.refresh_clock_button.setEnabled(unlocked)
+        self.apply_schedule_button.setText(
+            STOP_BUTTON_LABEL if self._schedule_locked else APPLY_BUTTON_LABEL
+        )
+        self.apply_schedule_button.setEnabled(True)
+        self._set_order_controls_enabled(unlocked)
+
+    def _set_order_controls_enabled(self, enabled: bool):
+        """Enable/disable the order and queue controls of this page."""
+        self.symbol_input.setEnabled(enabled)
+        self.results_list.setEnabled(enabled)
+        for button in self.side_buttons.values():
+            button.setEnabled(enabled)
+        self.price_input.setEnabled(enabled)
+        self.quantity_input.setEnabled(enabled)
+        self.add_to_queue_button.setEnabled(enabled)
+        self.queue_list.setEnabled(enabled)
+        if enabled:
+            self._refresh_test_button_state()
+        else:
+            self.test_button.setEnabled(False)
 
     def schedule_state(self):
         """Public read-only access to the accepted schedule (or ``None``)."""
         return self._schedule_assessment
+
+    def schedule_lifecycle_state(self) -> str:
+        """Public read-only access to the displayed lifecycle state."""
+        return self._schedule_state
 
     def schedule_timing(self):
         """Public read-only access to the accepted ``DispatchTiming``."""
