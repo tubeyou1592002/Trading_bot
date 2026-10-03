@@ -2864,16 +2864,28 @@ Next step: UI-4 — Order Queue
 
 #### UI-8 — End-to-End Integration & Acceptance
 
-* تست کامل UI تا Broker boundary
-* تست چند Account
-* تست چند Broker
-* تست Fail-Closed
-* تست M6-A تا M6-E
-* تست Test Mode
-* تست Diagnostic Mode
-* تست Latency
-* بررسی عدم bypass شدن Core / SafetyGate / M6
-* بررسی حفظ Account/Broker identity
+**Status:** NEXT — UI-7 is complete. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
+
+**UI-8 Task 1 — Single-Account / Single-Broker End-to-End Path**
+- Verify the existing UI → TestRunner → Core → Broker boundary using offline doubles; check order input, plan creation, dispatch result, and user-visible result/feedback as one flow.
+- Confirm Test Mode does not mean Live Trading and no real order or network request is made during acceptance tests.
+
+**UI-8 Task 2 — Multi-Account / Multi-Broker Routing and Identity**
+- Verify queued orders reach only their assigned account and broker across the existing dispatch path.
+- Verify account/order identity is preserved through planning, dispatch, result collection, and UI feedback; include mixed destinations and failure cases.
+- Do not redesign the existing Core or UI-7 cadence/fan-out behavior.
+
+**UI-8 Task 3 — Safety Gates, Modes, and Diagnostics**
+- Verify fail-closed behavior and M6-A…M6-E checks at the existing Core/SafetyGate boundary; confirm UI cannot bypass or grant those permissions.
+- Verify Test Mode, Diagnostic Mode, UI-5 feedback, and UI-6 Trace ID/latency presentation together; latency must continue using existing Block 8 data and separate timing layers.
+- Use offline doubles only. Do not enable Live or send a real order.
+
+**UI-8 Task 4 — Regression, Acceptance, and Documentation**
+- Run the relevant UI-1…UI-7, M6, and Block 8 regression suites; record exact commands, pass/fail/deselected counts, and pre-existing limitations.
+- Confirm no UI-5…UI-7 behavior regressed, no Core/SafetyGate/M6 bypass exists, and the UI-to-Broker-boundary acceptance criteria are met.
+- Update current roadmap/status documentation and mark UI-8 complete only after the required acceptance checks pass. If a code or test change is needed, stop and request a separately scoped repair task before changing it.
+
+**UI-8 acceptance boundary:** End at the existing Broker boundary using test doubles; it does not authorize live trading, real broker credentials, or production orders. Central Server, Admin Panel, License/Activation, and multi-user rollout remain later phases.
 
 #### اصول ثابت
 
@@ -2906,6 +2918,6 @@ Next step: UI-4 — Order Queue
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed)`
+`UI / User Application — UI-7 COMPLETE; UI-8 NEXT (End-to-End Integration & Acceptance)`
 
 ---
