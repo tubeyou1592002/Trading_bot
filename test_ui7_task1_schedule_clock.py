@@ -61,6 +61,52 @@ def qapp():
     yield app
 
 
+def _with_valid_destination(page, account_id="ACC-SCHED", broker_name="SIM"):
+    """
+    Give the page a VALID destination set: one account plus one queued order.
+
+    UI-7 Task 3 refuses to activate a schedule whose destination set is
+    not fully valid (empty queue, a missing account, or a broker that
+    disagrees with the account's own broker). These tests are about the
+    schedule clock and the countdown, not about dispatching, so they run
+    against a page that has one usable destination.
+
+    The send path is a double that records its calls, so nothing here ever
+    reaches the real send path.
+    """
+    from models.order import Order
+
+    page.store.add(account_id, broker_name)
+    page.order_queue.enqueue(
+        Order(nsc_id="nsc-scheduled", side=1, price=1000, quantity=10),
+        account_id,
+        broker_name,
+    )
+
+    class _RecordingSendRunner:
+        """A stand-in for the EXISTING send path; fully offline."""
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, entries, account=None):
+            self.calls.append(tuple(entries))
+            return (
+                None,
+                "exec-scheduled",
+                _StubResult(trace_id="trace-scheduled", success=True),
+            )
+
+    class _StubResult:
+        def __init__(self, trace_id, success, message="ok"):
+            self.trace_id = trace_id
+            self.success = success
+            self.message = message
+
+    page.set_test_runner_factory(_RecordingSendRunner)
+    return page
+
+
 def make_page(qapp, now=FIXED_NOW, transport=None):
     """
     A real page whose clock service uses a controlled clock and transport.
@@ -69,6 +115,9 @@ def make_page(qapp, now=FIXED_NOW, transport=None):
     offline stub serving a valid fresh reading, so no test can reach the
     real network by accident; the system and monotonic clocks are frozen
     so that "no test time elapsed" comparisons are exact.
+
+    The page is given a valid destination set, because a schedule can no
+    longer be applied without one (UI-7 Task 3).
     """
     from ui.account_store import AccountStore
     from ui.market_clock import MarketClockService
@@ -85,7 +134,7 @@ def make_page(qapp, now=FIXED_NOW, transport=None):
     page.set_clock_transport(
         offline_transport() if transport is None else transport
     )
-    return page
+    return _with_valid_destination(page)
 
 
 def stepped_service(wall, mono):
@@ -122,10 +171,17 @@ def sample_at(offset_seconds, market_hour=12, market_minute=59, market_second=0)
     )
 
 
-def fill(page, start, end, interval):
+def fill(page, start, end, interval, dispatch_interval_ms="50"):
+    """Fill the schedule inputs.
+
+    ``dispatch_interval_ms`` is the UI-7 Task 3 dispatch cadence. It is a
+    REQUIRED positive whole number of milliseconds, so the helper supplies a
+    valid default and the Task 3 tests pass their own value explicitly.
+    """
     page.schedule_start_input.setText(start)
     page.schedule_end_input.setText(end)
     page.schedule_interval_input.setText(interval)
+    page.dispatch_interval_input.setText(dispatch_interval_ms)
 
 
 def apply_schedule(page):
@@ -882,6 +938,14 @@ def test_main_window_construction_stays_offline_with_the_schedule_group():
 # ============================================================
 
 def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
+    """
+    Apply starts NO send - and with a real queued order in place.
+
+    The page carries a valid destination set, so this still proves the
+    thing it is about: applying a schedule dispatches nothing and leaves
+    the queue untouched, rather than passing trivially because the queue
+    was empty and the schedule had been refused.
+    """
     from core.order_queue import OrderQueue
 
     from ui.account_store import AccountStore
@@ -896,13 +960,18 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
     service = MarketClockService(now_utc=(lambda: FIXED_NOW))
     page = OrderConfigurationPage(store, order_queue=queue)
     page.set_clock_service_factory(lambda _t: service)
+    _with_valid_destination(page, account_id="ACC-QUEUED", broker_name="SIM")
+
+    queued_before = list(queue.list_pending())
+    assert queued_before, "the page needs a real queued order for this test"
 
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
+    assert page.countdown_active, page.schedule_summary_label.text()
     assert page.config.selected_instrument is None
-    assert queue.list_pending() == []
-    assert page.queue_list.count() == 0
+    # The very same entries, untouched - nothing removed or consumed.
+    assert queue.list_pending() == queued_before
     assert page.order_log.rows() == []
 
 

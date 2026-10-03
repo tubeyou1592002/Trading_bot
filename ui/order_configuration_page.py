@@ -113,6 +113,7 @@ always fail-closed: without a selected Instrument, side, price,
 quantity, resolved nsc_id and an active account nothing is queued.
 """
 
+import threading
 from datetime import datetime, timedelta
 
 from models.order import BUY, SELL, Order
@@ -157,6 +158,15 @@ from ui.order_config_state import (
     SYMBOL_STATUS_NOT_AVAILABLE,
     OrderConfigError,
     OrderConfiguration,
+)
+from ui.schedule_dispatcher import (
+    EXECUTION_INTERVAL_LABEL,
+    EXECUTION_INTERVAL_PLACEHOLDER,
+    DispatchIntervalError,
+    DispatchTarget,
+    DispatchTargetSetError,
+    PeriodicScheduleDispatcher,
+    parse_execution_interval_ms,
 )
 from ui.schedule_settings import (
     APPLY_BUTTON_LABEL,
@@ -450,6 +460,22 @@ def _result_reason_for_status(status):
     if status == RESULT_STATUS_BLOCKED:
         return RESULT_REASON_BLOCKED
     return RESULT_REASON_FAILED
+
+
+def _account_record_or_none(account_store, account_id):
+    """
+    The existing ``AccountRecord`` for ``account_id``, or ``None``.
+
+    ``AccountStore.get`` raises ``AccountStoreError`` for an unknown id and
+    never guesses or substitutes one. Dispatch validation needs to tell an
+    unknown account apart from a real one, so the store's own error is
+    turned into the ``None`` here - and ONLY here. The account is still
+    never invented or resolved from anything else.
+    """
+    try:
+        return account_store.get(account_id)
+    except ValueError:  # AccountStoreError — never guess an account
+        return None
 
 
 def _default_order_identity_resolver(account_store):
@@ -769,6 +795,19 @@ class OrderConfigurationPage(QWidget):
         # Schedule state machine (see ui.schedule_settings for labels)
         self._schedule_state: str = SCHEDULE_STATE_CONFIG
         self._countdown_timer: Optional[QTimer] = None
+        # --- UI-7 Task 3: periodic dispatch -------------------------------
+        # The frozen send set + its destinations, fixed at Apply. Each due
+        # moment the dispatcher fans one send out per destination broker.
+        self._dispatcher: Optional[PeriodicScheduleDispatcher] = None
+        self._dispatch_interval_ms: Optional[float] = None
+        self._pending_dispatch_interval_ms: Optional[float] = None
+        self._dispatch_cursor: int = 0
+        self._dispatch_turns = ()
+        self._dispatch_turns_lock = threading.Lock()
+        # The ms-cadence dispatch loop runs on this worker thread, so no
+        # send and no wait for a broker answer ever blocks the UI thread.
+        self._dispatch_thread = None
+        self._dispatch_stop_event = None
         # UI-7 Task 2: a LIGHT display-only timer that re-renders the sync
         # freshness line. It never syncs, never touches the locked time
         # base and never moves the countdown — see
@@ -892,6 +931,17 @@ class OrderConfigurationPage(QWidget):
         self.schedule_interval_input = QLineEdit(self.schedule_group)
         self.schedule_interval_input.setPlaceholderText(INTERVAL_INPUT_PLACEHOLDER)
         schedule_form.addRow(INTERVAL_INPUT_LABEL, self.schedule_interval_input)
+
+        # UI-7 Task 3: the DISPATCH interval, in MILLISECONDS. The unit is
+        # explicit in the label and the placeholder so a millisecond value
+        # can never be read as a second value.
+        self.dispatch_interval_input = QLineEdit(self.schedule_group)
+        self.dispatch_interval_input.setPlaceholderText(
+            EXECUTION_INTERVAL_PLACEHOLDER
+        )
+        schedule_form.addRow(
+            EXECUTION_INTERVAL_LABEL, self.dispatch_interval_input
+        )
 
         schedule_buttons = QWidget(self.schedule_group)
         schedule_buttons_layout = QHBoxLayout(schedule_buttons)
@@ -2906,10 +2956,319 @@ class OrderConfigurationPage(QWidget):
     def closeEvent(self, event):
         """Stop the display timers when the page is closed/destroyed."""
         self._stop_sync_freshness_display()
+        # Task 3: closing the page stops STARTING new dispatch turns and
+        # wakes the worker, so no send is ever started after the page goes.
+        self._stop_dispatcher()
         self._stop_countdown()
         super().closeEvent(event)
 
-    # --- UI-7 Task 2: schedule locking & countdown ------------------------
+    # --- UI-7 Task 3: periodic, concurrent dispatch ------------------------
+
+    def _dispatch_set_rejection(self):
+        """
+        Why this send set may NOT be scheduled, or ``None`` when it may.
+
+        The WHOLE destination set is validated, fail-closed, BEFORE the
+        schedule is locked and before any dispatch worker is started:
+
+          * an EMPTY queue has no destination at all, so there is nothing
+            to schedule;
+          * an order whose account is not (or no longer) in the existing
+            account store has no valid destination;
+          * an order whose registered broker disagrees with the broker its
+            account is bound to points at the wrong broker, and the
+            existing send path fail-closes on that anyway.
+
+        A single unusable destination rejects the WHOLE schedule. The
+        valid orders beside it are NEVER sent as a silent partial set,
+        and nothing is ever resolved, inferred or fabricated here to make
+        a broken binding look usable.
+        """
+        entries = tuple(self.order_queue.list_pending())
+        if not entries:
+            return (
+                "the order queue is empty — add at least one order before "
+                "scheduling a dispatch"
+            )
+        store = self.store
+        for entry in entries:
+            record = _account_record_or_none(store, entry.account_id)
+            if record is None or record.account is None:
+                return (
+                    f"queued order {getattr(entry.order, 'nsc_id', entry)} "
+                    f"has no valid account ({entry.account_id}) — "
+                    f"add that account first"
+                )
+            if record.broker_name != entry.broker_name:
+                return (
+                    f"queued order {getattr(entry.order, 'nsc_id', entry)} "
+                    f"is registered for broker {entry.broker_name!r} but "
+                    f"account {entry.account_id} is bound to "
+                    f"{record.broker_name!r}"
+                )
+        return None
+
+    def _frozen_dispatch_targets(self):
+        """
+        The pending queue entries, each bound to ITS OWN broker + account.
+
+        Task 3 fans out per broker, so unlike the single-batch Test action
+        the pending entries are grouped by their own frozen binding. The
+        ``Account`` object comes from the existing account store, verbatim.
+
+        The set was already validated as a WHOLE by
+        ``_dispatch_set_rejection`` before the schedule was locked, so this
+        never drops an entry: an order that could not be resolved rejects
+        the entire schedule instead of being silently omitted, which would
+        send a partial set the user never asked for.
+        """
+        targets = []
+        store = self.store
+        for entry in self.order_queue.list_pending():
+            record = _account_record_or_none(store, entry.account_id)
+            if record is None or record.account is None:
+                raise DispatchTargetSetError(
+                    f"queued order {getattr(entry.order, 'nsc_id', entry)} "
+                    f"has no valid account ({entry.account_id})"
+                )
+            targets.append(
+                DispatchTarget(
+                    entry=entry,
+                    account_id=entry.account_id,
+                    broker_name=entry.broker_name,
+                    account=record.account,
+                )
+            )
+        return tuple(targets)
+
+    def _freeze_dispatch_set(self):
+        """
+        Freeze the send set, its destinations and the cadence at Apply.
+
+        The millisecond interval was already validated fail-closed by
+        ``_on_apply_schedule`` (an empty, zero, negative, decimal or
+        malformed value rejects the Apply and dispatches nothing), so it is
+        consumed here as milliseconds and never as seconds.
+
+        The reference for the due times is UI-7 Task 2's LOCKED base (the
+        effective clock time plus its monotonic anchor), so the due moments
+        stay anchored even if a later sync moves the displayed clock.
+
+        Returns ``True`` when a dispatch run was started. A schedule with
+        no valid destination set freezes nothing, starts no worker and
+        sends nothing.
+        """
+        interval_ms = self._pending_dispatch_interval_ms
+        if interval_ms is None:  # fail-closed: nothing is frozen or sent
+            self._stop_dispatcher()
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self._pending_dispatch_interval_ms = None
+            return False
+
+        # Defence in depth: the set was checked before the lock, and it is
+        # checked again here so no code path can ever freeze or start a
+        # worker over an unvalidated set.
+        rejection = self._dispatch_set_rejection()
+        if rejection is not None:
+            self._stop_dispatcher()
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self._pending_dispatch_interval_ms = None
+            self.schedule_summary_label.setText(
+                f"Schedule rejected — {rejection}"
+            )
+            return False
+
+        targets = self._frozen_dispatch_targets()
+        dispatcher = PeriodicScheduleDispatcher(
+            runner_factory=self._new_send_runner,
+            mono_clock=self.clock_service()._mono,
+        )
+        timing = self._schedule_timing
+        window = (
+            (timing.start_time, timing.end_time)
+            if timing is not None
+            else None
+        )
+        dispatcher.freeze(
+            targets=targets,
+            interval_ms=interval_ms,
+            locked_base=self._locked_base_time,
+            locked_mono=self._locked_mono_anchor,
+            window=window,
+        )
+        self._dispatcher = dispatcher
+        self._dispatch_interval_ms = interval_ms
+        self._pending_dispatch_interval_ms = None
+        self._dispatch_cursor = 0
+        self._dispatch_turns = ()
+        self._start_dispatch_worker(dispatcher)
+        return True
+
+    def _stop_dispatcher(self):
+        """
+        Stop STARTING new dispatch turns.
+
+        Requests already handed to the existing send path are never
+        force-cancelled: their outcome is collected through the normal
+        result path into their own turn record.
+        """
+        if self._dispatcher is not None:
+            self._dispatcher.stop()
+        self._stop_dispatch_worker()
+        self._dispatcher = None
+        self._dispatch_interval_ms = None
+        self._pending_dispatch_interval_ms = None
+        # Task 2's rule, applied to Task 3: a stopped run is forgotten
+        # completely, so the next Apply inherits no turn, no cadence and
+        # no cursor from it.
+        self._dispatch_cursor = 0
+        with self._dispatch_turns_lock:
+            self._dispatch_turns = ()
+
+    def _new_send_runner(self):
+        """
+        Build ONE INDEPENDENT runner instance for a single group/turn send.
+
+        The existing send path (``ui.test_runner.TestRunner``) carries
+        per-run mutable state — ``last_result``, ``last_execution_id``,
+        ``last_order_results``, ``last_report`` — so a SINGLE shared
+        instance would let concurrent groups/turns overwrite each other's
+        results. Every send therefore gets its own instance from the
+        existing factory.
+
+        The instance is built over the SAME existing send path, so the plan
+        build, the SafetyGate, the live-permission bridge and the Block 8
+        measurement are all unchanged, and the broker API is still reached
+        only through the Core — never directly from the UI.
+        """
+        factory = self._test_runner_factory
+        if factory is None:
+            raise RuntimeError("no send path is wired")
+        return factory()
+
+    # -- the dispatch worker (never the UI thread) -------------------------
+
+    def _start_dispatch_worker(self, dispatcher):
+        """
+        Run the ms-cadence clock OFF the UI thread.
+
+        This coordinator waits only for each due time. It hands each due
+        turn to its own worker and immediately resumes the cadence; it never
+        waits for that turn's broker responses before starting the next one.
+        """
+        self._stop_dispatch_worker()
+        stop_event = threading.Event()
+        self._dispatch_stop_event = stop_event
+        cursor = 0
+
+        def _loop():
+            index = cursor
+            while not stop_event.is_set():
+                dispatcher_obj = self._dispatcher
+                if dispatcher_obj is None or dispatcher_obj.stopped:
+                    break
+                mono = dispatcher_obj.mono_now()
+
+                # The window has closed: nothing more is ever sent.
+                if not dispatcher_obj.index_in_window(index):
+                    break
+
+                due = dispatcher_obj.due_mono_for_turn(index)
+                # Wait until this due time arrives. A Stop wakes us at once.
+                while not stop_event.is_set():
+                    remaining = due - dispatcher_obj.mono_now()
+                    if remaining <= 0:
+                        break
+                    stop_event.wait(min(remaining, 0.05))
+                if stop_event.is_set():
+                    break
+
+                now_mono = dispatcher_obj.mono_now()
+                # Bind the existing feedback signals lazily at the FIRST
+                # scheduled send, before handing off the turn. Binding is
+                # idempotent and never waits for a broker response.
+                self._ensure_feedback_binding()
+                # Each turn's worker may wait for responses; this coordinator
+                # does not. Therefore a pending response cannot delay the
+                # next due tick. Missed machine-level ticks remain skipped,
+                # never replayed as a burst.
+                turn_thread = threading.Thread(
+                    target=self._service_dispatch_turn,
+                    args=(dispatcher_obj, now_mono, index),
+                    name=f"ui7-turn-{index}",
+                    daemon=True,
+                )
+                turn_thread.start()
+                index += 1
+
+        thread = threading.Thread(
+            target=_loop, name="ui7-dispatch", daemon=True
+        )
+        self._dispatch_thread = thread
+        thread.start()
+
+    def _service_dispatch_turn(self, dispatcher, now_mono, index):
+        """Wait for one turn's responses away from the cadence/UI threads."""
+        record = dispatcher.service_due_turn(now_mono, index)
+        if record is not None:
+            self._append_dispatch_turn(record, dispatcher)
+
+    def _append_dispatch_turn(self, record, dispatcher=None):
+        """Collect completed results without mixing runs or touching widgets."""
+        with self._dispatch_turns_lock:
+            if dispatcher is not None and self._dispatcher is not dispatcher:
+                return
+            self._dispatch_turns = tuple(
+                sorted(
+                    self._dispatch_turns + (record,),
+                    key=lambda item: item.turn_index,
+                )
+            )
+
+    def _stop_dispatch_worker(self):
+        """Wake and stop the dispatch worker; it never blocks the caller."""
+        stop_event = self._dispatch_stop_event
+        if stop_event is not None:
+            stop_event.set()
+        self._dispatch_stop_event = None
+        self._dispatch_thread = None
+
+    def _service_due_dispatch_turns(self):
+        """
+        Service ONE due time of the ms cadence, synchronously.
+
+        This exists for deterministic testing and for any caller that
+        wants to step the cadence itself. The page's own run does NOT use
+        it: the live cadence runs on the worker thread instead, so the UI
+        is never blocked here.
+        """
+        dispatcher = self._dispatcher
+        if dispatcher is None:
+            return ()
+
+        index = self._dispatch_cursor
+        if not dispatcher.index_in_window(index):
+            return ()
+
+        record = dispatcher.service_due_turn(dispatcher.mono_now(), index)
+        # The cursor only ever moves forward, and only past a due time that
+        # was actually considered, so no due time is serviced twice.
+        self._dispatch_cursor = index + 1
+        if record is not None:
+            self._append_dispatch_turn(record, dispatcher)
+        return (record,) if record is not None else ()
+
+    @property
+    def dispatch_turns(self):
+        """The dispatch turns of the active run (Task 3 scheduling log)."""
+        with self._dispatch_turns_lock:
+            return self._dispatch_turns
+
+    @property
+    def dispatch_interval_ms(self):
+        return self._dispatch_interval_ms
 
     def _clear_locked_time_base(self):
         """Drop every value the countdown advances from."""
@@ -3017,6 +3376,11 @@ class OrderConfigurationPage(QWidget):
             self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
             return
 
+        # UI-7 Task 3 NOTE: dispatch turns are NOT serviced here. They run
+        # on their own worker thread (see ``_start_dispatch_worker``), so
+        # the countdown tick stays pure UI work and never waits for a
+        # broker answer.
+
         now = self._get_locked_now_tehran()
         next_run = None
         for moment in self._schedule_times:
@@ -3062,6 +3426,7 @@ class OrderConfigurationPage(QWidget):
         sends belongs to UI-7 Task 3.
         """
         self._stop_countdown()
+        self._stop_dispatcher()
         self._clear_locked_time_base()
         self._pending_schedule = None
         self._countdown_target = None
@@ -3128,10 +3493,36 @@ class OrderConfigurationPage(QWidget):
                 self.schedule_end_input.text(),
                 self.schedule_interval_input.text(),
             )
-        except ScheduleValidationError as exc:
+            # UI-7 Task 3: the dispatch interval is validated HERE, with
+            # the other inputs, so a bad millisecond value rejects the
+            # Apply exactly like a bad time does — fail-closed, before
+            # anything is frozen, locked or dispatched. It is a whole
+            # number of MILLISECONDS and is never read as seconds.
+            self._pending_dispatch_interval_ms = parse_execution_interval_ms(
+                self.dispatch_interval_input.text()
+            )
+            # UI-7 Task 3: the send set is validated HERE, with the other
+            # inputs, BEFORE anything is locked or any worker is started.
+            # An empty queue, an order with no valid account, or an order
+            # whose broker disagrees with its account's broker rejects the
+            # WHOLE schedule: nothing is locked, no worker starts, no turn
+            # is created and ``runner.run()`` is never reached. The valid
+            # orders beside a broken one are never sent as a silent partial
+            # set.
+            target_rejection = self._dispatch_set_rejection()
+        except (ScheduleValidationError, DispatchIntervalError) as exc:
             self._clear_accepted_schedule()
             self._pending_schedule = None
             self.schedule_summary_label.setText(f"Schedule rejected — {exc}")
+            return
+
+        if target_rejection is not None:
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self._pending_dispatch_interval_ms = None
+            self.schedule_summary_label.setText(
+                f"Schedule rejected — {target_rejection}"
+            )
             return
 
         self._pending_schedule = parsed
@@ -3219,6 +3610,12 @@ class OrderConfigurationPage(QWidget):
         self._countdown_target = None
         self._clear_locked_time_base()
         self._lock_schedule_time_base()
+        # The queue/account set may have changed while Apply waited for a
+        # clock sync. Freezing repeats destination validation; if it fails,
+        # the helper clears the accepted state and we must not continue by
+        # locking the page or starting a countdown without a dispatcher.
+        if not self._freeze_dispatch_set():
+            return
 
         summary = build_schedule_summary(
             parsed,
@@ -3250,6 +3647,7 @@ class OrderConfigurationPage(QWidget):
     def _clear_accepted_schedule(self):
         """Forget the accepted schedule entirely and free every control."""
         self._stop_countdown()
+        self._stop_dispatcher()
         self._clear_locked_time_base()
         self._schedule_parsed = None
         self._schedule_timing = None
@@ -3277,6 +3675,7 @@ class OrderConfigurationPage(QWidget):
         self.schedule_start_input.setEnabled(unlocked)
         self.schedule_end_input.setEnabled(unlocked)
         self.schedule_interval_input.setEnabled(unlocked)
+        self.dispatch_interval_input.setEnabled(unlocked)
         self.sync_clock_button.setEnabled(unlocked)
         self.refresh_clock_button.setEnabled(unlocked)
         self.apply_schedule_button.setText(

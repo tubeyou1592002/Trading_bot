@@ -174,6 +174,51 @@ class Clock:
         self.wall = self.wall + timedelta(seconds=seconds)
 
 
+def _with_valid_destination(page, account_id="ACC-SCHED", broker_name="SIM"):
+    """
+    Give the page a VALID destination set: one account plus one queued order.
+
+    UI-7 Task 3 refuses to activate a schedule whose destination set is
+    not fully valid (empty queue, a missing account, or a broker that
+    disagrees with the account's own broker). These tests are about the
+    countdown and the locked controls, not about dispatching, so they run
+    against a page that has one usable destination.
+
+    The send path is a double, so nothing here ever reaches the real one.
+    """
+    from models.order import Order
+
+    page.store.add(account_id, broker_name)
+    page.order_queue.enqueue(
+        Order(nsc_id="nsc-scheduled", side=1, price=1000, quantity=10),
+        account_id,
+        broker_name,
+    )
+
+    class _StubResult:
+        def __init__(self, trace_id, success, message="ok"):
+            self.trace_id = trace_id
+            self.success = success
+            self.message = message
+
+    class _RecordingSendRunner:
+        """A stand-in for the EXISTING send path; fully offline."""
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, entries, account=None):
+            self.calls.append(tuple(entries))
+            return (
+                None,
+                "exec-scheduled",
+                _StubResult(trace_id="trace-scheduled", success=True),
+            )
+
+    page.set_test_runner_factory(_RecordingSendRunner)
+    return page
+
+
 def make_page(qapp, transport=None, clock=None):
     """
     A real page whose clock service is driven by a test-owned ``Clock``.
@@ -198,6 +243,7 @@ def make_page(qapp, transport=None, clock=None):
         offline_transport() if transport is None else transport
     )
     page.clock = clock
+    _with_valid_destination(page)
     PAGES.append(page)
     return page
 
@@ -219,10 +265,17 @@ def _stop_lingering_schedules():
     PAGES.clear()
 
 
-def fill(page, start, end, interval):
+def fill(page, start, end, interval, dispatch_interval_ms="50"):
+    """Fill the schedule inputs.
+
+    ``dispatch_interval_ms`` is the UI-7 Task 3 dispatch cadence. It is a
+    REQUIRED positive whole number of milliseconds, so the helper supplies a
+    valid default and the Task 3 tests pass their own value explicitly.
+    """
     page.schedule_start_input.setText(start)
     page.schedule_end_input.setText(end)
     page.schedule_interval_input.setText(interval)
+    page.dispatch_interval_input.setText(dispatch_interval_ms)
 
 
 def sync_clock(page):
