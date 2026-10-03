@@ -2864,7 +2864,7 @@ Next step: UI-4 — Order Queue
 
 #### UI-8 — End-to-End Integration & Acceptance
 
-**Status:** IN PROGRESS — UI-7 is complete; UI-8 Tasks 1 and 2 are complete, and Task 3 is next. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
+**Status:** IN PROGRESS — UI-7 is complete; UI-8 Tasks 1–3 are complete, and Task 4 is next. UI-8 is the final integration and acceptance phase before Central Server work. UI-8 has exactly four implementation/verification tasks:
 
 **UI-8 Task 1 — Single-Account / Single-Broker End-to-End Path**
 - Verify the existing UI → TestRunner → Core → Broker boundary using offline doubles; check order input, plan creation, dispatch result, and user-visible result/feedback as one flow.
@@ -2890,6 +2890,8 @@ Next step: UI-4 — Order Queue
 **UI-8 Task 1 completion record (2026-10-03):** Added `test_ui8_task1_single_broker_e2e.py`, a focused offline end-to-end test for one order, one account, and one broker. The test drives the real OrderConfigurationPage queue and Test action through TestRunner, DispatchIntegration, DispatchCore, OrderEngine, and SimulationBroker; checks order/account/broker identity, exactly one dry-run broker call (`live=False`), and the user-visible result; and blocks real broker/network construction paths. It does not require a SafetyGate to be attached, so it does not depend on the pre-existing uncommitted `ui/test_runner.py` change. Reported verification: focused test **1 passed**; focused test plus UI-5 Task 2/3 result tests **42 passed**; test also passed from a temporary copy of committed HEAD without the local `ui/test_runner.py` modification. The user-facing environment could not independently rerun the test because Python is unavailable there. No production code, configuration, or existing test was changed; no live order or network request was made. Task 1 is complete; UI-8 remains in progress and Task 2 is next.
 
 **UI-8 Task 2 completion record (2026-10-03):** Added `test_ui8_task2_multi_account_multi_broker_e2e.py` with two focused offline tests. The routing test uses the real page queue/Test action, TestRunner, Core, OrderEngine, and two simulation broker/provider pairs to verify three orders across two accounts and two brokers in separate supported single-account passes; order identity, destination binding, per-broker call counts, dry-run results, and UI result attribution are checked. A second test builds a mixed-account/mixed-broker queue and records the existing fail-closed behavior: the page skips the run with its current message, the runner rejects the mixed entries, neither simulator receives an order, and the queue remains intact. **A single Test pass over a mixed-destination queue is not supported by the current product.** This limitation is documented, not bypassed or changed; enabling mixed-queue dispatch requires a separately scoped product decision and implementation. Reported verification: Task 2 file **2 passed**; Task 1 + Task 2 files **3 passed**. No production code, configuration, or other test was changed; no real broker, network, or live order was used. Task 2 verification is complete; Task 3 is next; UI-8 remains in progress.
+
+**UI-8 Task 3 completion record (2026-10-03):** Added `test_ui8_task3_safety_modes_diagnostics.py` with three focused offline tests. Using the real UI/TestRunner/Core path and SimulationHarness, the tests verify dry-run behavior, actual same-run Trace ID and Block 8 timing presentation in Diagnostic Mode, hiding technical details in Normal Mode, stale diagnostic data clearing after a failed run, and an actual M6-C rejection before broker placement. Mode changes leave the order log, queue, and result rows unchanged. Network and real-broker entry points are guarded; no live order is used. Reported verification: **3 passed**. The unavailable/cross-clock application-side timing branch did not arise in this real run and remains covered by the existing UI-6 fixture tests; this is recorded as a limitation, not as real-run evidence. No production or other test file changed. Task 3 is complete; Task 4 is next; UI-8 remains in progress.
 
 #### اصول ثابت
 
@@ -2922,6 +2924,6 @@ Next step: UI-4 — Order Queue
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — UI-7 COMPLETE; UI-8 IN PROGRESS (Tasks 1–2 complete; Task 3 next)`
+`UI / User Application — UI-7 COMPLETE; UI-8 IN PROGRESS (Tasks 1–3 complete; Task 4 next)`
 
 ---
