@@ -2940,12 +2940,18 @@ Next step: UI-4 — Order Queue
 | UI-9.2 | Order page: two columns + bottom tables + inner `QScrollArea` | COMPLETED — verified |
 | UI-9.2b | Queue status moved into its own bordered group box | COMPLETED — verified |
 | UI-9.3 | Persian localization, RTL, digit policy, glyph fixes | COMPLETED — verified |
-| UI-9.4 | Inline validation errors instead of modal dialogs | NOT STARTED |
+| UI-9.4 | Inline validation errors instead of modal dialogs | COMPLETED — verified |
 | UI-9.5 | Propagate the style to the other pages + documentation | NOT STARTED |
 
 **Verified results (Architect, 2026-10-04, independent runs):**
 - mandated baseline: **310 passed, 2 deselected, EXIT=0**
-- **all 30 `test_ui*.py` files: 563 passed, 2 deselected, EXIT=0** — the whole UI suite is green
+- **all 30 `test_ui*.py` files, with no deselection: 565 passed, 0 failed, EXIT=0** — the whole UI suite is green
+- **the two long-standing modal-dialog hangs are fixed.** `test_ui3_1_order_configuration.py` now runs with
+  no deselect flags at all (32 passed, 0 deselected). `test_5_quantity_enter_and_store` and
+  `test_extra_page_preserves_state_on_fractional_input` had been deselected in every run since UI-7;
+  they now pass. Any earlier runbook that deselects them is obsolete.
+- **no `QMessageBox` call site remains in `ui/`** — validation errors are inline messages styled from the
+  theme's danger token, empty and hidden when there is no error, so error-free layout is unchanged
 - two pre-existing Block 8 `broker_received_at` failures remain; they are unrelated to UI-9
 - `core/` order path untouched; `ui/test_runner.py` still carries only its own pre-existing
   uncommitted change (23+/10−), which is **not** part of UI-9

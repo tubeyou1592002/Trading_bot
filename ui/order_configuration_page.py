@@ -136,7 +136,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -792,6 +791,21 @@ class OrderConfigurationPage(QWidget):
         self.test_button.setEnabled(False)
         self.test_button.clicked.connect(self._on_test_toggled)
         form_grid.addWidget(self.test_button, 4, 2)
+
+        # --- Inline validation error (UI-9.4) ------------------------
+        # ONE message line for the whole order form, directly under it.
+        # It replaces the three former blocking QMessageBox pop-ups
+        # (side / price / quantity) with an in-place message, so a bad
+        # value no longer opens a modal window. Its colour comes from
+        # the ui/theme.py danger role (the "role" property below) — no
+        # colour or spacing is invented here. It is empty and hidden
+        # while there is nothing to report, so the normal layout is
+        # unchanged.
+        self.validation_error_label = QLabel("", form_group)
+        self.validation_error_label.setProperty("role", "danger")
+        self.validation_error_label.setWordWrap(True)
+        self.validation_error_label.setVisible(False)
+        form_grid.addWidget(self.validation_error_label, 5, 0, 1, 4)
 
         # Internal Test Mode state — UI-local only, initialized OFF.
         self._test_mode = False
@@ -2870,16 +2884,44 @@ class OrderConfigurationPage(QWidget):
     # Side / Price / Quantity
     # ---------------------------------------------------------
 
+    # ---------------------------------------------------------
+    # Inline validation message (UI-9.4)
+    # ---------------------------------------------------------
+
+    def _show_validation_error(self, message):
+        """
+        Show one inline error on the order form (UI-9.4).
+
+        Replaces the former blocking ``QMessageBox``: the message is the
+        same Persian ``STRINGS.DIALOG_*`` text the dialog carried. A new
+        error simply replaces the previous one.
+        """
+        self.validation_error_label.setText(message)
+        self.validation_error_label.setVisible(bool(message))
+
+    def _clear_validation_error(self):
+        """
+        Clear the inline error after a successful action (UI-9.4).
+
+        The label is emptied *and* hidden, so an error-free form occupies
+        exactly the space it did before this task.
+        """
+        self.validation_error_label.clear()
+        self.validation_error_label.setVisible(False)
+
     def _on_side_selected(self, side):
         try:
             self.config.set_side(side)
-        except OrderConfigError as exc:  # pragma: no cover — buttons are fixed
-            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_SIDE, str(exc))
+        except OrderConfigError:  # pragma: no cover — buttons are fixed
+            self._show_validation_error(STRINGS.DIALOG_INVALID_SIDE)
+        else:
+            self._clear_validation_error()
 
     def _on_price_changed(self):
         text = self.price_input.text().strip()
         if not text:
             self.config.price = None
+            self._clear_validation_error()
             self._refresh_amounts()
             return
         try:
@@ -2887,14 +2929,17 @@ class OrderConfigurationPage(QWidget):
             # Fractional input ("15000.5") is rejected, and the previous
             # valid state is preserved.
             self.config.set_price(int(text))
-        except (OrderConfigError, ValueError) as exc:
-            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_PRICE, str(exc))
+        except (OrderConfigError, ValueError):
+            self._show_validation_error(STRINGS.DIALOG_INVALID_PRICE)
+        else:
+            self._clear_validation_error()
         self._refresh_amounts()
 
     def _on_quantity_changed(self):
         text = self.quantity_input.text().strip()
         if not text:
             self.config.quantity = None
+            self._clear_validation_error()
             self._refresh_amounts()
             return
         try:
@@ -2902,8 +2947,10 @@ class OrderConfigurationPage(QWidget):
             # only. Fractional input ("500.5") is rejected, and the
             # previous valid state is preserved.
             self.config.set_quantity(int(text))
-        except (OrderConfigError, ValueError) as exc:
-            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_QUANTITY, str(exc))
+        except (OrderConfigError, ValueError):
+            self._show_validation_error(STRINGS.DIALOG_INVALID_QUANTITY)
+        else:
+            self._clear_validation_error()
         self._refresh_amounts()
 
     # ---------------------------------------------------------

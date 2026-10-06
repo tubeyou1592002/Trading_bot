@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -90,6 +89,19 @@ class AccountsPage(QWidget):
         self.add_button.clicked.connect(self._on_add_clicked)
         add_form.addWidget(self.add_button, 2, 0, 1, 2)
 
+        # UI-9.4: the inline validation message of this form, directly
+        # under it. It replaces the former blocking QMessageBox, so an
+        # invalid entry is reported in place instead of in a pop-up.
+        # Colours come from the ui/theme.py danger role (the "danger"
+        # property below); no colour or spacing is invented here. It is
+        # empty and hidden while there is nothing to report, so the
+        # normal layout is unchanged.
+        self.validation_error_label = QLabel("", add_group)
+        self.validation_error_label.setProperty("role", "danger")
+        self.validation_error_label.setWordWrap(True)
+        self.validation_error_label.setVisible(False)
+        add_form.addWidget(self.validation_error_label, 3, 0, 1, 2)
+
         root_layout.addWidget(add_group)
 
         # ---------------------------------------------
@@ -138,10 +150,11 @@ class AccountsPage(QWidget):
 
         try:
             self.store.add(account_id, broker_name)
-        except (AccountStoreError, AccountValidationError) as exc:
-            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_ACCOUNT, str(exc))
+        except (AccountStoreError, AccountValidationError):
+            self._show_validation_error(STRINGS.DIALOG_INVALID_ACCOUNT)
             return
 
+        self._clear_validation_error()
         self.account_id_input.clear()
         self._refresh_list()
 
@@ -149,19 +162,46 @@ class AccountsPage(QWidget):
         """Activate the account of the currently selected row."""
         row = self.accounts_table.currentRow()
         if row < 0:
-            QMessageBox.information(
-                self, STRINGS.DIALOG_NO_SELECTION, STRINGS.DIALOG_SELECT_ACCOUNT_FIRST
+            self._show_validation_error(
+                f"{STRINGS.DIALOG_NO_SELECTION}: "
+                f"{STRINGS.DIALOG_SELECT_ACCOUNT_FIRST}"
             )
             return
 
         account_item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
         try:
             self.store.set_active(account_item.text())
-        except AccountStoreError as exc:
-            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_ACCOUNT, str(exc))
+        except AccountStoreError:
+            self._show_validation_error(STRINGS.DIALOG_INVALID_ACCOUNT)
             return
 
+        self._clear_validation_error()
         self._refresh_list()
+
+    # ---------------------------------------------------------
+    # Inline validation message (UI-9.4)
+    # ---------------------------------------------------------
+
+    def _show_validation_error(self, message):
+        """
+        Show one inline error on the add-account form (UI-9.4).
+
+        Replaces the former blocking ``QMessageBox``: the message is the
+        same Persian ``STRINGS.DIALOG_*`` text the dialog carried. A new
+        error simply replaces the previous one.
+        """
+        self.validation_error_label.setText(message)
+        self.validation_error_label.setVisible(bool(message))
+
+    def _clear_validation_error(self):
+        """
+        Clear the inline error after a successful action (UI-9.4).
+
+        The label is emptied *and* hidden, so an error-free form occupies
+        exactly the space it did before this task.
+        """
+        self.validation_error_label.clear()
+        self.validation_error_label.setVisible(False)
 
     # ---------------------------------------------------------
     # State mirroring (store -> widgets)

@@ -1338,7 +1338,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 029 — UI-9 Dark Theme, Two-Column Order Layout and Persian/RTL Localization
 
-**Status:** Accepted. UI-9.1, UI-9.2, UI-9.2b and UI-9.3 are COMPLETE and Architect-verified (2026-10-04). UI-9.4 (inline validation errors) and UI-9.5 (style propagation + documentation) are NOT STARTED and require separate approval.
+**Status:** Accepted. UI-9.1, UI-9.2, UI-9.2b, UI-9.3 and UI-9.4 are COMPLETE and Architect-verified (2026-10-04). UI-9.5 (style propagation + documentation) is NOT STARTED and requires separate approval.
 
 **Decision:**
 1. The User Application uses one dark theme, defined by tokens in `ui/theme.py` (palette, a 4/8/12/16/24 spacing scale, geometry) and applied from `create_app()` and `MainWindow`. PySide6 is kept; no framework change.
@@ -1360,4 +1360,25 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 **Test-contract consequence:** tests that asserted English UI literals now import and assert the `ui/strings.py` constants (or `ui/user_log.EMPTY_CELL`), so they cannot go stale again. Test intent was preserved; no test was weakened or deleted.
 
-**Consequences / limitations:** UI-3.1's two modal-dialog hangs stay deselected until UI-9.4 replaces the modal dialogs with inline messages; a machine without IRANSansX falls back through the font chain; the pre-existing Block 8 failures and the uncommitted `ui/test_runner.py` change remain open and separately scoped. Nothing was committed or pushed by the implementing agent — the checkpoint is completed by the Architect after review.
+**Consequences / limitations:** a machine without IRANSansX falls back through the font chain; the pre-existing Block 8 failures and the uncommitted `ui/test_runner.py` change remain open and separately scoped. Nothing was committed or pushed by the implementing agent — the checkpoint is completed by the Architect after review.
+
+### UI-9.4 completion record (2026-10-04) — inline validation errors
+
+**Delivered:** the six blocking `QMessageBox` calls were removed — three in `ui/order_configuration_page.py` (invalid side / price / quantity) and three in `ui/accounts_page.py` (invalid account ×2, no selection). Each page now shows one inline error label, styled from the theme's danger role (`#ef4444`) with all spacing taken from `ui/theme.py` tokens. The label is empty and hidden when there is no error — the layout item reports `isEmpty()==True` and the group box `sizeHint` is unchanged (Order 344 px, Accounts 184 px), so error-free layout is byte-for-byte the same as before. On a new error it shows the matching Persian `ui/strings.py` constant; on the next successful action it clears. No new string was added to the catalogue and no English text was introduced.
+
+**Validation semantics unchanged:** the same conditions, in the same order, accept and reject exactly the same values. Only the display channel changed. `ui/theme.py` was left untouched (its two now-dead `QMessageBox` QSS rules were deliberately not removed).
+
+**The modal-dialog hangs are resolved.** `test_ui3_1_order_configuration.py` now runs with **no deselection at all**: 32 passed, 0 deselected, `EXIT=0` — including `test_5_quantity_enter_and_store` and `test_extra_page_preserves_state_on_fractional_input`, which previously hung indefinitely and had to be deselected in every run since UI-7.
+
+**Architect-verified results (independent runs):**
+- the previously mandated baseline selection still reports **310 passed, 2 deselected, EXIT=0** (the two deselects are now redundant but harmless)
+- **all 30 `test_ui*.py` files, with no deselection: 565 passed, 0 failed, 0 deselected, EXIT=0** — 565 = 563 + the two tests that were freed
+- `QMessageBox` call sites in `ui/`: **none** (only comments and the dead QSS text remain)
+- both Block 8 `broker_received_at` failures unchanged (pre-existing)
+- exactly four files changed: the two product files and the two authorized test files. `ui/theme.py`, `ui/strings.py`, `core/*`, `ui/schedule_dispatcher.py` and `ui/test_runner.py` are untouched.
+
+**Test updates (authorized):** `test_ui3_1_order_configuration.py::test_4_price_enter_and_store` and `test_ui2_1_account_management.py::test_11_accounts_page_creates_no_real_broker` no longer monkeypatch the removed `QMessageBox` seam; they assert the inline error label instead. Both keep their original intent and their other assertions intact. Test intent was preserved; nothing was weakened or deleted.
+
+**Accepted limitation (Product Owner decision):** the inline message carries the Persian dialog-title constant (e.g. «قیمت نامعتبر») rather than the removed dialogs' English reason body (e.g. "Price must be an integer …"). The Product Owner reviewed this and accepted it as sufficiently clear for the user; surfacing the reason would require new Persian reason constants and is not part of UI-9.
+
+**Housekeeping noted, not caused by this task:** `test_ui5_task3_feedback_service.py` is a 0-byte tracked file (0 bytes at HEAD too), so a whole-suite run reports `EXIT=5` / "no tests collected" for it. It is not a failure but it means a literal 30/30 `EXIT=0` gate is not meaningful until that file is either populated or removed.

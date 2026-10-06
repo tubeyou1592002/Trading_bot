@@ -229,18 +229,7 @@ def test_10_duplicate_account_id_rejected(store):
 # ============================================================
 
 
-def test_11_accounts_page_creates_no_real_broker(store, qapp, monkeypatch):
-    warnings = []
-
-    class _NonModalMessageBox:
-        @staticmethod
-        def warning(parent, title, message):
-            warnings.append((title, message))
-
-    # QMessageBox.warning() opens a blocking modal dialog. Replace only
-    # this test seam so offscreen runs verify the warning path without
-    # waiting for a human click.
-    monkeypatch.setattr("ui.accounts_page.QMessageBox", _NonModalMessageBox)
+def test_11_accounts_page_creates_no_real_broker(store, qapp):
     page = AccountsPage(store)
 
     assert page.account_id_input is not None
@@ -263,8 +252,10 @@ def test_11_accounts_page_creates_no_real_broker(store, qapp, monkeypatch):
 
     # the store holds no broker object either
     page._on_add_clicked()  # empty form -> rejected, page still healthy
-    assert len(warnings) == 1
-    assert warnings[0][0] == STRINGS.DIALOG_INVALID_ACCOUNT
+    # UI-9.4: the rejection is reported by the inline error label instead
+    # of a blocking QMessageBox.
+    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_ACCOUNT
+    assert not page.validation_error_label.isHidden()
     assert len(page.store.all_accounts()) == 0
 
 

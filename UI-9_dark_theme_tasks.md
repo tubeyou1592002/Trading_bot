@@ -1,10 +1,10 @@
 # UI-9 — Dark Theme, Layout & Localization (Task Package)
 
-> **Status:** UI-9.1, UI-9.2, UI-9.2b and UI-9.3 are **COMPLETED and Architect-verified** (2026-10-04).
-> UI-9.4 (inline validation errors) and UI-9.5 (style propagation + documentation) are **NOT STARTED**
-> and must not be started without explicit Product Owner approval.
-> **Verified:** mandated baseline 310 passed / 2 deselected / EXIT=0; all 30 `test_ui*.py` files
-> 563 passed / 2 deselected / EXIT=0.
+> **Status:** UI-9.1, UI-9.2, UI-9.2b, UI-9.3 and UI-9.4 are **COMPLETED and Architect-verified** (2026-10-04).
+> UI-9.5 (style propagation + documentation) is **NOT STARTED** and must not be started without explicit
+> Product Owner approval.
+> **Verified:** mandated baseline 310 passed / 2 deselected / EXIT=0; **all 30 `test_ui*.py` files with no
+> deselection: 565 passed / 0 failed / EXIT=0** — the two long-standing modal-dialog hangs are fixed.
 >
 > **AUTHORITY NOTE:** this document is the master record and the committed record of UI-9.
 > The per-task handover files (`UI-9.2_task.md`, `UI-9.2b_task.md`, `UI-9.3_task.md`) are working
@@ -367,6 +367,25 @@ Also these three structural assertions must be updated to the new values:
 ## Task UI-9.4 — Inline validation errors instead of modal dialogs
 
 **Goal:** replace `QMessageBox` with an inline error message on the form.
+
+> **Status: COMPLETED — delivered and independently verified by the Architect (2026-10-04).**
+> All six blocking dialogs are gone: the three on the Order page (invalid side / price / quantity) and the
+> three on the Accounts page (invalid account ×2, no selection). Each page now has one inline error label
+> styled from the theme's danger role, empty and hidden when there is no error (layout item `isEmpty()==True`,
+> group `sizeHint` unchanged: Order 344 px, Accounts 184 px). Validation semantics are unchanged; no English
+> text was introduced; `ui/theme.py` was deliberately left untouched.
+>
+> **The two long-standing hangs are fixed.** `test_ui3_1_order_configuration.py` now runs with **no deselect
+> flags at all**. Architect re-ran: **32 passed, 0 deselected, EXIT=0**; the whole 30-file UI sweep with no
+> deselects → **565 passed, 0 failed, EXIT=0**; the older baseline selection still reports 310 passed /
+> 2 deselected (the deselects are now redundant). Zero `QMessageBox` call sites remain in `ui/`.
+>
+> **Authorized test updates:** `test_ui3_1_order_configuration.py::test_4_price_enter_and_store` and
+> `test_ui2_1_account_management.py::test_11_accounts_page_creates_no_real_broker` no longer patch the removed
+> seam; they assert the inline label. Intent preserved, nothing weakened.
+>
+> **Accepted limitation (Product Owner decision):** the inline message shows the Persian dialog-title constant
+> (e.g. «قیمت نامعتبر») and not the removed dialogs' English reason body. Accepted as sufficiently clear.
 
 **Modified files:** `ui/order_configuration_page.py`, `ui/accounts_page.py`
 

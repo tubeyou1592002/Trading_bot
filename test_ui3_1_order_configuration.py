@@ -176,20 +176,7 @@ def test_3_side_uses_real_constants(qapp, store):
 # ============================================================
 
 
-def test_4_price_enter_and_store(qapp, store, monkeypatch):
-    warnings = []
-
-    class _NonModalMessageBox:
-        @staticmethod
-        def warning(parent, title, message):
-            warnings.append((title, message))
-
-    # Keep this validation test deterministic in offscreen Qt: assert that
-    # invalid values request a warning, without entering a blocking modal
-    # event loop that requires a user click.
-    monkeypatch.setattr(
-        "ui.order_configuration_page.QMessageBox", _NonModalMessageBox
-    )
+def test_4_price_enter_and_store(qapp, store):
     page = OrderConfigurationPage(store)
 
     page.price_input.setText("15000")
@@ -201,25 +188,30 @@ def test_4_price_enter_and_store(qapp, store, monkeypatch):
     page.price_input.setText("15000.5")
     page.price_input.editingFinished.emit()
     assert page.config.price == 15000
+    # UI-9.4: the same rejection is reported by the inline error label
+    # instead of a blocking QMessageBox.
+    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_PRICE
+    assert not page.validation_error_label.isHidden()
 
     # invalid text rejected, previous valid state preserved
     page.price_input.setText("abc")
     page.price_input.editingFinished.emit()
     assert page.config.price == 15000
-    assert [title for title, _message in warnings] == [
-        STRINGS.DIALOG_INVALID_PRICE,
-        STRINGS.DIALOG_INVALID_PRICE,
-    ]
+    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_PRICE
+    assert not page.validation_error_label.isHidden()
 
     with pytest.raises(OrderConfigError):
         page.config.set_price("15000")
     with pytest.raises(OrderConfigError):
         page.config.set_price(-1)
 
-    # empty input clears the value (basic input handling)
+    # empty input clears the value (basic input handling); it is also a
+    # successful action, so the inline error clears with it.
     page.price_input.setText("")
     page.price_input.editingFinished.emit()
     assert page.config.price is None
+    assert page.validation_error_label.text() == ""
+    assert page.validation_error_label.isHidden()
 
 
 # ============================================================
