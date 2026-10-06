@@ -75,6 +75,7 @@ __all__ = [
     "LABEL_INTERVAL_SECONDS",
     "LABEL_DISPATCH_INTERVAL_MS",
     "LABEL_CLOCK",
+    "LABEL_CLOCK_STATUS",
     "LABEL_SYNC",
     "LABEL_STATE",
     "LABEL_COUNTDOWN",
@@ -83,6 +84,7 @@ __all__ = [
     "PLACEHOLDER_INTERVAL_INPUT",
     "PLACEHOLDER_DISPATCH_INTERVAL",
     "NOTE_TIMEZONE",
+    "CLOCK_PROGRAM_TIME_SUFFIX",
     "SUMMARY_WINDOW",
     "SUMMARY_INTERVAL",
     "SUMMARY_RUN_MOMENTS",
@@ -300,6 +302,9 @@ LABEL_END_TIME = "زمان پایان:"
 LABEL_INTERVAL_SECONDS = "فاصله (ثانیه):"
 LABEL_DISPATCH_INTERVAL_MS = "فاصله ارسال (میلی‌ثانیه):"
 LABEL_CLOCK = "ساعت:"
+# UI-10: the former "منطقه زمانی" row becomes the live clock row, so the
+# source/sync row (LABEL_CLOCK, now «وضعیت ساعت») must not share its label.
+LABEL_CLOCK_STATUS = "وضعیت ساعت:"
 LABEL_SYNC = "همگام‌سازی:"
 LABEL_STATE = "وضعیت:"
 LABEL_COUNTDOWN = "شمارش معکوس:"
@@ -312,6 +317,12 @@ PLACEHOLDER_DISPATCH_INTERVAL = "میلی‌ثانیه بین ارسال‌ها"
 # The IANA identifier is a *technical* token, not prose: it stays Latin so the
 # timezone stays unambiguous and machine-matchable (same rule as timestamps).
 NOTE_TIMEZONE = "به وقت تهران (Asia/Tehran, UTC+03:30)"
+
+# UI-10: the live clock row shows HH:MM:SS; until a market sync has been
+# completed the row shows the program time and says so explicitly (a
+# program clock is never dressed up as a market clock). The suffix is
+# pure Persian; the page concatenates the time in front of it.
+CLOCK_PROGRAM_TIME_SUFFIX = "(ساعت برنامه)"
 
 # --- schedule summary lines (see schedule_settings.describe_summary) ---------
 # Clock/moment times inside these lines are technical and stay Latin; the

@@ -751,10 +751,23 @@ class OrderConfigurationPage(QWidget):
             button.clicked.connect(
                 lambda checked=False, s=side_value: self._on_side_selected(s)
             )
+            # UI-10: the BUY/SELL text is colour-coded through the theme —
+            # the success token for BUY, the danger token for SELL. Pure
+            # presentation: keys, labels and the click behaviour are
+            # unchanged.
+            button.setProperty(
+                "variant", "buy" if side_value == BUY else "sell"
+            )
             self.side_buttons[side_value] = button
             side_layout.addWidget(button)
         side_layout.addStretch(1)
         form_grid.addWidget(side_row, 1, 1)
+        # UI-10: BUY is the preselected side. The state goes through the
+        # existing config setter (never a direct attribute write), and the
+        # radio reflects the same default, so config.side == BUY right
+        # after construction.
+        self.side_buttons[BUY].setChecked(True)
+        self.config.set_side(BUY)
 
         # --- Price ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_PRICE, form_group), 2, 0)
@@ -1045,19 +1058,34 @@ class OrderConfigurationPage(QWidget):
         self.schedule_group = QGroupBox(SCHEDULE_GROUP_TITLE, self)
         schedule_form = QFormLayout(self.schedule_group)
 
-        self.schedule_timezone_label = QLabel(TIMEZONE_NOTE, self.schedule_group)
-        schedule_form.addRow(STRINGS.LABEL_TIMEZONE, self.schedule_timezone_label)
+        # UI-10: this row is the LIVE MARKET CLOCK. The attribute keeps its
+        # UI-7 name (C7: nothing renamed); it now renders the current
+        # market-synced Tehran time (HH:MM:SS, never milliseconds) instead
+        # of the timezone note. The timezone itself stays visible in the
+        # schedule summary (NOTE_TIMEZONE) and in the clock status row.
+        self.schedule_timezone_label = QLabel("", self.schedule_group)
+        schedule_form.addRow(STRINGS.LABEL_CLOCK, self.schedule_timezone_label)
 
         self.schedule_start_input = QLineEdit(self.schedule_group)
         self.schedule_start_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
+        # UI-10: pre-filled defaults — real field values, accepted by the
+        # existing validators unchanged (08:44:58 < 08:45:05, interval is a
+        # positive whole number of seconds; 0 stays illegal).
+        self.schedule_start_input.setText("08:44:58")
         schedule_form.addRow(START_INPUT_LABEL, self.schedule_start_input)
 
         self.schedule_end_input = QLineEdit(self.schedule_group)
         self.schedule_end_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
+        self.schedule_end_input.setText("08:45:05")
         schedule_form.addRow(END_INPUT_LABEL, self.schedule_end_input)
 
         self.schedule_interval_input = QLineEdit(self.schedule_group)
         self.schedule_interval_input.setPlaceholderText(INTERVAL_INPUT_PLACEHOLDER)
+        # UI-10 default is 1 — the smallest LEGAL value. The Product
+        # Owner's "0" is forbidden by _parse_interval (a zero gap would
+        # degenerate the schedule into a burst) and that rule is NOT
+        # changed here. Burst cadence is the dispatch interval below.
+        self.schedule_interval_input.setText("1")
         schedule_form.addRow(INTERVAL_INPUT_LABEL, self.schedule_interval_input)
 
         # UI-7 Task 3: the DISPATCH interval, in MILLISECONDS. The unit is
@@ -1067,6 +1095,9 @@ class OrderConfigurationPage(QWidget):
         self.dispatch_interval_input.setPlaceholderText(
             EXECUTION_INTERVAL_PLACEHOLDER
         )
+        # UI-10 default: the "send like a burst every 100 ms" cadence the
+        # Product Owner asked for is EXACTLY this existing field.
+        self.dispatch_interval_input.setText("100")
         schedule_form.addRow(
             EXECUTION_INTERVAL_LABEL, self.dispatch_interval_input
         )
@@ -1106,7 +1137,14 @@ class OrderConfigurationPage(QWidget):
 
         self.clock_status_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.clock_status_label.setWordWrap(True)
-        schedule_form.addRow(STRINGS.LABEL_CLOCK, self.clock_status_label)
+        # UI-10: relabelled «وضعیت ساعت» so the form does not carry two rows
+        # called «ساعت». Attribute, value and behaviour are unchanged.
+        schedule_form.addRow(STRINGS.LABEL_CLOCK_STATUS, self.clock_status_label)
+
+        # UI-10: one initial render so the clock row shows a real time the
+        # moment the page is built (the 1-second display timer starts later,
+        # with the sync-freshness display after the first sync attempt).
+        self._refresh_market_clock_row()
 
         # UI-7 Task 2 — the RESULT of the last sync: source, estimated
         # offset, uncertainty band and freshness. Never millisecond-precise.
@@ -3005,6 +3043,43 @@ class OrderConfigurationPage(QWidget):
             self._clock_status = status
         self.clock_status_label.setText(describe_clock(status))
         self.sync_status_label.setText(self._sync_state_text())
+        self._refresh_market_clock_row()
+
+    def _refresh_market_clock_row(self):
+        """
+        UI-10: render the live clock row (the attribute named
+        ``schedule_timezone_label``). The value is the current
+        application time on the clock service's own time base —
+        ``now_utc + applied_offset``, expressed in Tehran, exactly the
+        time the schedule inputs and the countdown use. Shown as
+        ``HH:MM:SS`` only: the market source is second-resolution by
+        contract (MARKET_PRECISION_NOTE) and no sub-second precision is
+        ever claimed. Until a market sync has completed (or before the
+        service even exists) the row shows the program time and says so
+        explicitly — the program clock is never dressed up as a market
+        clock. This is a pure DISPLAY read: it never STARTS the service
+        (construction stays offline — tests inject their own factory
+        after the page is built), it starts no request and it does not
+        touch the locked schedule time base.
+        """
+        time_text = datetime.now().astimezone(TEHRAN_TIMEZONE).strftime(
+            "%H:%M:%S"
+        )
+        status = self._clock_status
+        service = self._clock_service  # deliberately NOT clock_service()
+        if service is not None:
+            try:
+                time_text = service.now_tehran().strftime("%H:%M:%S")
+            except Exception:  # pragma: no cover — never raise on display
+                pass
+        if (
+            service is None
+            or status is None
+            or status.source is not ClockSource.MARKET
+            or not service.is_sync_fresh()
+        ):
+            time_text = f"{time_text} {STRINGS.CLOCK_PROGRAM_TIME_SUFFIX}"
+        self.schedule_timezone_label.setText(time_text)
 
     def _sync_state_text(self) -> str:
         """

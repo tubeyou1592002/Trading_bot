@@ -334,6 +334,17 @@ QPushButton[variant="danger"]:disabled {{
 
 /* --- Radio buttons / check boxes ------------------------- */
 
+/* UI-10: side radio buttons — BUY reads green, SELL reads red. The
+   colours are the existing success/danger palette tokens; only the
+   variant-keyed rules are new. */
+QRadioButton[variant="buy"] {{
+    color: {p["success"]};
+}}
+
+QRadioButton[variant="sell"] {{
+    color: {p["danger"]};
+}}
+
 QRadioButton, QCheckBox {{
     background-color: transparent;
     color: {p["text"]};

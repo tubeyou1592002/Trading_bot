@@ -2986,3 +2986,12 @@ notes and are deliberately **not** tracked in the repository. See `DECISIONS.md`
 **Known limitations:** the two pre-existing Block 8 failures; the two UI-3.1 tests that hang on modal
 dialogs (to be resolved by UI-9.4) and are therefore deselected; no font file is bundled, so a machine
 without IRANSansX falls back through the chain.
+
+### UI-10 — Order page defaults, side colours and a live market clock (COMPLETED — verified, 2026-10-06)
+
+- **Status:** `COMPLETED — verified` (Decision 030 in DECISIONS.md). Presentation/defaults only; **no dispatch behaviour changed**, no validation rule changed, no order-send path touched.
+- **Recorded decision:** the Product Owner's requested default schedule interval of `0` is forbidden by `_parse_interval` (`0` stays illegal — a zero gap degenerates into a burst), so the interval default is **`1`**, the smallest legal value. The "burst every 100 ms" requirement is the EXISTING dispatch-interval field; its default is now **`100`**. No new burst mechanism.
+- **Changed:** BUY preselected through the existing setter (`config.side == BUY` at construction; SELL click still switches it) with token-driven side colours (`QRadioButton[variant="buy"]` → success green خرید, `[variant="sell"]` → danger red فروش; no new hex); the former «منطقه زمانی» row is a live market clock labelled «ساعت» (`HH:MM:SS`, never milliseconds, 1-second updates on the existing freshness timer, market time = service's `now_utc + applied_offset`, program time shown with «(ساعت برنامه)» until a sync lands, no network call); the old clock-status row is relabelled «وضعیت ساعت» (`LABEL_CLOCK_STATUS`); pre-filled defaults `08:44:58 / 08:45:05 / 1 / 100` accepted by the unchanged validators.
+- **New strings:** `LABEL_CLOCK_STATUS`, `CLOCK_PROGRAM_TIME_SUFFIX` (Persian-only; the UI-9.5 English guard passes).
+- **Verified (bounded runner):** pre-edit baseline 677 passed (565+112), EXIT=0; post-edit full 31-file sweep **679 passed, 0 failed, 0 deselected, EXIT=0** (+2 = the guard test's own new assertions for the two new strings; **no existing test changed** — an initial eager clock-service creation broke 3 tests and was fixed lazy-safe in the page, not in tests); Block 8 pair 60 s cap EXIT=1, 2 failed (pre-existing, unchanged); `ui/test_runner.py` still 23+/10− (git diff --numstat).
+- **Screenshots:** `photos/ui10_order_buy_sell.png`, `photos/ui10_clock_schedule_rows.png` (offscreen, RTL production path, IRANSansX registered after QApplication).
