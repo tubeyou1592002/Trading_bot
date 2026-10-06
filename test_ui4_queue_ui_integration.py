@@ -201,7 +201,7 @@ def store():
 
 def _store_with_active(account_id=ACCOUNT_ONE, broker_name=BROKER_ONE):
     store = AccountStore()
-    store.add(account_id, broker_name)
+    store.add(account_id, broker_name, account_id)
     store.set_active(account_id)
     return store
 
@@ -533,7 +533,7 @@ def test_8_orders_not_cloned_for_display(qapp):
 def test_9_add_to_queue_fails_closed(qapp):
     # 9a. no active account → nothing queued
     store = AccountStore()
-    store.add(ACCOUNT_ONE, BROKER_ONE)  # exists but NOT active
+    store.add(ACCOUNT_ONE, BROKER_ONE, ACCOUNT_ONE)  # exists but NOT active
     queue = OrderQueue()
     page = OrderConfigurationPage(store, order_queue=queue)
     page.set_order_identity_factory(lambda: StubNscSeam(NSC_AKOU))
@@ -626,7 +626,7 @@ def test_10_add_to_queue_never_calls_execution_path():
             "",
             "app = QApplication([])",
             "store = AccountStore()",
-            "store.add('ACC-001', 'آگاه')",
+            "store.add('ACC-001', 'آگاه', 'ACC-001')",
             "store.set_active('ACC-001')",
             "page = OrderConfigurationPage(store)",
             "",
@@ -808,8 +808,8 @@ def test_extra_stale_identity_never_becomes_new_selection(qapp):
 
 def test_extra_account_switch_invalidates_identity(qapp):
     store = AccountStore()
-    store.add(ACCOUNT_ONE, BROKER_ONE)
-    store.add(ACCOUNT_TWO, BROKER_TWO)
+    store.add(ACCOUNT_ONE, BROKER_ONE, ACCOUNT_ONE)
+    store.add(ACCOUNT_TWO, BROKER_TWO, ACCOUNT_TWO)
     store.set_active(ACCOUNT_ONE)
 
     queue = OrderQueue()

@@ -129,7 +129,7 @@ def make_harness():
 def make_page(qapp, harness=None, queue=None):
     """A real page, optionally wired to the REAL runner over a harness core."""
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue or OrderQueue())
     if harness is not None:

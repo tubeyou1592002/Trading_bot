@@ -156,7 +156,7 @@ def make_account_record(account_id="ACC-001", broker_name="\u0622\u06af\u0627\u0
     only; the UI-2.1 store keeps no balances), never a fabricated one.
     """
     store = AccountStore()
-    store.add(account_id, broker_name)
+    store.add(account_id, broker_name, account_id)
     store.set_active(account_id)
     return store.get(account_id)
 
@@ -225,7 +225,7 @@ def make_failing_runner(exc):
 
 def _make_valid_page(qapp, store, queue, runner_factory=None):
     """Build a page whose Test conditions are fully valid (enabled)."""
-    store.add("ACC-001", "\u0622\u06af\u0627\u0647")
+    store.add("ACC-001", "\u0622\u06af\u0627\u0647", "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue)
     if runner_factory is not None:
@@ -632,7 +632,7 @@ def test_13_page_refresh_and_render_never_trigger_a_run(qapp, store):
 
 
 def test_14_page_empty_queue_never_reaches_the_runner(qapp, store):
-    store.add("ACC-001", "\u0622\u06af\u0627\u0647")
+    store.add("ACC-001", "\u0622\u06af\u0627\u0647", "ACC-001")
     store.set_active("ACC-001")
     runner = StubRunner()
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
@@ -709,7 +709,7 @@ def test_16c_page_rejects_entries_mismatching_the_active_account(qapp, store):
     A queue whose entries are bound to a DIFFERENT account/broker than the
     active record never reaches the runner (fail-closed, no dispatch).
     """
-    store.add("ACC-001", "\u0622\u06af\u0627\u0647")
+    store.add("ACC-001", "\u0622\u06af\u0627\u0647", "ACC-001")
     store.set_active("ACC-001")
     queue = OrderQueue()
     runner = StubRunner()
@@ -755,8 +755,8 @@ def test_16d_page_passes_the_explicitly_selected_account(qapp):
     """
     BROKER = "\u0622\u06af\u0627\u0647"
     store = AccountStore()
-    store.add("ACC-001", BROKER)
-    store.add("ACC-002", BROKER)     # a DIFFERENT registered account
+    store.add("ACC-001", BROKER, "ACC-001")
+    store.add("ACC-002", BROKER, "ACC-002")     # a DIFFERENT registered account
     store.set_active("ACC-001")      # the explicit selection
 
     queue = OrderQueue()
@@ -804,7 +804,7 @@ def test_16e_page_never_executes_without_a_selected_account(qapp):
     """
     BROKER = "\u0622\u06af\u0627\u0647"
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     # deliberately NO set_active(...) — nothing is selected
     assert store.active_account_id() is None
 
@@ -841,8 +841,8 @@ def test_16f_switching_the_active_account_switches_the_pass_account(qapp):
     """
     BROKER = "\u0622\u06af\u0627\u0647"
     store = AccountStore()
-    store.add("ACC-001", BROKER)
-    store.add("ACC-002", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
+    store.add("ACC-002", BROKER, "ACC-002")
     store.set_active("ACC-001")
 
     queue = OrderQueue()
@@ -926,7 +926,7 @@ def test_17_full_test_action_offline_subprocess():
             "",
             "app = QApplication([])",
             "store = AccountStore()",
-            "store.add('ACC-001', 'آگاه')",
+            "store.add('ACC-001', 'آگاه', 'ACC-001')",
             "store.set_active('ACC-001')",
             "queue = OrderQueue()",
             "page = OrderConfigurationPage(store, order_queue=queue)",

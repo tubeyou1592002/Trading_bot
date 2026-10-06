@@ -117,7 +117,7 @@ def qapp():
 def make_page(qapp):
     """A real page with an active account and a real in-memory queue."""
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     return OrderConfigurationPage(store, order_queue=OrderQueue())
 

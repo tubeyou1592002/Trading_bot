@@ -211,7 +211,7 @@ def test_ui8_task1_single_order_single_account_single_broker_end_to_end(
 
     # Exactly one account, one broker, one queue — the single-batch case.
     store = AccountStore()
-    store.add(ACCOUNT_ID, BROKER)
+    store.add(ACCOUNT_ID, BROKER, ACCOUNT_ID)
     store.set_active(ACCOUNT_ID)
     queue = OrderQueue()
     page = OrderConfigurationPage(store, order_queue=queue)

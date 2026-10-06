@@ -89,7 +89,7 @@ class _Binder(QObject):
 def make_page(qapp, with_queue_signal=True):
     """A real page wired to an offline binder exposing the same signals."""
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
     binder = _Binder() if with_queue_signal else _BinderWithoutQueueSignal()

@@ -225,8 +225,8 @@ def test_task2_each_order_reaches_only_its_own_broker_and_is_shown_in_ui(
     assert provider_a is not provider_b
 
     store = AccountStore()
-    store.add(ACCOUNT_A, BROKER_A)
-    store.add(ACCOUNT_B, BROKER_B)
+    store.add(ACCOUNT_A, BROKER_A, ACCOUNT_A)
+    store.add(ACCOUNT_B, BROKER_B, ACCOUNT_B)
     store.set_active(ACCOUNT_A)
     seam = OfflineNscSeam((INS_1, INS_2, INS_3))
 
@@ -403,8 +403,8 @@ def test_task2_mixed_account_broker_queue_is_rejected_fail_closed(
     harness, broker_a, broker_b = _make_dual_harness()
 
     store = AccountStore()
-    store.add(ACCOUNT_A, BROKER_A)
-    store.add(ACCOUNT_B, BROKER_B)
+    store.add(ACCOUNT_A, BROKER_A, ACCOUNT_A)
+    store.add(ACCOUNT_B, BROKER_B, ACCOUNT_B)
     store.set_active(ACCOUNT_A)
     seam = OfflineNscSeam((INS_1, INS_2, INS_3))
 

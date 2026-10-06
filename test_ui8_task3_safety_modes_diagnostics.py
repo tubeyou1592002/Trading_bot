@@ -153,7 +153,7 @@ def _ms(value):
 def _make_page(qapp, harness):
     """A real page wired to the REAL TestRunner over the harness manager."""
     store = AccountStore()
-    store.add(ACCOUNT_ID, BROKER)
+    store.add(ACCOUNT_ID, BROKER, ACCOUNT_ID)
     store.set_active(ACCOUNT_ID)
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
     runner = TestRunner(broker_manager=harness.manager)

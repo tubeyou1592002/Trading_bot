@@ -53,11 +53,13 @@ class AccountRecord:
 
     ``account`` is a real ``models.account.Account`` instance (its
     ``account_id`` is the account identity); ``broker_name`` is the
-    explicit broker association kept at the application layer.
+    explicit broker association kept at the application layer;
+    ``display_name`` is the user-chosen name for this account.
     """
 
     account: Account
     broker_name: str
+    display_name: str
 
     @property
     def account_id(self):
@@ -71,20 +73,23 @@ class AccountStore:
 
     Contract:
 
-        add(account_id, broker_name)      -> AccountRecord
-        all_accounts()                    -> tuple[AccountRecord, ...]
-        set_active(account_id)            -> account_id (selection switch)
-        active_account_id()               -> str | None
-        is_active(account_id)             -> bool
-        get(account_id)                   -> AccountRecord
+        add(account_id, broker_name, display_name)  -> AccountRecord
+        all_accounts()                              -> tuple[AccountRecord, ...]
+        set_active(account_id)                      -> account_id (selection switch)
+        active_account_id()                         -> str | None
+        is_active(account_id)                       -> bool
+        get(account_id)                             -> AccountRecord
 
     Rules:
 
         * ``account_id`` must satisfy the existing ``Account`` identity
           validation (non-empty, non-whitespace string) — the store never
           redefines or relaxes it.
-        * A duplicate ``account_id`` is rejected.
         * ``broker_name`` must be a non-empty, non-whitespace string.
+        * ``display_name`` is required and must be a non-empty,
+          non-whitespace string; it is stored exactly as provided
+          (stripped of surrounding whitespace).
+        * A duplicate ``account_id`` is rejected.
         * Nothing is active until ``set_active`` is called; selecting a
           second account deactivates the first (at most one active).
     """
@@ -97,14 +102,18 @@ class AccountStore:
     # Registration
     # ---------------------------------------------------------
 
-    def add(self, account_id, broker_name):
+    def add(self, account_id, broker_name, display_name):
         """
-        Register a new account with its explicit broker association.
+        Register a new account with its explicit broker association and
+        user-chosen display name.
 
         Builds a real ``models.account.Account`` with the given identity —
         the model's own validation decides whether the identity is
         acceptable, so invalid identities raise ``AccountValidationError``
         exactly as anywhere else in the project.
+
+        ``display_name`` is required and must be a non-empty,
+        non-whitespace string.
 
         Returns the created ``AccountRecord``.
         """
@@ -113,10 +122,6 @@ class AccountStore:
                 "broker_name must be a non-empty, non-whitespace string"
             )
 
-        # Delegate identity validation to the existing domain model:
-        # an empty/whitespace/non-string id raises AccountValidationError
-        # here, and None is rejected by the store (an app-registered
-        # account must have an explicit identity).
         if account_id is None:
             raise AccountStoreError(
                 "account_id must be a non-empty, non-whitespace string"
@@ -129,8 +134,15 @@ class AccountStore:
                 f"Duplicate account_id: {record_id!r} is already registered"
             )
 
+        if not isinstance(display_name, str) or not display_name.strip():
+            raise AccountStoreError(
+                "display_name must be a non-empty, non-whitespace string"
+            )
+
         record = AccountRecord(
-            account=account, broker_name=broker_name.strip()
+            account=account,
+            broker_name=broker_name.strip(),
+            display_name=display_name.strip(),
         )
         self._records[record_id] = record
         return record

@@ -1150,7 +1150,7 @@ def test_the_page_locks_stops_and_expires_correctly(qapp):
     page = _make_page(qapp)
     before = {name: w.isEnabled() for name, w in locked_controls(page).items()}
     # A schedule needs a valid destination set (see the empty-queue case).
-    page.store.add("acct-a", "agah")
+    page.store.add("acct-a", "agah", "acct-a")
     _enqueue(page, "acct-a", "agah")
 
     sync_clock(page)
@@ -1173,7 +1173,7 @@ def test_the_page_locks_stops_and_expires_correctly(qapp):
     # --- expiry still frees the controls ----------------------------------
     page2 = _make_page(qapp)
     before2 = {n: w.isEnabled() for n, w in locked_controls(page2).items()}
-    page2.store.add("acct-a", "agah")
+    page2.store.add("acct-a", "agah", "acct-a")
     _enqueue(page2, "acct-a", "agah")
     sync_clock(page2)
     fill(page2, "13:00:00", "13:00:30", "15")
@@ -1207,8 +1207,8 @@ def test_an_invalid_interval_rejects_apply_and_dispatches_nothing(qapp):
 def test_the_frozen_set_is_really_frozen_across_turns(qapp):
     """Every turn sends the SAME orders to the SAME destinations."""
     page = _make_page(qapp)
-    page.store.add("acct-a", "agah")
-    page.store.add("acct-b", "sana")
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.add("acct-b", "sana", "acct-b")
 
     entry_a = _enqueue(page, "acct-a", "agah")
     entry_b = _enqueue(page, "acct-b", "sana")
@@ -1405,7 +1405,7 @@ def test_a_past_start_never_walks_the_missed_due_times():
 def test_the_page_after_the_window_start_sends_at_once(qapp):
     """End to end: a late Apply sends on the FIRST opportunity, not later."""
     page = _make_page(qapp)
-    page.store.add("acct-a", "agah")
+    page.store.add("acct-a", "agah", "acct-a")
     _enqueue(page, "acct-a", "agah")
 
     sent = []
@@ -1572,7 +1572,7 @@ def test_an_order_without_a_valid_account_refuses_the_whole_schedule(
     """
     page = _make_page(qapp)
     before = {name: w.isEnabled() for name, w in locked_controls(page).items()}
-    page.store.add("acct-good", "agah")
+    page.store.add("acct-good", "agah", "acct-good")
     _enqueue(page, "acct-good", "agah")
     _enqueue(page, "acct-missing", "saman")   # never added to the store
     sync_clock(page)
@@ -1591,8 +1591,8 @@ def test_a_broker_mismatch_refuses_the_whole_schedule(qapp, _no_sends):
     """
     page = _make_page(qapp)
     before = {name: w.isEnabled() for name, w in locked_controls(page).items()}
-    page.store.add("acct-good", "agah")
-    page.store.add("acct-mixed", "saman")
+    page.store.add("acct-good", "agah", "acct-good")
+    page.store.add("acct-mixed", "saman", "acct-mixed")
     _enqueue(page, "acct-good", "agah")
     _enqueue(page, "acct-mixed", "zarin")     # account is bound to saman
     sync_clock(page)
@@ -1613,7 +1613,7 @@ def test_a_refused_schedule_does_not_block_a_later_valid_one(qapp):
     apply_schedule(page)
     assert page.schedule_timing() is None
 
-    page.store.add("acct-a", "agah")
+    page.store.add("acct-a", "agah", "acct-a")
     _enqueue(page, "acct-a", "agah")
     apply_schedule(page)
 
@@ -1640,7 +1640,7 @@ def test_failed_second_destination_check_does_not_start_countdown(
 ):
     """A queue change during Apply cannot leave a countdown-only schedule."""
     page = _make_page(qapp)
-    page.store.add("acct-a", "agah")
+    page.store.add("acct-a", "agah", "acct-a")
     queued = _enqueue(page, "acct-a", "agah")
     sync_clock(page)
     fill(page, "13:00:00", "13:05:00", "15")

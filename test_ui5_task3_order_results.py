@@ -110,7 +110,7 @@ def make_harness():
 def make_identity_account():
     """The EXISTING UI account state: identity-only Account, no balances."""
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     return store.get("ACC-001").account
 
@@ -137,7 +137,7 @@ def _pulse(qapp, loops=30):
 def make_page(qapp, harness, queue=None):
     """A real page wired to the REAL runner over the harness core."""
     store = AccountStore()
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue or OrderQueue())
     page.set_test_runner_factory(lambda: TestRunner(dispatch_core=harness.dispatch_core))

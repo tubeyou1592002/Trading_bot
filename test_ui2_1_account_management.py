@@ -89,7 +89,7 @@ def test_1_main_window_shows_real_accounts_page(qapp):
 
 
 def test_2_account_created_from_id_and_broker(store):
-    record = store.add("ACC-001", BROKER)
+    record = store.add("ACC-001", BROKER, "ACC-001")
 
     assert isinstance(record, AccountRecord)
     assert record.account_id == "ACC-001"
@@ -103,7 +103,7 @@ def test_2_account_created_from_id_and_broker(store):
 
 
 def test_3_record_uses_real_account_model(store):
-    record = store.add("ACC-001", BROKER)
+    record = store.add("ACC-001", BROKER, "ACC-001")
 
     assert isinstance(record.account, Account)
     # identity lives on the Account model itself — never invented
@@ -116,8 +116,8 @@ def test_3_record_uses_real_account_model(store):
 
 
 def test_4_accounts_stay_independent(store):
-    first = store.add("ACC-001", BROKER)
-    second = store.add("ACC-002", BROKER)
+    first = store.add("ACC-001", BROKER, "ACC-001")
+    second = store.add("ACC-002", BROKER, "ACC-002")
 
     assert first.account_id == "ACC-001"
     assert second.account_id == "ACC-002"
@@ -132,7 +132,7 @@ def test_4_accounts_stay_independent(store):
 
 
 def test_5_broker_association_is_exact(store):
-    record = store.add("ACC-001", BROKER)
+    record = store.add("ACC-001", BROKER, "ACC-001")
 
     assert record.broker_name == BROKER
     # association lives on the record, not on the Account model
@@ -147,7 +147,7 @@ def test_5_broker_association_is_exact(store):
 
 
 def test_6_no_account_active_initially(store):
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
 
     assert store.active_account_id() is None
     assert store.is_active("ACC-001") is False
@@ -159,7 +159,7 @@ def test_6_no_account_active_initially(store):
 
 
 def test_7_account_can_be_activated(store):
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
     result = store.set_active("ACC-001")
 
     assert result == "ACC-001"
@@ -173,8 +173,8 @@ def test_7_account_can_be_activated(store):
 
 
 def test_8_second_activation_deactivates_first(store):
-    store.add("ACC-001", BROKER)
-    store.add("ACC-002", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
+    store.add("ACC-002", BROKER, "ACC-002")
 
     store.set_active("ACC-001")
     assert store.is_active("ACC-001") is True
@@ -193,13 +193,13 @@ def test_8_second_activation_deactivates_first(store):
 
 def test_9_invalid_account_id_rejected(store):
     with pytest.raises((AccountStoreError, AccountValidationError)):
-        store.add("", BROKER)
+        store.add("", BROKER, "")
     with pytest.raises((AccountStoreError, AccountValidationError)):
-        store.add("   ", BROKER)
+        store.add("   ", BROKER, "   ")
     with pytest.raises((AccountStoreError, AccountValidationError)):
-        store.add(None, BROKER)
+        store.add(None, BROKER, None)
     with pytest.raises((AccountStoreError, AccountValidationError)):
-        store.add(123, BROKER)
+        store.add(123, BROKER, 123)
 
     # nothing was registered
     assert store.all_accounts() == ()
@@ -214,10 +214,10 @@ def test_9_invalid_account_id_rejected(store):
 
 
 def test_10_duplicate_account_id_rejected(store):
-    store.add("ACC-001", BROKER)
+    store.add("ACC-001", BROKER, "ACC-001")
 
     with pytest.raises(AccountStoreError):
-        store.add("ACC-001", BROKER)
+        store.add("ACC-001", BROKER, "ACC-001")
 
     # still exactly one record, identity unchanged
     assert len(store.all_accounts()) == 1
@@ -294,8 +294,8 @@ def test_12_accounts_page_performs_no_network_or_login():
             "",
             "# exercise the full flow offline: add via the store, refresh,",
             "# and select rows in the table",
-            "store.add('ACC-001', 'آگاه')",
-            "store.add('ACC-002', 'آگاه')",
+            "store.add('ACC-001', 'آگاه', 'ACC-001')",
+            "store.add('ACC-002', 'آگاه', 'ACC-002')",
             "store.set_active('ACC-002')",
             "page.refresh()",
             # UI-9 Task 3: selectRow() is a no-op on a table whose effective
@@ -373,3 +373,66 @@ def test_extra_page_add_and_active_flow(store, qapp):
     assert store.active_account_id() == "ACC-002"
     assert page.accounts_table.item(0, 2).text() == ""
     assert page.accounts_table.item(1, 2).text() == "Yes"
+
+
+# ============================================================
+# Block 9 Task 1 — display_name contract
+# ============================================================
+
+
+def test_display_name_stored_correctly(store):
+    record = store.add("ACC-001", BROKER, "My Agah Account")
+
+    assert record.display_name == "My Agah Account"
+
+
+def test_display_name_independent_of_account_id(store):
+    record = store.add("ACC-001", BROKER, "Primary Account")
+
+    assert record.display_name == "Primary Account"
+    assert record.display_name != record.account_id
+
+
+def test_display_name_empty_rejected(store):
+    with pytest.raises(AccountStoreError):
+        store.add("ACC-001", BROKER, "")
+
+    assert store.all_accounts() == ()
+
+
+def test_display_name_whitespace_rejected(store):
+    with pytest.raises(AccountStoreError):
+        store.add("ACC-001", BROKER, "   ")
+
+    assert store.all_accounts() == ()
+
+
+def test_display_name_non_string_rejected(store):
+    with pytest.raises(AccountStoreError):
+        store.add("ACC-001", BROKER, 123)
+
+    assert store.all_accounts() == ()
+
+
+def test_display_name_stripped(store):
+    record = store.add("ACC-001", BROKER, "  My Account  ")
+
+    assert record.display_name == "My Account"
+
+
+def test_no_secret_on_account_or_record(store):
+    record = store.add("ACC-001", BROKER, "ACC-001")
+
+    assert not hasattr(record.account, "password")
+    assert not hasattr(record.account, "token")
+    assert not hasattr(record.account, "session")
+    assert not hasattr(record.account, "credential")
+    assert not hasattr(record, "password")
+    assert not hasattr(record, "token")
+    assert not hasattr(record, "session")
+    assert not hasattr(record, "credential")
+
+
+def test_display_name_is_required(store):
+    with pytest.raises(TypeError):
+        store.add("ACC-001", BROKER)

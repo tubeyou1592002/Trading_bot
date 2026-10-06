@@ -2334,7 +2334,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** NOT STARTED
+**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
@@ -2415,6 +2415,28 @@ Select Active Account → Verify Login/Session → Enter Order Page → Use that
     - Test Account-aware routing
     - Regression on UI/Core/M6/Block 8
     - Live Trading must not be accidentally enabled
+
+#### Task 1 — Account Management Foundation — COMPLETED
+
+`ui/account_store.py` implements the final Block 9 Task 1 contract:
+
+- `AccountRecord` has exactly three fields: `account` (the existing `models.account.Account`), `broker_name: str`, and `display_name: str`.
+- `AccountStore.add(account_id, broker_name, display_name)` is the final signature; `display_name` is required.
+- `display_name` must be a `str`, non-empty and non-whitespace (surrounding whitespace is trimmed), and is independent of `account_id` (never derived from it by the store).
+- `display_name` lives on `AccountRecord` only — it is NOT added to `models.account.Account`.
+- No credential / password / token / session is stored in `Account` or `AccountRecord` in this task.
+- `add()` validation order: `broker_name` → `account_id` (None check) → `Account` construction → duplicate check → `display_name` → `AccountRecord`. An invalid `account_id` is rejected for its own reason, not `display_name`'s.
+- `set_active` / `active_account_id` / `is_active` / `all_accounts` ordering behavior is unchanged.
+- `ui/accounts_page.py` was NOT modified (out of scope for this task).
+
+Tests:
+
+- `test_ui2_1_account_management.py` gained `display_name` contract tests plus `test_display_name_is_required` (missing `display_name` → `TypeError`).
+- All 16 UI test files were migrated to the three-argument `store.add(account_id, broker_name, display_name)` call.
+- Task-specific run: `20 passed, 2 failed`. The two failures (`test_11_accounts_page_creates_no_real_broker`, `test_extra_page_add_and_active_flow`) are caused by the still-unmigrated `ui/accounts_page.py` calling `store.add(account_id, broker_name)` with two arguments; they are intentionally out of scope here and must be resolved in the later UI redesign task (sub-task 6).
+- Full suite: `1386 passed, 4 failed` — two pre-existing Block 8 `broker_received_at` contract failures (unchanged) plus the two UI failures above. No new failure was introduced.
+
+Next: **Task 2 — Secure Credential Store** (NOT STARTED).
 
 #### Block Boundaries
 

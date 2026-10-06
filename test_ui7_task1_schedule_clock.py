@@ -77,7 +77,7 @@ def _with_valid_destination(page, account_id="ACC-SCHED", broker_name="SIM"):
     """
     from models.order import Order
 
-    page.store.add(account_id, broker_name)
+    page.store.add(account_id, broker_name, account_id)
     page.order_queue.enqueue(
         Order(nsc_id="nsc-scheduled", side=1, price=1000, quantity=10),
         account_id,
@@ -971,7 +971,7 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
 
     queue = OrderQueue()
     store = AccountStore()
-    store.add("ACC-001", "SIM")
+    store.add("ACC-001", "SIM", "ACC-001")
     store.set_active("ACC-001")
 
     service = MarketClockService(now_utc=(lambda: FIXED_NOW))

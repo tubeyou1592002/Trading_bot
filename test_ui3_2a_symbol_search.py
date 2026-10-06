@@ -840,7 +840,7 @@ def test_22_active_account_from_existing_store(qapp):
     assert window.order_configuration_page.store is window.account_store
     assert window.accounts_page.store is window.account_store
 
-    window.account_store.add("ACC-001", "آگاه")
+    window.account_store.add("ACC-001", "آگاه", "ACC-001")
     # no fallback: without explicit activation nothing is shown
     window.order_configuration_page.refresh_active_account()
     assert STRINGS.NO_ACTIVE_ACCOUNT in (

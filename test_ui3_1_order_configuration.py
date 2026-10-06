@@ -342,7 +342,7 @@ def test_10_active_account_from_store_no_fallback(qapp):
     assert window.accounts_page.store is window.account_store
 
     # with no active account: no fallback is used
-    window.account_store.add("ACC-001", "آگاه")
+    window.account_store.add("ACC-001", "آگاه", "ACC-001")
     window.order_configuration_page.refresh_active_account()
     text_no_active = window.order_configuration_page.active_account_label.text()
     assert STRINGS.NO_ACTIVE_ACCOUNT in text_no_active
@@ -617,14 +617,14 @@ def test_15_ui1_and_ui2_1_contracts_preserved(window):
     # same rules (no auto-active, duplicate rejection, single active)
     assert "Accounts" not in window.placeholder_pages
     store = window.account_store
-    store.add("ACC-001", "آگاه")
-    store.add("ACC-002", "آگاه")
+    store.add("ACC-001", "آگاه", "ACC-001")
+    store.add("ACC-002", "آگاه", "ACC-002")
     assert store.active_account_id() is None
     import pytest as _pytest
     from ui.account_store import AccountStoreError
 
     with _pytest.raises(AccountStoreError):
-        store.add("ACC-001", "آگاه")
+        store.add("ACC-001", "آگاه", "ACC-001")
     store.set_active("ACC-002")
     assert store.is_active("ACC-001") is False
     assert store.is_active("ACC-002") is True
@@ -739,8 +739,8 @@ def test_extra_active_account_refreshed_on_page_reentry(qapp):
     window = MainWindow()
     store = window.account_store
 
-    store.add("ACC-001", "آگاه")
-    store.add("ACC-002", "آگاه")
+    store.add("ACC-001", "آگاه", "ACC-001")
+    store.add("ACC-002", "آگاه", "ACC-002")
 
     # 1. activate the first account
     store.set_active("ACC-001")
@@ -779,7 +779,7 @@ def _make_valid_page(qapp, store, queue):
     Build a page whose Test button conditions are fully valid:
     active account, selected instrument and one queued order.
     """
-    store.add("ACC-001", "آگاه")
+    store.add("ACC-001", "آگاه", "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue)
     page.config.select_instrument(
@@ -866,7 +866,7 @@ def test_ui5t1_click_again_on_to_off(qapp, store):
 
 
 def test_ui5t1_disabled_when_queue_empty(qapp, store):
-    store.add("ACC-001", "آگاه")
+    store.add("ACC-001", "آگاه", "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
     page.config.select_instrument(
@@ -905,7 +905,7 @@ def test_ui5t1_disabled_when_account_missing(qapp, store):
 
 
 def test_ui5t1_disabled_when_instrument_missing(qapp, store):
-    store.add("ACC-001", "آگاه")
+    store.add("ACC-001", "آگاه", "ACC-001")
     store.set_active("ACC-001")
     queue = OrderQueue()
     order = CoreOrder(nsc_id="NSC-1", side=BUY, price=15000, quantity=500)
