@@ -229,6 +229,13 @@ QLabel[role="accent"] {{
     color: {p["accent"]};
 }}
 
+/* — Navigation panel (sidebar) ------------------------------------------- */
+
+QFrame#navPanel {{
+    background-color: {p["surface"]};
+    border-right: 1px solid {p["border"]};
+}}
+
 /* --- Buttons -------------------------------------------- */
 
 QPushButton {{
@@ -259,6 +266,24 @@ QPushButton:checked {{
     background-color: {p["accent"]};
     border-color: {p["accent"]};
     color: #ffffff;
+}}
+
+/* — Empty-state panel -------------------------------------------------- */
+
+QFrame#panel {{
+    background-color: {p["surface"]};
+    border: 1px solid {p["border"]};
+    border-radius: {radius}px;
+    padding: {s["lg"]}px;
+}}
+
+QLabel[labelType="emptyTitle"] {{
+    color: {p["text"]};
+}}
+
+QLabel[labelType="emptyDesc"] {{
+    color: {p["textMuted"]};
+    margin-top: {s["md"]}px;
 }}
 
 QPushButton[variant="primary"] {{

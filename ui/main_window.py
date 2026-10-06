@@ -37,9 +37,11 @@ from enum import Enum
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QFrame,
     QLabel,
     QMainWindow,
     QPushButton,
+    QSizePolicy,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -157,7 +159,8 @@ class MainWindow(QMainWindow):
         central_widget = QWidget(self)
         root_layout = QHBoxLayout(central_widget)
 
-        self.navigation_area = QWidget(central_widget)
+        self.navigation_area = QFrame(central_widget)
+        self.navigation_area.setObjectName("navPanel")
         self.navigation_area.setFixedWidth(180)
         navigation_layout = QVBoxLayout(self.navigation_area)
 
@@ -194,12 +197,33 @@ class MainWindow(QMainWindow):
         self.placeholder_pages = {}
 
         for name in PLACEHOLDER_ITEMS:
-            page = QLabel(
-                f"{STRINGS.nav_display(name)}\n\n{STRINGS.PLACEHOLDER_PAGE_BODY}",
-                self.content_area,
-            )
-            page.setAlignment(Qt.AlignCenter)
-            page.setWordWrap(True)
+            panel = QFrame(self.content_area)
+            panel.setObjectName("panel")
+            panel_layout = QVBoxLayout(panel)
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+
+            title = QLabel(STRINGS.nav_display(name), panel)
+            title.setProperty("labelType", "emptyTitle")
+            # UI-9.5 fix 1: the empty-state is a CENTRED GROUP (title above,
+            # description below), not two full-width stretched labels. Keep
+            # each label at its natural height and let flexible space above
+            # and below collect the rest, so the group sits in the middle of
+            # the card.
+            title.setAlignment(Qt.AlignCenter)
+            title.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+            desc = QLabel(STRINGS.PLACEHOLDER_PAGE_BODY, panel)
+            desc.setProperty("labelType", "emptyDesc")
+            desc.setWordWrap(True)
+            desc.setAlignment(Qt.AlignCenter)
+            desc.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+            panel_layout.addStretch(1)
+            panel_layout.addWidget(title)
+            panel_layout.addWidget(desc)
+            panel_layout.addStretch(2)
+
+            page = panel
             self.pages[name] = page
             self.placeholder_pages[name] = page
             self.content_area.addWidget(page)

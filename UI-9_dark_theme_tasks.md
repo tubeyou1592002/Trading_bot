@@ -414,15 +414,40 @@ The assertions must become stronger, not weaker: they must still prove that the 
 
 ---
 
-## Task UI-9.5 — Propagate the style, regression, documentation
+## Task UI-9.5 — Navigation polish, minimal empty states, guard test and UI-9 closure
 
-**Goal:** the same look on the remaining pages, plus closing the work.
+**Goal:** polish the permanent navigation sidebar, give the first screen (Home) a minimal empty-state rather than a bare centred label, make the UI-9.3 missing-glyph defect detectable by a small offline guard test, do a final English sweep over `ui/`, and close UI-9 in the documentation.
 
-**Work:**
-1. Apply the theme tokens and the Persian/RTL treatment to: `ui/accounts_page.py`, the Home and Settings placeholder pages (`ui/main_window.py`), the navigation bar, the status bar, and the Diagnostic section.
-2. Navigation bar: the active entry must be clearly distinguished and widths uniform. **Constraint:** `navigation_area` and the existing `select_page` mechanism must not change.
-3. **Documentation:** record the UI-9 decision in `DECISIONS.md` (a new Decision entry: dark theme, two-column layout, RTL/Persian, inline validation errors, font and digit policy including the font-distribution limitation), and add a UI-9 status section to `AI_HANDOFF.md`. Mark each task's status truthfully.
-4. **Final report must be exact:** the command run, passed/failed/deselected counts, and an explicit mention of the two pre-existing Block 8 failures (C8) and whether the two UI-3.1 hangs are now resolved.
+> **Status: COMPLETED — delivered and verified in this session (2026-10-06).**
+> **In scope (permanent value):** (1) navigation sidebar polish — the sidebar is permanent, not a placeholder;
+> (2) a **minimal** empty-state for Home and Settings so the app's first screen is not bare (Home is what the app opens on);
+> (3) a final sweep for leftover English user-facing text;
+> (4) a small guard test that makes the UI-9.3 missing-glyph defect class detectable automatically;
+> (5) closing the UI-9 documentation.
+>
+> **Deferred (recorded, not done):** the real design and content of Home and Settings — to be done when those pages are actually implemented.
+> At that point the temporary empty-state added here is replaced. Investing a full design in them now would be wasted work.
+>
+> **Delivered:** `ui/theme.py` (add `QFrame#navPanel` + `QFrame#panel` + `QLabel[labelType="empty..."]` rules, all token-driven),
+> `ui/main_window.py` (navigation area is now a `QFrame#navPanel`; placeholder pages are a minimal centred panel: surface/card + title + muted Persian description;
+> kept `setCheckable(True)`, the `nav_buttons` keys, and the single `select_page` mechanism untouched; kept `navigation_area` fixed width 180),
+> `ui/strings.py` (replaced the developer-note `PLACEHOLDER_PAGE_BODY` with a Persian user-facing sentence),
+> and the new guard test `test_ui9_task5_ui_polish.py`.
+>
+> **Verified (this session, actual runs):** pre-edit baseline **565 passed, 0 failed, 0 deselected, EXIT=0**;
+> post-edit full 30-file sweep **565 passed, 0 failed, 0 deselected, EXIT=0** (no regression, re-confirmed after the correction round); new guard test `test_ui9_task5_ui_polish.py` **112 passed, 0 failed, EXIT=0** (0.46 s, own run);
+> Block 8 pair 60 s cap **EXIT=1, 2 failed** (pre-existing, unchanged). Structural invariants all hold:
+> `content_area.count() == 4`; `set(window.placeholder_pages) == {"Home", "Settings"}`;
+> `pages[key] is placeholder_pages[key]` and `content_area.currentWidget() is placeholder_pages[key]` for both keys and through navigation clicks;
+> `set(window.nav_buttons) == {"Home", "Accounts", "Order Configuration", "Settings"}`; Order-page C5 parents intact.
+>
+> **Plain-language closure notes:** UI-9.4 fixed the two modal-dialog hangs (`test_5_quantity_enter_and_store` and
+> `test_extra_page_preserves_state_on_fractional_input`); as a result the old deselect flags used in earlier tasks are obsolete
+> (`test_ui3_1_order_configuration.py` now runs with no deselect flags at all). Home and Settings are placeholders and will be rebuilt as real pages later;
+> the temporary empty-state added here is replaced then.
+>
+> **Files changed:** `ui/theme.py`, `ui/main_window.py`, `ui/strings.py`, and the new test file `test_ui9_task5_ui_polish.py`.
+> Nothing committed, nothing pushed.
 
 ---
 

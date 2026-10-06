@@ -2941,7 +2941,7 @@ Next step: UI-4 — Order Queue
 | UI-9.2b | Queue status moved into its own bordered group box | COMPLETED — verified |
 | UI-9.3 | Persian localization, RTL, digit policy, glyph fixes | COMPLETED — verified |
 | UI-9.4 | Inline validation errors instead of modal dialogs | COMPLETED — verified |
-| UI-9.5 | Propagate the style to the other pages + documentation | NOT STARTED |
+| UI-9.5 | Navigation polish (sidebar panel + minimal empty-state), final English sweep, guard test for the UI-9.3 missing-glyph defect, and UI-9 closure | COMPLETED — verified |
 
 **Verified results (Architect, 2026-10-04, independent runs):**
 - mandated baseline: **310 passed, 2 deselected, EXIT=0**
@@ -2950,11 +2950,19 @@ Next step: UI-4 — Order Queue
   no deselect flags at all (32 passed, 0 deselected). `test_5_quantity_enter_and_store` and
   `test_extra_page_preserves_state_on_fractional_input` had been deselected in every run since UI-7;
   they now pass. Any earlier runbook that deselects them is obsolete.
+
+**Final full-suite result (this session, actual runs, after UI-9.5):**
+- all 30 `test_ui*.py` files, with no deselection: **565 passed, 0 failed, 0 deselected, EXIT=0** — unchanged by UI-9.5 (pre-edit baseline AND post-edit sweep both measured at exactly this; re-confirmed after the UI-9.5 correction round: 565 passed in 60.8 s, EXIT=0)
+- new guard test `test_ui9_task5_ui_polish.py`: **112 passed, 0 failed, EXIT=0** (0.46 s, own run; re-run after the correction round)
+- Block 8 pair (60 s cap, pre-existing, unchanged): **EXIT=1, 2 failed**
+- `UI-9 is COMPLETE` (UI-9.1, UI-9.2, UI-9.2b, UI-9.3, UI-9.4, UI-9.5 all completed and verified).
+  `test_extra_page_preserves_state_on_fractional_input` had been deselected in every run since UI-7;
+  they now pass. Any earlier runbook that deselects them is obsolete.
 - **no `QMessageBox` call site remains in `ui/`** — validation errors are inline messages styled from the
   theme's danger token, empty and hidden when there is no error, so error-free layout is unchanged
 - two pre-existing Block 8 `broker_received_at` failures remain; they are unrelated to UI-9
 - `core/` order path untouched; `ui/test_runner.py` still carries only its own pre-existing
-  uncommitted change (23+/10−), which is **not** part of UI-9
+  uncommitted change (23+/10−, `git diff --numstat` verified), which is **not** part of UI-9
 - RTL applied **only** in `create_app()` (`ui/app.py`); measured column orientation is
   **RIGHT = order information, LEFT = scheduling**, exactly as required
 

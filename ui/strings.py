@@ -516,7 +516,7 @@ def nav_display(page_key):
     return NAV_DISPLAY.get(page_key, page_key)
 
 
-PLACEHOLDER_PAGE_BODY = "(جای‌نگهدار - در مرحله بعد پیاده‌سازی می‌شود)"
+PLACEHOLDER_PAGE_BODY = "صفحهٔ خانه هنوز پیاده‌سازی نشده است."
 
 MODE_LABEL_PREFIX = "حالت:"
 MODE_NORMAL = "عادی"

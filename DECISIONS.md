@@ -1338,7 +1338,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 029 — UI-9 Dark Theme, Two-Column Order Layout and Persian/RTL Localization
 
-**Status:** Accepted. UI-9.1, UI-9.2, UI-9.2b, UI-9.3 and UI-9.4 are COMPLETE and Architect-verified (2026-10-04). UI-9.5 (style propagation + documentation) is NOT STARTED and requires separate approval.
+**Status:** Accepted and COMPLETE. UI-9.1, UI-9.2, UI-9.2b, UI-9.3 and UI-9.4 are COMPLETE and Architect-verified (2026-10-04). UI-9.5 (navigation polish, minimal empty-state, guard test and UI-9 closure) is now COMPLETED and verified in this session (2026-10-06). **UI-9 as a whole is COMPLETE.** The two long-standing modal-dialog hangs were fixed by UI-9.4; the old deselect flags used in earlier tasks are now obsolete.
 
 **Decision:**
 1. The User Application uses one dark theme, defined by tokens in `ui/theme.py` (palette, a 4/8/12/16/24 spacing scale, geometry) and applied from `create_app()` and `MainWindow`. PySide6 is kept; no framework change.
@@ -1382,3 +1382,33 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 **Accepted limitation (Product Owner decision):** the inline message carries the Persian dialog-title constant (e.g. «قیمت نامعتبر») rather than the removed dialogs' English reason body (e.g. "Price must be an integer …"). The Product Owner reviewed this and accepted it as sufficiently clear for the user; surfacing the reason would require new Persian reason constants and is not part of UI-9.
 
 **Housekeeping noted, not caused by this task:** `test_ui5_task3_feedback_service.py` is a 0-byte tracked file (0 bytes at HEAD too), so a whole-suite run reports `EXIT=5` / "no tests collected" for it. It is not a failure but it means a literal 30/30 `EXIT=0` gate is not meaningful until that file is either populated or removed.
+
+### UI-9.5 completion record (2026-10-06) — navigation polish, minimal empty states, guard test, UI-9 closure
+
+**Delivered:** the navigation sidebar is now a distinct panel (`QFrame#navPanel` — surface background + separating right edge) so it reads as navigation rather than as another page; the active entry is unambiguous (the existing `QPushButton:checked` accent rule plus a dedicated sidebar surface). The Home and Settings placeholder pages are now a **minimal** empty-state panel (`QFrame#panel` with a centred title and a muted Persian description) so the application's first screen (Home, which the app opens on) is not bare. The last user-visible English-ish placeholder text — the developer-note `PLACEHOLDER_PAGE_BODY` — was replaced with a Persian user-facing sentence in `ui/strings.py`. All colours, spacing, radii and font sizes come from `ui/theme.py` tokens; no magic numbers, no new hex.
+
+**One new guard test added — the only new test file authorized by this task:** `test_ui9_task5_ui_polish.py` (offline, deterministic, own file-local `qapp` fixture). It asserts for the surfaces this task touches (the main window, its navigation, the placeholder pages) that (1) no displayed user-facing string is a hard-coded English literal — user-facing text comes from `ui/strings.py` — and (2) no displayed character lacks a glyph in the application font — checked against the real font file's cmap (fontTools, with a `pytest.skip` fallback when fontTools is not installed), where a missing codepoint means `.notdef` (the empty box). This is the automatic detection of the UI-9.3 missing-glyph defect class (`—` / `→` rendering as empty boxes), which had previously been found by eye only.
+
+**Deferred (recorded, not done):** the real design and content of Home and Settings. They remain placeholders; the temporary empty-state added here is replaced when those pages are actually implemented. Investing a full design in them now would be wasted work.
+
+**The old deselect flags are obsolete.** UI-9.4 fixed the two long-standing modal-dialog hangs (`test_5_quantity_enter_and_store`, `test_extra_page_preserves_state_on_fractional_input`), so `test_ui3_1_order_configuration.py` now runs with **no deselect flags at all**. Any earlier runbook that deselects them is stale.
+
+**Architect-verified results (this session, actual runs):**
+- pre-edit baseline (Step 1, before any edit): **565 passed, 0 failed, 0 deselected, EXIT=0**
+- post-edit full 30-file sweep (Step 3, after edits): **565 passed, 0 failed, 0 deselected, EXIT=0** — no regression
+- new guard test `test_ui9_task5_ui_polish.py`: **112 passed, 0 failed, EXIT=0** (0.46 s, own run)
+- Block 8 pair (60 s cap, pre-existing): **EXIT=1, 2 failed** — unchanged, reported not claimed green
+- structural invariants preserved (Step 3.3): `content_area.count() == 4`; `set(window.placeholder_pages) == {"Home", "Settings"}`; `pages[key] is placeholder_pages[key]` and `content_area.currentWidget() is placeholder_pages[key]` for both keys (and through navigation clicks); `set(window.nav_buttons) == {"Home", "Accounts", "Order Configuration", "Settings"}`; Order page C5 parents intact (`queue_list.parent().title() == GROUP_ORDER_QUEUE`, `result_list.parent().title() == GROUP_TEST_RESULTS`); `ui/test_runner.py` diff unchanged (pre-existing 23+/10−, verified via `git diff --numstat`).
+- English sweep over `ui/`: **none found** on user-facing surfaces reachable from the main window / navigation / placeholder pages; every user-facing string there comes from `ui/strings.py`. Internal English (page keys, `ApplicationMode` enum values, developer-facing exception messages) is intentional and left in place.
+
+**Files changed by this task:** `ui/theme.py` (add nav panel + empty-state panel token-driven rules), `ui/main_window.py` (nav area is now a `QFrame#navPanel`; placeholder pages are minimal centred panels; `QFrame`/`QSizePolicy` imports added), `ui/strings.py` (replace developer-note `PLACEHOLDER_PAGE_BODY` with Persian user-facing text), plus the new test file `test_ui9_task5_ui_polish.py`.
+
+**Constraint C12 note:** `ui/theme.py` was modified only to add token-driven rules using the existing palette/spacing/radius tokens — no new hex, no magic numbers.
+
+**Constraints preserved:** C1–C13 all hold. In particular: C2 (`ui/test_runner.py` untouched), C4 (page identities preserved — the placeholder widget class changed from `QLabel` to `QFrame` but every identity assertion still holds because no test asserts `QLabel`), C5 (Order-page parents intact), C6 (new test file imports nothing from `main`/`brokers.*`/`core.*`), C8 (Block 8 failures reported, not claimed green), C10 (no commit, no push), C11 (no user-facing English introduced), C13 (bound in 2.2 not exceeded).
+
+**Screenshots (mandatory):** captured via the real application path — `ui_app.create_app([])` (which applies theme, font and RTL) — then `MainWindow` shown and grabbed. `photos/ui95_home.png`, `photos/ui95_settings.png`, `photos/ui95_navigation.png`. The offscreen font note was applied (`QFontDatabase.addApplicationFont(IRANSansX-Regular.ttf)` **after** the `QApplication` exists). Navigation-bar geometry verified programmatically: `nav.x=1091` on a 1280-wide window → sidebar is on the RIGHT under RTL. Empty-state geometry verified: labels are `Preferred/Fixed` (not stretched; `labels_full_width=False`), the title+description group is pulled to the vertical middle of the card by stretch above/below (1 above, 2 below).
+
+**Known limitations:** a font file is not bundled, so a machine without IRANSansX falls back through the chain; the two pre-existing Block 8 `broker_received_at` failures and the pre-existing uncommitted `ui/test_runner.py` change remain open and separately scoped; `test_ui5_task3_feedback_service.py` is a 0-byte tracked file (0 bytes at HEAD), so a literal 30/30 `EXIT=0` gate is not meaningful until it is populated or removed.
+
+**COMMIT / PUSH NOT DONE** — awaiting Architect review.
