@@ -366,7 +366,7 @@ def test_6_retyping_or_clearing_drops_previous_state(qapp, store):
     page.symbol_input.setCurrentText("فولان")
     _drain(qapp, page)
     assert page.config.selected_instrument is None
-    assert _state_text(page) == "—"
+    assert _state_text(page) == STATUS_LABEL_UNKNOWN
     assert "قابل معامله" not in _state_text(page)
 
     # 6b. a fresh selection rebuilds the state from the real seam
@@ -376,7 +376,7 @@ def test_6_retyping_or_clearing_drops_previous_state(qapp, store):
     # 6c. clearing the input: no state may remain
     page.symbol_input.setCurrentText("")
     _drain(qapp, page)
-    assert _state_text(page) == "—"
+    assert _state_text(page) == STATUS_LABEL_UNKNOWN
     assert page.config.selected_instrument is None
     assert "قابل معامله" not in _state_text(page)
 
@@ -389,7 +389,7 @@ def test_6_retyping_or_clearing_drops_previous_state(qapp, store):
     assert "قابل معامله" in _state_text(page)
     page.symbol_input.setCurrentText("   ")
     _drain(qapp, page)
-    assert _state_text(page) == "—"
+    assert _state_text(page) == STATUS_LABEL_UNKNOWN
 
 
 # ============================================================
@@ -456,7 +456,7 @@ def test_extra_stale_state_result_never_becomes_new_status(qapp, store):
 
     # the user types new text while the query is in flight
     page.symbol_input.setCurrentText("فولان")
-    assert _state_text(page) == "—"
+    assert _state_text(page) == STATUS_LABEL_UNKNOWN
     assert page._trading_state_instrument is None  # A is no longer shown
 
     # the late result arrives — it must be discarded
@@ -464,7 +464,7 @@ def test_extra_stale_state_result_never_becomes_new_status(qapp, store):
     page.wait_for_trading_state_workers(timeout_ms=10000)
     qapp.processEvents()
 
-    assert _state_text(page) == "—"
+    assert _state_text(page) == STATUS_LABEL_UNKNOWN
     assert "قابل معامله" not in _state_text(page)
     assert stale_ins_code not in _state_text(page)
 
@@ -484,7 +484,7 @@ def test_extra_stale_state_result_never_becomes_new_status(qapp, store):
     release2.set()
     page2.wait_for_trading_state_workers(timeout_ms=10000)
     qapp.processEvents()
-    assert _state_text(page2) == "—"
+    assert _state_text(page2) == STATUS_LABEL_UNKNOWN
 
 
 # ============================================================
@@ -598,8 +598,7 @@ def test_extra_main_window_lazy_real_query_factory(qapp):
             "assert page._trading_state_factory is not None",
             "banned = ('brokers', 'market', 'core')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
-            "assert not leaked, f'UI construction imported trading modules: {leaked}'",
-            "assert page.trading_state_label.text() == '\u2014'",
+            "assert not leaked, f'UI construction imported trading modules: {leaked}'",                "assert page.trading_state_label.text() == '-'",
             "# the real factory builds the EXISTING seam",
             "query = window._real_trading_state_query()",
             "from core.trading_state_query import TradingStateQuery",

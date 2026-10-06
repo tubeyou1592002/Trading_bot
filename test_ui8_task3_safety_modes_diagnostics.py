@@ -4,6 +4,8 @@ test_ui8_task3_safety_modes_diagnostics.py
 UI-8 Task 3 — Safety controls, Test/Diagnostic modes and diagnostic data,
 verified over the REAL UI path, fully offline.
 
+from ui import strings as STRINGS
+
 Coverage review (what already exists, so nothing here duplicates it):
 
   * ``test_ui6_task1_diagnostic_mode.py`` covers the diagnostic boundary, the
@@ -368,7 +370,7 @@ def test_task3_real_failure_hides_previous_trace_and_timing(
 
     # the failure is surfaced with the existing UI-5 contract
     assert page._last_test_error == "real dispatch failure"
-    assert "could not be issued" in page.queue_status_label.text()
+    assert STRINGS.TEST_ISSUE_FAILED.split("{", 1)[0] in page.queue_status_label.text()
 
     # (4)+(5) neither the previous run's trace id nor its timings are shown
     # as the new run's: both lines fall back to the unavailable marker.
@@ -447,3 +449,5 @@ def test_task3_real_m6_rejection_blocks_the_order_fail_closed(
     row_text = page.result_list.item(0).text()
     assert RESULT_STATUS_BLOCKED in row_text
     assert result.trace_id not in row_text
+
+from ui import strings as STRINGS

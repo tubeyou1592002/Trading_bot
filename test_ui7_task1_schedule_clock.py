@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from ui import strings as STRINGS
 from ui.market_clock import (
     MarketClockInvalidResponse,
     MarketClockStale,
@@ -293,7 +294,9 @@ def test_invalid_inputs_are_rejected(qapp, start, end, interval):
     apply_schedule(page)
 
     summary = page.schedule_summary_label.text()
-    assert "rejected" in summary.lower(), summary
+    assert (
+        STRINGS.SCHEDULE_REJECTED.split("{", 1)[0].strip() in summary
+    ), summary
     assert page.schedule_timing() is None
     assert page.schedule_state() is None
     assert page.schedule_times() == ()
@@ -320,7 +323,10 @@ def test_rejection_after_a_valid_apply_does_not_leave_a_stale_schedule(qapp):
     apply_schedule(page)
     assert page.schedule_timing() is None
     assert page.schedule_times() == ()
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert (
+        STRINGS.SCHEDULE_REJECTED.split("{", 1)[0].strip()
+        in page.schedule_summary_label.text()
+    )
 
 
 # ============================================================
@@ -362,8 +368,10 @@ def test_summary_is_clear_and_shows_window_interval_and_clock(qapp):
     assert "13:01:00" in summary
     assert "15" in summary
     assert "Asia/Tehran" in summary
-    assert "Run moments in window: 5" in summary
-    assert "Clock:" in summary
+    assert STRINGS.SUMMARY_RUN_MOMENTS.format(
+        count=STRINGS.format_persian_digits(5)
+    ) in summary
+    assert STRINGS.SUMMARY_CLOCK.split("{", 1)[0].strip() in summary
 
 
 def test_window_too_large_is_not_truncated_silently(qapp):
@@ -571,8 +579,13 @@ def test_start_already_past_begins_once_and_skips_missed_moments(qapp):
     now_tehran = later.astimezone(TEHRAN)
     for moment in state.upcoming:
         assert moment.astimezone(TEHRAN) > now_tehran
-    assert "not replayed" in page.schedule_summary_label.text()
-    assert "Immediate start: once, now" in page.schedule_summary_label.text()
+    assert (
+        STRINGS.SUMMARY_SKIPPED.split("{", 1)[0].strip()
+        in page.schedule_summary_label.text()
+    )
+    assert (
+        STRINGS.SUMMARY_IMMEDIATE_START in page.schedule_summary_label.text()
+    )
 
 
 def test_expired_window_dispatches_nothing(qapp):
@@ -587,7 +600,10 @@ def test_expired_window_dispatches_nothing(qapp):
     assert state.fire_now is False
     assert state.upcoming == ()
     assert state.is_expired is True
-    assert "expired" in page.schedule_summary_label.text().lower()
+    assert (
+        STRINGS.STATE_EXPIRED.split("\u2014", 1)[0].strip()
+        in page.schedule_summary_label.text()
+    )
 
 
 def test_missed_moments_are_never_replayed_in_order(qapp):
@@ -907,6 +923,7 @@ def test_main_window_construction_stays_offline_with_the_schedule_group():
         [
             "import sys",
             "import ui.app as ui_app",
+            "from ui import strings as STRINGS",
             "from ui.main_window import MainWindow",
             "app = ui_app.create_app([])",
             "window = MainWindow()",
@@ -914,7 +931,7 @@ def test_main_window_construction_stays_offline_with_the_schedule_group():
             "banned = ('brokers', 'market', 'core', 'main')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
             "assert not leaked, f'UI imported trading modules: {leaked}'",
-            "assert page.apply_schedule_button.text() == 'Apply Schedule'",
+            "assert page.apply_schedule_button.text() == STRINGS.BUTTON_APPLY_SCHEDULE",
             "assert page.schedule_timing() is None",
             "print('UI7_OFFLINE_OK')",
         ]
@@ -1344,7 +1361,10 @@ def test_a_rejected_input_never_starts_a_clock_refresh(qapp):
     _drain_events()
 
     assert transport.calls == [], "an invalid input must not hit the network"
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert (
+        STRINGS.SCHEDULE_REJECTED.split("{", 1)[0].strip()
+        in page.schedule_summary_label.text()
+    )
     assert page.schedule_timing() is None
 
 

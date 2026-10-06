@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from models.account import AccountValidationError
 from ui.account_store import AccountStoreError
+from ui import strings as STRINGS
 
 # The only broker implemented in the repository today (UI-2.1).
 # Deliberately NOT read from BrokerManager — no broker object is created.
@@ -69,23 +70,23 @@ class AccountsPage(QWidget):
         # Add Account group
         # ---------------------------------------------
 
-        add_group = QGroupBox("Add Account", self)
+        add_group = QGroupBox(STRINGS.GROUP_ADD_ACCOUNT, self)
         add_form = QGridLayout(add_group)
 
-        add_form.addWidget(QLabel("Account ID:", add_group), 0, 0)
+        add_form.addWidget(QLabel(STRINGS.LABEL_ACCOUNT_ID, add_group), 0, 0)
         self.account_id_input = QLineEdit(add_group)
         self.account_id_input.setPlaceholderText(
-            "e.g. ACC-001 \u2014 the account's explicit identity"
+            STRINGS.PLACEHOLDER_ACCOUNT_ID
         )
         add_form.addWidget(self.account_id_input, 0, 1)
 
-        add_form.addWidget(QLabel("Broker:", add_group), 1, 0)
+        add_form.addWidget(QLabel(STRINGS.LABEL_BROKER, add_group), 1, 0)
         self.broker_selector = QComboBox(add_group)
         for broker_name in AVAILABLE_BROKERS:
             self.broker_selector.addItem(broker_name)
         add_form.addWidget(self.broker_selector, 1, 1)
 
-        self.add_button = QPushButton("Add", add_group)
+        self.add_button = QPushButton(STRINGS.BUTTON_ADD, add_group)
         self.add_button.clicked.connect(self._on_add_clicked)
         add_form.addWidget(self.add_button, 2, 0, 1, 2)
 
@@ -95,12 +96,16 @@ class AccountsPage(QWidget):
         # Account list (Account ID | Broker | Active)
         # ---------------------------------------------
 
-        list_group = QGroupBox("Accounts", self)
+        list_group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
         list_layout = QVBoxLayout(list_group)
 
         self.accounts_table = QTableWidget(0, 3, list_group)
         self.accounts_table.setHorizontalHeaderLabels(
-            ["Account ID", "Broker", "Active"]
+            [
+                STRINGS.TABLE_HEADER_ACCOUNT_ID,
+                STRINGS.TABLE_HEADER_BROKER,
+                STRINGS.TABLE_HEADER_ACTIVE,
+            ]
         )
         self.accounts_table.horizontalHeader().setSectionResizeMode(
             QHeaderView.Stretch
@@ -112,7 +117,7 @@ class AccountsPage(QWidget):
 
         # Explicit "set active" action on the selected row.
         selection_row = QHBoxLayout()
-        self.set_active_button = QPushButton("Set Active", list_group)
+        self.set_active_button = QPushButton(STRINGS.BUTTON_SET_ACTIVE, list_group)
         self.set_active_button.clicked.connect(self._on_set_active_clicked)
         selection_row.addWidget(self.set_active_button)
         selection_row.addStretch(1)
@@ -134,7 +139,7 @@ class AccountsPage(QWidget):
         try:
             self.store.add(account_id, broker_name)
         except (AccountStoreError, AccountValidationError) as exc:
-            QMessageBox.warning(self, "Invalid account", str(exc))
+            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_ACCOUNT, str(exc))
             return
 
         self.account_id_input.clear()
@@ -145,7 +150,7 @@ class AccountsPage(QWidget):
         row = self.accounts_table.currentRow()
         if row < 0:
             QMessageBox.information(
-                self, "No selection", "Select an account in the list first."
+                self, STRINGS.DIALOG_NO_SELECTION, STRINGS.DIALOG_SELECT_ACCOUNT_FIRST
             )
             return
 
@@ -153,7 +158,7 @@ class AccountsPage(QWidget):
         try:
             self.store.set_active(account_item.text())
         except AccountStoreError as exc:
-            QMessageBox.warning(self, "Invalid account", str(exc))
+            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_ACCOUNT, str(exc))
             return
 
         self._refresh_list()

@@ -971,7 +971,7 @@ class MarketClockService:
         self._last_error = str(reason)
         self._applied_offset = self._step_toward(timedelta(0))
         self._notice = (
-            f"{CLOCK_NOTICE_SYSTEM} — market time unavailable "
+            f"{CLOCK_NOTICE_SYSTEM} - market time unavailable "
             f"({reason}); using system clock"
         )
         return self.status()

@@ -82,6 +82,7 @@ from ui.order_configuration_page import (
     STATUS_PENDING_LABEL,
     OrderConfigurationPage,
 )
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -302,7 +303,7 @@ def test_1_add_to_queue_action_and_queue_view_exist(qapp):
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
 
     assert page.add_to_queue_button is not None
-    assert "Add to Queue" in page.add_to_queue_button.text()
+    assert STRINGS.BUTTON_ADD_TO_QUEUE in page.add_to_queue_button.text()
 
     assert isinstance(page.queue_list, QListWidget)
     assert page.queue_list.count() == 0
@@ -311,8 +312,10 @@ def test_1_add_to_queue_action_and_queue_view_exist(qapp):
     from PySide6.QtWidgets import QGroupBox
 
     assert isinstance(page.queue_list.parent(), QGroupBox)
-    assert page.queue_list.parent().title() == "Order Queue"
-    assert page.queue_count_label.text() == "0 order(s) in queue"
+    assert page.queue_list.parent().title() == STRINGS.GROUP_ORDER_QUEUE
+    assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
+        count=STRINGS.format_persian_digits(0)
+    )
 
 
 # ============================================================
@@ -430,12 +433,16 @@ def test_6_visible_list_reflects_list_pending(qapp):
     assert "500" in row_one           # the int quantity
     assert ACCOUNT_ONE in row_one
     assert BROKER_ONE in row_one
-    assert page.queue_count_label.text() == "1 order(s) in queue"
+    assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
+        count=STRINGS.format_persian_digits(1)
+    )
 
     page.symbol_input.setCurrentText("")  # clear keeps prior queue intact
     _drain(qapp, page)
     assert page.queue_list.count() == 1  # display unchanged by symbol edit
-    assert page.queue_count_label.text() == "1 order(s) in queue"
+    assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
+        count=STRINGS.format_persian_digits(1)
+    )
 
 
 # ============================================================

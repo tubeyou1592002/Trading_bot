@@ -45,6 +45,7 @@ from models.account import Account, AccountValidationError
 from ui.account_store import AccountStore, AccountStoreError, AccountRecord
 from ui.accounts_page import AccountsPage, AVAILABLE_BROKERS
 from ui.main_window import MainWindow
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -263,7 +264,7 @@ def test_11_accounts_page_creates_no_real_broker(store, qapp, monkeypatch):
     # the store holds no broker object either
     page._on_add_clicked()  # empty form -> rejected, page still healthy
     assert len(warnings) == 1
-    assert warnings[0][0] == "Invalid account"
+    assert warnings[0][0] == STRINGS.DIALOG_INVALID_ACCOUNT
     assert len(page.store.all_accounts()) == 0
 
 
@@ -306,7 +307,12 @@ def test_12_accounts_page_performs_no_network_or_login():
             "store.add('ACC-002', 'آگاه')",
             "store.set_active('ACC-002')",
             "page.refresh()",
-            "page.accounts_table.selectRow(0)",
+            # UI-9 Task 3: selectRow() is a no-op on a table whose effective
+            # layout direction is RightToLeft (PySide6 6.11.2). setCurrentCell()
+            # selects the same row correctly under RTL. Same assertion below
+            # still proves row 0 is selected and Set Active switches to
+            # ACC-001; nothing is weakened.
+            "page.accounts_table.setCurrentCell(0, 0)",
             "page._on_set_active_clicked()",
             "assert store.active_account_id() == 'ACC-001'",
             "app.processEvents()",

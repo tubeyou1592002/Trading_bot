@@ -47,6 +47,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import List, Optional, Sequence
 
+from ui import strings as STRINGS
 from ui.market_clock import TEHRAN_TIMEZONE
 
 
@@ -60,17 +61,17 @@ TIME_INPUT_PATTERN = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)(?::([0-5]\d))?$")
 #: Interval is a whole number of seconds. One format, one meaning.
 INTERVAL_INPUT_PATTERN = re.compile(r"^[0-9]+$")
 
-SCHEDULE_GROUP_TITLE = "Schedule"
-TIME_INPUT_PLACEHOLDER = "Tehran HH:MM:SS"
-INTERVAL_INPUT_PLACEHOLDER = "Seconds between runs"
+SCHEDULE_GROUP_TITLE = STRINGS.GROUP_SCHEDULE
+TIME_INPUT_PLACEHOLDER = STRINGS.PLACEHOLDER_TIME_INPUT
+INTERVAL_INPUT_PLACEHOLDER = STRINGS.PLACEHOLDER_INTERVAL_INPUT
 
-START_INPUT_LABEL = "Start Time:"
-END_INPUT_LABEL = "End Time:"
-INTERVAL_INPUT_LABEL = "Interval (seconds):"
+START_INPUT_LABEL = STRINGS.LABEL_START_TIME
+END_INPUT_LABEL = STRINGS.LABEL_END_TIME
+INTERVAL_INPUT_LABEL = STRINGS.LABEL_INTERVAL_SECONDS
 
-TIMEZONE_NOTE = "Asia/Tehran (UTC+03:30)"
+TIMEZONE_NOTE = STRINGS.NOTE_TIMEZONE
 
-SCHEDULE_UNAVAILABLE = "—"
+SCHEDULE_UNAVAILABLE = STRINGS.COUNTDOWN_UNAVAILABLE
 
 # UI-7 Task 2 — schedule lifecycle and freshness constants
 # --------------------------------------------------------
@@ -81,39 +82,34 @@ SCHEDULE_SYNC_MAX_AGE_SECONDS = 30.0
 #: User-facing labels for the schedule state machine. The order below is
 #: the lifecycle: configuring -> waiting -> counting (or starting once) ->
 #: stopped / expired, after which the page returns to configuring.
-SCHEDULE_STATE_CONFIG = "Configuring"
-SCHEDULE_STATE_WAITING = "Waiting for start time"
-SCHEDULE_STATE_COUNTING = "Counting down"
-SCHEDULE_STATE_START_NOW = "Start time reached — running once immediately"
-SCHEDULE_STATE_STOPPED = "Schedule stopped — configuring again"
-SCHEDULE_STATE_EXPIRED = "Schedule expired — no dispatch will be made"
+SCHEDULE_STATE_CONFIG = STRINGS.STATE_CONFIGURING
+SCHEDULE_STATE_WAITING = STRINGS.STATE_WAITING
+SCHEDULE_STATE_COUNTING = STRINGS.STATE_COUNTING
+SCHEDULE_STATE_START_NOW = STRINGS.STATE_START_NOW
+SCHEDULE_STATE_STOPPED = STRINGS.STATE_STOPPED
+SCHEDULE_STATE_EXPIRED = STRINGS.STATE_EXPIRED
 
 #: Button labels. The SAME button is Apply before a schedule is accepted
 #: and Stop afterwards (UI-7 Task 2); it is the only enabled button of the
 #: schedule/order set while a schedule is active.
-APPLY_BUTTON_LABEL = "Apply Schedule"
-STOP_BUTTON_LABEL = "Stop Schedule"
+APPLY_BUTTON_LABEL = STRINGS.BUTTON_APPLY_SCHEDULE
+STOP_BUTTON_LABEL = STRINGS.BUTTON_STOP_SCHEDULE
 
 #: Button labels of the independent manual sync action.
 SYNC_BUTTON_LABEL = "همگام‌سازی ساعت"
 SYNC_BUTTON_LABEL_BUSY = "در حال همگام‌سازی…"
-SYNC_BUTTON_LABEL_FAILED = "ناموفق — دوباره تلاش کنید"
+SYNC_BUTTON_LABEL_FAILED = "ناموفق - دوباره تلاش کنید"
 
 #: Countdown texts (UI-7 Task 2).
 COUNTDOWN_LABEL_UNAVAILABLE = SCHEDULE_UNAVAILABLE
-COUNTDOWN_LABEL_NO_UPCOMING = "No upcoming runs — schedule expired"
-COUNTDOWN_LABEL_STOPPED = "Schedule stopped — countdown cancelled"
+COUNTDOWN_LABEL_NO_UPCOMING = STRINGS.COUNTDOWN_NO_UPCOMING
+COUNTDOWN_LABEL_STOPPED = STRINGS.COUNTDOWN_STOPPED
 
 #: Sync line states (UI-7 Task 2). Each one is shown explicitly; a stale
 #: or missing reading is never dressed up as a fresh market clock.
-SYNC_STATE_IN_PROGRESS = "Sync in progress — waiting for the result…"
-SYNC_STATE_NEVER = (
-    "No market clock sync yet — press «همگام‌سازی ساعت» first "
-    "(system clock in use)"
-)
-SYNC_STATE_FAILED = (
-    "Last sync failed — market time unavailable, system clock in use"
-)
+SYNC_STATE_IN_PROGRESS = STRINGS.SYNC_IN_PROGRESS
+SYNC_STATE_NEVER = STRINGS.SYNC_NEVER
+SYNC_STATE_FAILED = STRINGS.SYNC_FAILED
 
 
 class ScheduleValidationError(ValueError):
@@ -305,9 +301,9 @@ class ScheduleState(Enum):
 
 
 STATE_LABEL = {
-    ScheduleState.PENDING: "Waiting for start time",
-    ScheduleState.START_NOW: "Start time reached — will begin once immediately",
-    ScheduleState.EXPIRED: "Schedule expired — no dispatch will be made",
+    ScheduleState.PENDING: STRINGS.STATE_WAITING,
+    ScheduleState.START_NOW: STRINGS.STATE_START_NOW,
+    ScheduleState.EXPIRED: STRINGS.STATE_EXPIRED,
 }
 
 
@@ -464,29 +460,45 @@ def build_schedule_summary(
 
 
 def describe_summary(summary: ScheduleSummary) -> str:
-    """A clear multi-line summary of the accepted schedule and clock."""
+    """A clear multi-line summary of the accepted schedule and clock.
+
+    Every visible word comes from ``STRINGS``; only the clock/moment values
+    (times, and the ``Asia/Tehran`` identifier) stay Latin because they are
+    technical, while the counts go through ``format_persian_digits``.
+    """
     lines = [
-        f"Window: {summary.start_text} → {summary.end_text} "
-        f"({summary.timezone_note})",
-        f"Interval: every {summary.interval_text}s",
-        f"Run moments in window: {summary.total_times}",
-        f"State: {summary.state_label}",
+        STRINGS.SUMMARY_WINDOW.format(
+            start=summary.start_text,
+            end=summary.end_text,
+            timezone=summary.timezone_note,
+        ),
+        STRINGS.SUMMARY_INTERVAL.format(
+            interval=STRINGS.format_persian_digits(summary.interval_text)
+        ),
+        STRINGS.SUMMARY_RUN_MOMENTS.format(
+            count=STRINGS.format_persian_digits(summary.total_times)
+        ),
+        STRINGS.SUMMARY_STATE.format(state=summary.state_label),
     ]
     if summary.missed_count:
         lines.append(
-            f"Skipped missed moments: {summary.missed_count} "
-            "(not replayed)"
+            STRINGS.SUMMARY_SKIPPED.format(
+                count=STRINGS.format_persian_digits(summary.missed_count)
+            )
         )
     if summary.next_times:
         rendered = ", ".join(_format_moment(m) for m in summary.next_times)
         shown = summary.upcoming_count > len(summary.next_times)
         lines.append(
-            f"Next moments ({summary.upcoming_count} remaining): "
-            f"{rendered}" + (" …" if shown else "")
+            STRINGS.SUMMARY_NEXT_MOMENTS.format(
+                count=STRINGS.format_persian_digits(summary.upcoming_count),
+                times=rendered,
+            )
+            + (" …" if shown else "")
         )
     else:
-        lines.append("Next moments: none")
+        lines.append(STRINGS.SUMMARY_NEXT_MOMENTS_NONE)
     if summary.fire_now:
-        lines.append("Immediate start: once, now")
-    lines.append(f"Clock: {summary.clock_description}")
+        lines.append(STRINGS.SUMMARY_IMMEDIATE_START)
+    lines.append(STRINGS.SUMMARY_CLOCK.format(clock=summary.clock_description))
     return "\n".join(lines)

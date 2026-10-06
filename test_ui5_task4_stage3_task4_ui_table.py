@@ -50,6 +50,7 @@ from ui.order_configuration_page import (
 )
 from ui.user_log import (
     COLUMN_QUEUE_STATUS,
+    EMPTY_CELL,
     ORDER_LOG_COLUMNS,
 )
 
@@ -239,9 +240,9 @@ class TestSevenColumnsRenderCorrectValues:
         entry.broker_name = BROKER
         _append(page, [entry], [], datetime(2026, 9, 30, 10, 0, 0))
 
-        assert _table_rows(page.order_log_table)[0][COLUMN_QUEUE_STATUS] == "—"
+        assert _table_rows(page.order_log_table)[0][COLUMN_QUEUE_STATUS] == EMPTY_CELL
         binder.emit_queue_position("DEC-NONE", 5)  # unknown id — no change
-        assert _table_rows(page.order_log_table)[0][COLUMN_QUEUE_STATUS] == "—"
+        assert _table_rows(page.order_log_table)[0][COLUMN_QUEUE_STATUS] == EMPTY_CELL
 
 
 # ---------------------------------------------------------------------------
@@ -350,7 +351,7 @@ class TestRowOrderPreserved:
         assert rows[0].queue_status is None
         assert rows[1].queue_status is None
         rendered = _table_rows(page.order_log_table)
-        assert rendered[0][COLUMN_QUEUE_STATUS] == "—"
+        assert rendered[0][COLUMN_QUEUE_STATUS] == EMPTY_CELL
         assert rendered[1][COLUMN_QUEUE_STATUS] == "2"
 
 

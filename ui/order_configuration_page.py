@@ -127,6 +127,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -138,11 +139,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+
+from ui import strings as STRINGS
+from ui.theme import GEOMETRY, PALETTE, SPACING
 
 from ui.market_clock import (
     MarketClockService,
@@ -231,8 +237,8 @@ RESULT_SEQUENCE_ROLE = Qt.UserRole + 1
 
 # The three explicit, separated search states.
 SEARCH_STATE_IDLE = ""
-SEARCH_STATE_SEARCHING = "Searching…"
-SEARCH_STATE_NO_RESULTS = "No symbols found"
+SEARCH_STATE_SEARCHING = STRINGS.SEARCH_SEARCHING
+SEARCH_STATE_NO_RESULTS = STRINGS.SEARCH_NO_RESULTS
 
 # UI-7 Task 2: how often the DISPLAY of the sync freshness line is
 # re-rendered while a reading ages. This is display-only — it never
@@ -261,13 +267,13 @@ QUEUE_ENTRY_ROLE = Qt.UserRole + 2
 # UI-4 — user-facing queue feedback. Status is plain text rendered on
 # the page (no message box on a path that must stay fail-closed and
 # deterministic offscreen).
-QUEUE_STATUS_EMPTY = "No order queued yet — configure the form and click \"Add to Queue\""
-QUEUE_STATUS_NO_ACCOUNT = "Cannot queue: no active account — select one on the Accounts page"
-QUEUE_STATUS_NO_SYMBOL = "Cannot queue: no symbol selected"
-QUEUE_STATUS_INCOMPLETE = "Cannot queue: complete side, price and quantity"
-QUEUE_STATUS_NO_IDENTITY = "Cannot queue: the symbol's order identity is not resolved yet — reselect the symbol"
-QUEUE_STATUS_BROKER_STALE = "Cannot queue: the order identity belongs to a different broker — reselect the symbol"
-QUEUE_STATUS_QUEUED = "Order queued"
+QUEUE_STATUS_EMPTY = STRINGS.QUEUE_STATUS_EMPTY
+QUEUE_STATUS_NO_ACCOUNT = STRINGS.QUEUE_STATUS_NO_ACCOUNT
+QUEUE_STATUS_NO_SYMBOL = STRINGS.QUEUE_STATUS_NO_SYMBOL
+QUEUE_STATUS_INCOMPLETE = STRINGS.QUEUE_STATUS_INCOMPLETE
+QUEUE_STATUS_NO_IDENTITY = STRINGS.QUEUE_STATUS_NO_IDENTITY
+QUEUE_STATUS_BROKER_STALE = STRINGS.QUEUE_STATUS_BROKER_STALE
+QUEUE_STATUS_QUEUED = STRINGS.QUEUE_STATUS_QUEUED
 
 # UI-5 Task 3 — per-order Test results. Only these three user-facing
 # statuses may ever be rendered; the raw per-order mode/message is never
@@ -286,15 +292,24 @@ RESULT_REASON_BLOCKED = "\u0627\u062c\u0631\u0627 \u0645\u062a\u0648\u0642\u0641
 RESULT_REASON_FAILED = "\u0627\u062c\u0631\u0627\u06cc \u0633\u0641\u0627\u0631\u0634 \u0646\u0627\u0645\u0648\u0641\u0642 \u0628\u0648\u062f"
 
 # Empty state of the Test Results area before the first Test run.
-RESULT_EMPTY_STATE = (
-    "\u0647\u0646\u0648\u0632 \u0646\u062a\u06cc\u062c\u0647 \u0627\u06cc \u062b\u0628\u062a "
-    "\u0646\u0634\u062f\u0647 \u0627\u0633\u062a — \u0627\u0628\u062a\u062f\u0627 Test \u0631\u0627 "
-    "\u0627\u062c\u0631\u0627 \u06a9\u0646\u06cc\u062f."
-)
+# The wording lives in ui.strings; re-exported here because it is part
+# of this module's existing public surface.
+RESULT_EMPTY_STATE = STRINGS.RESULT_EMPTY_STATE
 
 # Fail-closed placeholders for a per-order result row: a symbol the UI has
 # no record of (never a technical nscId / tseId) and an unknown side label.
-RESULT_SYMBOL_UNKNOWN = "\u2014"
+RESULT_SYMBOL_UNKNOWN = "-"
+
+
+def _symbol_status_display(status):
+    """Render a symbol-status *token* for humans (UI-9.3).
+
+    ``config.symbol_status()`` returns machine-checked English tokens that the
+    tests compare against; only the rendered text is Persian.
+    """
+    if status == SYMBOL_STATUS_NOT_AVAILABLE:
+        return STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
+    return status
 
 # UI-5 Task 4 (Stage 3) — the user-facing order log table.
 # The seven columns and their order live in ui.user_log.ORDER_LOG_COLUMNS; the
@@ -307,14 +322,30 @@ RESULT_SYMBOL_UNKNOWN = "\u2014"
 # EXISTING queue-position feedback signal of the SAME bound object). No queue
 # logic is implemented here — the page only consumes what the existing Stage
 # 2 path already computed.
-ORDER_LOG_GROUP_TITLE = "Order Log"
+ORDER_LOG_GROUP_TITLE = STRINGS.GROUP_ORDER_LOG
+
+# UI-9 Task 2b — title of the group box that holds the queue status line in
+# the scheduling column. English for now: Persian localization is UI-9.3,
+# which must include this string in its translation list.
+QUEUE_STATUS_GROUP_TITLE = STRINGS.GROUP_QUEUE_STATUS
+
+# UI-9 Task 2 — how many Order Log rows stay visible before the table
+# scrolls. A row is GEOMETRY["rowHeight"] tall, so this is expressed as a
+# count and the height is derived, keeping the layout free of magic pixels.
+ORDER_LOG_MIN_VISIBLE_ROWS = 4
 
 # UI-5 Task 4 Stage 3 Task 3 — the highlight of a row whose order was REALLY
 # registered in the trading core: a genuine matching-engine registration
 # event arrived for that exact order and was stamped on the row. The highlight
 # is derived ONLY from the row's ``registered_in_core`` flag (model state set
 # by the real event) — never from a timer, a guess or any other outcome.
-CORE_REGISTERED_ROW_COLOR = "#d9f2d9"
+#
+# UI-9 Task 2: the original value (#d9f2d9) was a very light mint, which is
+# unreadable as a cell BACKGROUND under the dark theme's light text. It is
+# now a dark success tint that keeps the same "this row succeeded" meaning
+# while letting the theme's light text stay legible on top of it. The tests
+# import this constant by name, so the contract is unchanged.
+CORE_REGISTERED_ROW_COLOR = "#123524"
 
 
 # ----------------------------------------------------------------------
@@ -329,24 +360,21 @@ CORE_REGISTERED_ROW_COLOR = "#d9f2d9"
 # actual ``OrderExecutionResult`` objects (core models, not invented UI
 # text). No latency measurement, Trace ID, endpoint or broker payload is
 # added here (later UI-6 tasks).
-DIAGNOSTIC_SECTION_TITLE = "Diagnostic — Execution Details (Test Pass)"
+DIAGNOSTIC_SECTION_TITLE = STRINGS.GROUP_DIAGNOSTIC
 
 # Head of every diagnostic entry: the user-visible 1-based position of the
 # order in the last Test pass (its index in the existing per-order result
 # rows), never a technical id.
-DIAGNOSTIC_ENTRY_PREFIX = "Order #{position}: "
+DIAGNOSTIC_ENTRY_PREFIX = STRINGS.DIAGNOSTIC_ENTRY_PREFIX
 
 # The verdict line comes from the EXISTING fail-closed result labels of
 # Task 3 (موفق / مسدودشده / ناموفق) — the same ``_result_status_label``
 # the Test Results area renders. No new verdict vocabulary is created.
-DIAGNOSTIC_VERDICT_PREFIX = "Execution verdict: "
+DIAGNOSTIC_VERDICT_PREFIX = STRINGS.DIAGNOSTIC_VERDICT_PREFIX
 
 # Diagnostic empty state — a real statement about the absence of a Test
 # pass, not a fabricated value.
-DIAGNOSTIC_EMPTY_STATE = (
-    "\u0647\u0646\u0648\u0632 \u062d\u0627\u0644\u062a Test \u0627\u062c\u0631\u0627 "
-    "\u0646\u0634\u062f\u0647 \u0627\u0633\u062a."
-)
+DIAGNOSTIC_EMPTY_STATE = STRINGS.DIAGNOSTIC_EMPTY_STATE
 
 # UI-6 Task 2 — the Trace ID line of the diagnostic section. The trace id
 # is the EXISTING dispatch-level id the Core already builds
@@ -356,15 +384,15 @@ DIAGNOSTIC_EMPTY_STATE = (
 # a missing/blank/foreign trace id renders the real unavailable marker —
 # never a substitute id (``execution_id`` is a DIFFERENT identifier and is
 # never shown in its place).
-DIAGNOSTIC_TRACE_LABEL = "Trace ID: "
-DIAGNOSTIC_TRACE_UNAVAILABLE = "\u2014"  # ناموجود / نامشخص
+DIAGNOSTIC_TRACE_LABEL = STRINGS.DIAGNOSTIC_TRACE_LABEL
+DIAGNOSTIC_TRACE_UNAVAILABLE = "-"  # ناموجود / نامشخص
 
 # UI-6 Task 3 — latency/execution diagnostics of the EXISTING Block 8
 # report (``DispatchLatencyReport`` of THIS run). The UI only RENDERS the
 # report's own measurements — it never measures, re-derives, sums unlike
 # categories or invents a value. Each category keeps its own name and
 # scope; ns values are displayed converted to ms (display-only).
-DIAGNOSTIC_LATENCY_TOTAL_LABEL = "\u0632\u0645\u0627\u0646 \u06a9\u0644 dispatch: "
+DIAGNOSTIC_LATENCY_TOTAL_LABEL = STRINGS.DIAGNOSTIC_LATENCY_TOTAL_LABEL
 DIAGNOSTIC_VALUE_UNAVAILABLE = "\u0646\u0627\u0645\u0648\u062c\u0648\u062f"
 
 # The four internal dispatch stages (Block 8 Task 8.2 — exactly these).
@@ -374,31 +402,23 @@ DIAGNOSTIC_LATENCY_STAGES = (
     "instrument_resolution",
     "order_engine_path",
 )
-DIAGNOSTIC_LATENCY_STAGE_PREFIX = (
-    "Order {order} \u2014 \u0645\u0631\u062d\u0644\u0647 {stage}: "
-)
+DIAGNOSTIC_LATENCY_STAGE_PREFIX = STRINGS.DIAGNOSTIC_STAGE_PREFIX
 
 # Broker/API round trip — the FULL measured call, never "network latency".
-DIAGNOSTIC_LATENCY_BROKER_PREFIX = (
-    "Order {order} \u2014 Broker/API {operation} #{call_number} "
-    "(\u0631\u0641\u062a\u0648\u0628\u0631\u06af\u0634\u062a): "
-)
-DIAGNOSTIC_LATENCY_BROKER_NONE = (
-    "Order {order} \u2014 Broker/API: "
-    "\u0641\u0631\u0627\u062e\u0648\u0627\u0646\u06cc \u062b\u0628\u062a\u200c\u0634\u062f\u0647\u200c\u0627\u06cc \u0646\u06cc\u0633\u062a"
-)
+DIAGNOSTIC_LATENCY_BROKER_PREFIX = STRINGS.DIAGNOSTIC_BROKER_PREFIX
+DIAGNOSTIC_LATENCY_BROKER_NONE = STRINGS.DIAGNOSTIC_BROKER_NONE
 
 # Application/Broker split values — rendered only as the record itself
 # carries them; a cross-clock ``None`` stays ناموجود (never estimated,
 # never 0).
 DIAGNOSTIC_LATENCY_APP_SIDE = (
-    "Order {order} \u2014 \u0632\u0645\u0627\u0646 \u0633\u0645\u062a \u0628\u0631\u0646\u0627\u0645\u0647 (application_side): "
+    "Order {order} - \u0632\u0645\u0627\u0646 \u0633\u0645\u062a \u0628\u0631\u0646\u0627\u0645\u0647 (application_side): "
 )
 DIAGNOSTIC_LATENCY_APP_BEFORE = (
-    "Order {order} \u2014 \u0628\u0631\u0646\u0627\u0645\u0647 \u0642\u0628\u0644 \u0627\u0632 Broker (application_before_broker): "
+    "Order {order} - \u0628\u0631\u0646\u0627\u0645\u0647 \u0642\u0628\u0644 \u0627\u0632 Broker (application_before_broker): "
 )
 DIAGNOSTIC_LATENCY_APP_AFTER = (
-    "Order {order} \u2014 \u0628\u0631\u0646\u0627\u0645\u0647 \u0628\u0639\u062f \u0627\u0632 Broker (application_after_broker): "
+    "Order {order} - \u0628\u0631\u0646\u0627\u0645\u0647 \u0628\u0639\u062f \u0627\u0632 Broker (application_after_broker): "
 )
 DIAGNOSTIC_LATENCY_APP_FIELDS = (
     (DIAGNOSTIC_LATENCY_APP_SIDE, "application_side_ns"),
@@ -607,33 +627,108 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_broker = None      # broker the nsc_id belongs to
         self._order_nsc_id = None               # the resolved broker nscId
 
+        # ---------------------------------------------
+        # UI-9 Task 2 — page shell: scroll + two columns + bottom tables
+        # ---------------------------------------------
+        #
+        # STRUCTURE CONTRACT (do not break):
+        #   * ``OrderConfigurationPage`` stays a plain QWidget and the very
+        #     same object is still what MainWindow adds to ``content_area``
+        #     (constraint C4: content_area.count() must stay 4).
+        #   * The scroll area is INNER: the page root keeps a bare
+        #     QVBoxLayout holding exactly one QScrollArea.
+        #   * Every spacing/margin value below comes from ui/theme.py
+        #     tokens — there are no magic numbers in this layout.
+        _pad = SPACING["md"]
+        _gap = SPACING["lg"]
+
         root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        # The inner scroll area. setWidgetResizable(True) makes the
+        # content track the viewport width, so the two columns always
+        # fill the page instead of collapsing to their minimum width.
+        self._page_scroll = QScrollArea(self)
+        self._page_scroll.setWidgetResizable(True)
+        self._page_scroll.setFrameShape(QFrame.NoFrame)
+        self._page_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded
+        )
+        root_layout.addWidget(self._page_scroll)
+
+        page_content = QWidget()
+        page_content.setObjectName("ui9PageContent")
+        content_layout = QVBoxLayout(page_content)
+        content_layout.setContentsMargins(_pad, _pad, _pad, _pad)
+        content_layout.setSpacing(_gap)
+        self._page_scroll.setWidget(page_content)
+
+        # --- Top row: two EQUAL columns ---------------------------
+        # Left column  = order information (account, order form,
+        #               symbol info, amounts)
+        # Right column = scheduling (schedule + countdown) and the
+        #               queue status line
+        top_row = QHBoxLayout()
+        top_row.setSpacing(_gap)
+
+        order_column = QWidget()
+        order_column.setObjectName("ui9OrderColumn")
+        order_column_layout = QVBoxLayout(order_column)
+        order_column_layout.setContentsMargins(0, 0, 0, 0)
+        order_column_layout.setSpacing(_gap)
+
+        schedule_column = QWidget()
+        schedule_column.setObjectName("ui9ScheduleColumn")
+        schedule_column_layout = QVBoxLayout(schedule_column)
+        schedule_column_layout.setContentsMargins(0, 0, 0, 0)
+        schedule_column_layout.setSpacing(_gap)
+
+        # A true 50/50 split. Equal stretch alone is NOT enough: the order
+        # column has a much larger minimum width (636px vs 582px measured),
+        # so the layout would keep it 52px wider. The Ignored horizontal
+        # policy tells the layout to ignore those differing size hints and
+        # divide the row evenly, which is what "two equal columns" means.
+        for _column in (order_column, schedule_column):
+            _column.setSizePolicy(
+                QSizePolicy.Ignored, QSizePolicy.Preferred
+            )
+
+        # Equal stretch on both columns -> a true 50/50 split.
+        top_row.addWidget(order_column, 1)
+        top_row.addWidget(schedule_column, 1)
+        content_layout.addLayout(top_row)
+
+        # --- Bottom area: the tables ------------------------------
+        # Order Queue and Test Results side by side, then Order Log
+        # full width beneath them, then the Diagnostic section last.
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(_gap)
 
         # ---------------------------------------------
         # Active account (from the existing UI-2.1 store)
         # ---------------------------------------------
 
-        account_group = QGroupBox("Active Account", self)
+        account_group = QGroupBox(STRINGS.GROUP_ACTIVE_ACCOUNT, self)
         account_layout = QHBoxLayout(account_group)
         self.active_account_label = QLabel(self._active_account_text(), account_group)
         account_layout.addWidget(self.active_account_label)
         account_layout.addStretch(1)
-        root_layout.addWidget(account_group)
+        # UI-9 Task 2: the order-information column (left of the two).
+        order_column_layout.addWidget(account_group)
 
         # ---------------------------------------------
         # Order Configuration group
         # ---------------------------------------------
 
-        form_group = QGroupBox("Order Configuration", self)
+        form_group = QGroupBox(STRINGS.GROUP_ORDER_CONFIGURATION, self)
         form_grid = QGridLayout(form_group)
 
         # --- Symbol ---------------------------------------------
-        form_grid.addWidget(QLabel("Symbol:", form_group), 0, 0)
+        form_grid.addWidget(QLabel(STRINGS.LABEL_SYMBOL, form_group), 0, 0)
         self.symbol_input = QComboBox(form_group)
         self.symbol_input.setEditable(True)
-        self.symbol_input.lineEdit().setPlaceholderText(
-            "e.g. \u0622\u06a9\u0648 — resolved by the Core in a later task"
-        )
+        self.symbol_input.lineEdit().setPlaceholderText(STRINGS.PLACEHOLDER_SYMBOL)
         self.symbol_input.lineEdit().textChanged.connect(self._on_symbol_edited)
         form_grid.addWidget(self.symbol_input, 0, 1)
 
@@ -647,7 +742,7 @@ class OrderConfigurationPage(QWidget):
         form_grid.addWidget(self.results_list, 0, 3)
 
         # --- Side ---------------------------------------------
-        form_grid.addWidget(QLabel("Side:", form_group), 1, 0)
+        form_grid.addWidget(QLabel(STRINGS.LABEL_SIDE, form_group), 1, 0)
         side_row = QWidget(form_group)
         side_layout = QHBoxLayout(side_row)
         side_layout.setContentsMargins(0, 0, 0, 0)
@@ -663,23 +758,26 @@ class OrderConfigurationPage(QWidget):
         form_grid.addWidget(side_row, 1, 1)
 
         # --- Price ---------------------------------------------
-        form_grid.addWidget(QLabel("Price:", form_group), 2, 0)
+        form_grid.addWidget(QLabel(STRINGS.LABEL_PRICE, form_group), 2, 0)
         self.price_input = QLineEdit(form_group)
-        self.price_input.setPlaceholderText("Rial — numeric")
+        self.price_input.setPlaceholderText(STRINGS.PLACEHOLDER_PRICE)
         self.price_input.editingFinished.connect(self._on_price_changed)
         form_grid.addWidget(self.price_input, 2, 1)
 
         # --- Quantity ---------------------------------------------
-        form_grid.addWidget(QLabel("Quantity:", form_group), 3, 0)
+        form_grid.addWidget(QLabel(STRINGS.LABEL_QUANTITY, form_group), 3, 0)
         self.quantity_input = QLineEdit(form_group)
-        self.quantity_input.setPlaceholderText("numeric")
+        self.quantity_input.setPlaceholderText(STRINGS.PLACEHOLDER_QUANTITY)
         self.quantity_input.editingFinished.connect(self._on_quantity_changed)
         form_grid.addWidget(self.quantity_input, 3, 1)
 
         # --- Add to Queue (UI-4) --------------------------------
         # Prepares ONE real Order (via the resolved nsc_id + the active
         # account binding) and appends it to the EXISTING OrderQueue.
-        self.add_to_queue_button = QPushButton("Add to Queue", form_group)
+        self.add_to_queue_button = QPushButton(STRINGS.BUTTON_ADD_TO_QUEUE, form_group)
+        # UI-9 Task 2 — visual variant only; text, signal and enablement
+        # logic are untouched.
+        self.add_to_queue_button.setProperty("variant", "primary")
         self.add_to_queue_button.clicked.connect(self._on_add_to_queue)
         form_grid.addWidget(self.add_to_queue_button, 4, 0, 1, 2)
 
@@ -689,7 +787,7 @@ class OrderConfigurationPage(QWidget):
         # Starts DISABLED: at construction there is nothing queued yet
         # (the lazy core.queue import must never run at construction).
         # The enable/disable refresh runs only on real UI flows.
-        self.test_button = QPushButton("Test", form_group)
+        self.test_button = QPushButton(STRINGS.BUTTON_TEST, form_group)
         self.test_button.setCheckable(True)
         self.test_button.setEnabled(False)
         self.test_button.clicked.connect(self._on_test_toggled)
@@ -827,70 +925,82 @@ class OrderConfigurationPage(QWidget):
         # visibility, and never during construction (offline contract).
         self._startup_sync_done: bool = False
 
-        root_layout.addWidget(form_group)
+        order_column_layout.addWidget(form_group)
 
         # ---------------------------------------------
         # Symbol information / status display area
         # ---------------------------------------------
 
-        info_group = QGroupBox("Symbol Information", self)
+        info_group = QGroupBox(STRINGS.GROUP_SYMBOL_INFORMATION, self)
         info_form = QFormLayout(info_group)
 
-        self.symbol_name_label = QLabel("—", info_group)
+        self.symbol_name_label = QLabel("-", info_group)
         self.symbol_status_label = QLabel(
-            f"Status: {SYMBOL_STATUS_NOT_AVAILABLE}", info_group
+            f"{STRINGS.LABEL_SYMBOL_STATUS_PREFIX}{STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY}", info_group
         )
-        self.trading_state_label = QLabel("—", info_group)
-        info_form.addRow("Name:", self.symbol_name_label)
-        info_form.addRow("Status:", self.symbol_status_label)
-        info_form.addRow("Trading State:", self.trading_state_label)
+        self.trading_state_label = QLabel("-", info_group)
+        info_form.addRow(STRINGS.LABEL_NAME, self.symbol_name_label)
+        info_form.addRow(STRINGS.LABEL_STATUS, self.symbol_status_label)
+        info_form.addRow(STRINGS.LABEL_TRADING_STATE, self.trading_state_label)
 
-        root_layout.addWidget(info_group)
+        order_column_layout.addWidget(info_group)
 
         # ---------------------------------------------
         # Amounts group
         # ---------------------------------------------
 
-        amounts_group = QGroupBox("Amounts", self)
+        amounts_group = QGroupBox(STRINGS.GROUP_AMOUNTS, self)
         amounts_form = QFormLayout(amounts_group)
 
-        self.base_amount_label = QLabel("—", amounts_group)
-        self.fee_label = QLabel("Not available", amounts_group)
-        self.final_amount_label = QLabel("Not available", amounts_group)
+        self.base_amount_label = QLabel("-", amounts_group)
+        self.fee_label = QLabel(STRINGS.VALUE_NOT_AVAILABLE, amounts_group)
+        self.final_amount_label = QLabel(STRINGS.VALUE_NOT_AVAILABLE, amounts_group)
 
-        amounts_form.addRow("Base Amount:", self.base_amount_label)
-        amounts_form.addRow("Fee:", self.fee_label)
-        amounts_form.addRow("Final Amount:", self.final_amount_label)
+        amounts_form.addRow(STRINGS.LABEL_BASE_AMOUNT, self.base_amount_label)
+        amounts_form.addRow(STRINGS.LABEL_FEE, self.fee_label)
+        amounts_form.addRow(STRINGS.LABEL_FINAL_AMOUNT, self.final_amount_label)
 
-        root_layout.addWidget(amounts_group)
+        order_column_layout.addWidget(amounts_group)
 
         # ---------------------------------------------
         # Order Queue display (UI-4)
         # ---------------------------------------------
 
-        queue_group = QGroupBox("Order Queue", self)
+        queue_group = QGroupBox(STRINGS.GROUP_ORDER_QUEUE, self)
         queue_layout = QVBoxLayout(queue_group)
 
-        self.queue_status_label = QLabel(QUEUE_STATUS_EMPTY, queue_group)
-        queue_layout.addWidget(self.queue_status_label)
+        self.queue_status_label = QLabel(QUEUE_STATUS_EMPTY, self)
+        # UI-9 Task 2b: the status label now lives in its OWN bordered group
+        # box ("Queue Status") placed in the scheduling column, matching the
+        # mockup. The group box is created and added to the column in the
+        # final assembly, so it renders BELOW the Schedule group. The label
+        # attribute, its word-wrap, its muted property and every setText()
+        # call site are unchanged.
 
         # Visible pending-orders list — rendered ONLY from the existing
         # ``OrderQueue.list_pending()`` at refresh time; left untouched
         # at construction so no queue/core import ever runs offline.
         self.queue_list = QListWidget(queue_group)
         self.queue_list.setMaximumHeight(140)
+        self.queue_list.setUniformItemSizes(True)
+        self.queue_list.setSpacing(SPACING["xs"])
         queue_layout.addWidget(self.queue_list)
 
-        self.queue_count_label = QLabel("0 order(s) in queue", queue_group)
+        self.queue_count_label = QLabel(STRINGS.QUEUE_COUNT_LABEL, queue_group)
         queue_layout.addWidget(self.queue_count_label)
 
-        root_layout.addWidget(queue_group)
+        # UI-9 Task 2: the queue STATUS line moves to the scheduling
+        # column (per the 2.2 layout table); the queue GROUP itself goes to
+        # the bottom tables row. queue_list stays a direct child of this
+        # group box — no container is inserted between a list and its
+        # group (C5). The status label itself is appended to the scheduling
+        # column in the final assembly, so it renders BELOW the schedule.
 
         # ---------------------------------------------
         # Test Results display (UI-5 Task 3)
         # ---------------------------------------------
 
-        results_group = QGroupBox("Test Results", self)
+        results_group = QGroupBox(STRINGS.GROUP_TEST_RESULTS, self)
         results_layout = QVBoxLayout(results_group)
 
         self.result_status_label = QLabel(RESULT_EMPTY_STATE, results_group)
@@ -901,9 +1011,13 @@ class OrderConfigurationPage(QWidget):
         # fully replaces the previous rows; no result history is kept).
         self.result_list = QListWidget(results_group)
         self.result_list.setMaximumHeight(140)
+        self.result_list.setUniformItemSizes(True)
+        self.result_list.setSpacing(SPACING["xs"])
         results_layout.addWidget(self.result_list)
 
-        root_layout.addWidget(results_group)
+        # UI-9 Task 2: Order Queue and Test Results side by side.
+        tables_row.addWidget(queue_group, 1)
+        tables_row.addWidget(results_group, 1)
 
         # ---------------------------------------------
         # Schedule configuration (UI-7 Task 1)
@@ -918,7 +1032,7 @@ class OrderConfigurationPage(QWidget):
         schedule_form = QFormLayout(self.schedule_group)
 
         self.schedule_timezone_label = QLabel(TIMEZONE_NOTE, self.schedule_group)
-        schedule_form.addRow("Timezone:", self.schedule_timezone_label)
+        schedule_form.addRow(STRINGS.LABEL_TIMEZONE, self.schedule_timezone_label)
 
         self.schedule_start_input = QLineEdit(self.schedule_group)
         self.schedule_start_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
@@ -946,6 +1060,7 @@ class OrderConfigurationPage(QWidget):
         schedule_buttons = QWidget(self.schedule_group)
         schedule_buttons_layout = QHBoxLayout(schedule_buttons)
         schedule_buttons_layout.setContentsMargins(0, 0, 0, 0)
+        schedule_buttons_layout.setSpacing(SPACING["sm"])
 
         # UI-7 Task 2: ONE button. Before a schedule is accepted it is
         # "Apply Schedule"; after acceptance it becomes "Stop Schedule"
@@ -953,32 +1068,37 @@ class OrderConfigurationPage(QWidget):
         self.apply_schedule_button = QPushButton(
             APPLY_BUTTON_LABEL, schedule_buttons
         )
+        # UI-9 Task 2 — the Apply/Stop button is the scheduling column's
+        # main action, so it carries the "primary" theme variant (blue).
+        # The Apply->Stop label swap itself is existing UI-7 logic and is
+        # NOT changed here.
+        self.apply_schedule_button.setProperty("variant", "primary")
         self.apply_schedule_button.clicked.connect(
             self._on_schedule_button_clicked
         )
         schedule_buttons_layout.addWidget(self.apply_schedule_button)
 
-        self.refresh_clock_button = QPushButton("Refresh Clock", schedule_buttons)
+        self.refresh_clock_button = QPushButton(STRINGS.BUTTON_REFRESH_CLOCK, schedule_buttons)
         self.refresh_clock_button.clicked.connect(self._on_refresh_clock)
         schedule_buttons_layout.addWidget(self.refresh_clock_button)
 
         # UI-7 Task 2 — manual sync button
         self.sync_clock_button = QPushButton(SYNC_BUTTON_LABEL, schedule_buttons)
         self.sync_clock_button.clicked.connect(self._on_sync_clock)
-        self.sync_clock_button.setToolTip("Force a fresh market clock sync now")
+        self.sync_clock_button.setToolTip(STRINGS.TOOLTIP_FORCE_SYNC)
         schedule_buttons_layout.addWidget(self.sync_clock_button)
 
         schedule_form.addRow(schedule_buttons)
 
         self.clock_status_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.clock_status_label.setWordWrap(True)
-        schedule_form.addRow("Clock:", self.clock_status_label)
+        schedule_form.addRow(STRINGS.LABEL_CLOCK, self.clock_status_label)
 
         # UI-7 Task 2 — the RESULT of the last sync: source, estimated
         # offset, uncertainty band and freshness. Never millisecond-precise.
         self.sync_status_label = QLabel(SYNC_STATE_NEVER, self.schedule_group)
         self.sync_status_label.setWordWrap(True)
-        schedule_form.addRow("Sync:", self.sync_status_label)
+        schedule_form.addRow(STRINGS.LABEL_SYNC, self.sync_status_label)
 
         # UI-7 Task 2 — lifecycle state (configuring / waiting / counting /
         # starting once / stopped / expired).
@@ -986,19 +1106,35 @@ class OrderConfigurationPage(QWidget):
             SCHEDULE_STATE_CONFIG, self.schedule_group
         )
         self.schedule_state_label.setWordWrap(True)
-        schedule_form.addRow("State:", self.schedule_state_label)
+        # UI-9 Task 2 — the scheduling state reads as a prominent status.
+        self.schedule_state_label.setStyleSheet(
+            f"font-size: {GEOMETRY['statusFontPt']}pt;"
+            f" font-weight: bold; color: {PALETTE['accent']};"
+        )
+        schedule_form.addRow(STRINGS.LABEL_STATE, self.schedule_state_label)
 
         # UI-7 Task 2 — countdown display for active schedule
         self.countdown_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.countdown_label.setWordWrap(True)
-        self.countdown_label.setStyleSheet("font-family: monospace; font-size: 12pt;")
-        schedule_form.addRow("Countdown:", self.countdown_label)
+        # UI-9 Task 2 — the countdown must be visually prominent: larger
+        # and in the accent colour, with a monospace face so the ticking
+        # digits stay aligned. Colours/sizes come from ui/theme.py tokens.
+        self.countdown_label.setStyleSheet(
+            f"font-family: monospace; font-size: {GEOMETRY['countdownFontPt']}pt;"
+            f" font-weight: bold; color: {PALETTE['accent']};"
+        )
+        schedule_form.addRow(STRINGS.LABEL_COUNTDOWN, self.countdown_label)
 
         self.schedule_summary_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.schedule_summary_label.setWordWrap(True)
-        schedule_form.addRow("Summary:", self.schedule_summary_label)
+        schedule_form.addRow(STRINGS.LABEL_SUMMARY, self.schedule_summary_label)
 
-        root_layout.addWidget(self.schedule_group)
+        # UI-9 Task 2: the scheduling column (right of the two).
+        schedule_column_layout.addWidget(self.schedule_group)
+        # The queue status line sits under the schedule (2.2), styled as a
+        # muted status line.
+        self.queue_status_label.setWordWrap(True)
+        self.queue_status_label.setProperty("muted", "true")
 
         # ---------------------------------------------
         # Diagnostic section (UI-6 Tasks 1-3) — REAL content, mode-gated
@@ -1055,7 +1191,9 @@ class OrderConfigurationPage(QWidget):
         )
         diagnostic_layout.addWidget(self.diagnostic_status_label)
 
-        root_layout.addWidget(self.diagnostic_section)
+        # UI-9 Task 2: the Diagnostic section is placed LAST in the
+        # assembly below (after Order Log). Its NORMAL/DIAGNOSTIC
+        # visibility boundary is unchanged.
         self.diagnostic_section.setVisible(False)  # NORMAL-mode default
 
         # ---------------------------------------------
@@ -1079,12 +1217,55 @@ class OrderConfigurationPage(QWidget):
         self.order_log_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.order_log_table.setSelectionMode(QTableWidget.SingleSelection)
         self.order_log_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.order_log_table.setMaximumHeight(160)
+        self.order_log_table.setWordWrap(False)
+        # UI-9 Task 2 — uniform row height and a readable header, both from
+        # theme tokens (no magic numbers). The header is slightly taller
+        # than a data row so its bold labels are not cramped.
+        self.order_log_table.verticalHeader().setDefaultSectionSize(
+            GEOMETRY["rowHeight"]
+        )
+        self.order_log_table.verticalHeader().setVisible(False)
+        self.order_log_table.horizontalHeader().setDefaultSectionSize(
+            GEOMETRY["rowHeight"]
+        )
+        self.order_log_table.setMinimumHeight(
+            GEOMETRY["rowHeight"] * ORDER_LOG_MIN_VISIBLE_ROWS
+        )
         log_layout.addWidget(self.order_log_table)
 
-        root_layout.addWidget(log_group)
+        # ---------------------------------------------
+        # UI-9 Task 2 — final assembly of the page body
+        # ---------------------------------------------
+        #
+        # Order of appearance inside the scroll area:
+        #   1. top row      — two equal columns (already added above)
+        #   2. tables row   — Order Queue | Test Results
+        #   3. Order Log    — full width
+        #   4. Diagnostic   — last, mode-gated exactly as before
+        content_layout.addLayout(tables_row)
+        content_layout.addWidget(log_group)
+        content_layout.addWidget(self.diagnostic_section)
+        content_layout.addStretch(1)
 
-        root_layout.addStretch(1)
+        # The queue status gets its own bordered group box in the scheduling
+        # column, directly BELOW the Schedule group (UI-9 Task 2b, matching
+        # the «وضعیت صف» box in the mockup).
+        #
+        # Every spacing/margin/radius value comes from ui/theme.py tokens, so
+        # this box is visually identical to the other group boxes on the page.
+        queue_status_group = QGroupBox(QUEUE_STATUS_GROUP_TITLE, self)
+        queue_status_layout = QVBoxLayout(queue_status_group)
+        queue_status_layout.setContentsMargins(0, 0, 0, 0)
+        queue_status_layout.setSpacing(0)
+        queue_status_layout.addWidget(self.queue_status_label)
+        # A themed group box already carries its own border, radius and
+        # padding from the stylesheet; nothing else is set here so it stays
+        # pixel-identical to its eight sibling group boxes.
+        schedule_column_layout.addWidget(queue_status_group)
+        # The scheduling column is naturally shorter than the order column;
+        # this trailing stretch keeps the group directly under the schedule
+        # instead of floating in the leftover vertical space.
+        schedule_column_layout.addStretch(1)
 
         self._refresh_amounts()
         self._refresh_symbol_info()
@@ -1285,7 +1466,7 @@ class OrderConfigurationPage(QWidget):
             return
         for index, result in enumerate(results):
             item = QListWidgetItem(
-                f"{result.get('symbol') or ''} — {result.get('name') or ''}",
+                f"{result.get('symbol') or ''} - {result.get('name') or ''}",
                 self.results_list,
             )
             # The result's identity travels as the INDEX into the page's
@@ -1415,7 +1596,7 @@ class OrderConfigurationPage(QWidget):
         self._trading_state_instrument = None
         self._trading_state_shown = None
         self._cancel_trading_state_query()
-        self.trading_state_label.setText("\u2014")
+        self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
 
     def _cancel_trading_state_query(self):
         """
@@ -1763,12 +1944,15 @@ class OrderConfigurationPage(QWidget):
                 f"{getattr(order, 'nsc_id', '')} | {side_label} | "
                 f"{getattr(order, 'price', '')} | "
                 f"{getattr(order, 'quantity', '')} | "
-                f"{entry.account_id} → {entry.broker_name}"
+                f"{entry.account_id} - {entry.broker_name}"
             )
             item = QListWidgetItem(text, self.queue_list)
             item.setData(QUEUE_ENTRY_ROLE, entry)
+        # UI-9 Task 3: the count uses PERSIAN digits via the ONE formatter.
         self.queue_count_label.setText(
-            f"{len(pending)} order(s) in queue"
+            STRINGS.QUEUE_COUNT_FORMAT.format(
+                count=STRINGS.format_persian_digits(len(pending))
+            )
         )
 
     def _show_queue_status(self, text):
@@ -1791,7 +1975,9 @@ class OrderConfigurationPage(QWidget):
         intentional Test action. Turning OFF never executes anything.
         """
         self._test_mode = bool(checked)
-        self.test_button.setText("Test (On)" if self._test_mode else "Test")
+        self.test_button.setText(
+            STRINGS.BUTTON_TEST_ON if self._test_mode else STRINGS.BUTTON_TEST
+        )
         if self._test_mode:
             self._run_test_pass()
 
@@ -1880,14 +2066,12 @@ class OrderConfigurationPage(QWidget):
 
         entries = list(self.order_queue.list_pending())
         if not entries:
-            self._show_queue_status("Test run skipped: no pending orders")
+            self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ORDERS)
             return
 
         record = self._active_account_record()
         if record is None:
-            self._show_queue_status(
-                "Test run skipped: no active account (fail-closed)"
-            )
+            self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ACCOUNT)
             return
 
         account = record.account
@@ -1897,8 +2081,7 @@ class OrderConfigurationPage(QWidget):
                 or entry.broker_name != record.broker_name
             ):
                 self._show_queue_status(
-                    "Test run skipped: active account does not match the "
-                    "queue entries (fail-closed)"
+                    STRINGS.TEST_SKIPPED_ACCOUNT_MISMATCH
                 )
                 return
 
@@ -1922,7 +2105,7 @@ class OrderConfigurationPage(QWidget):
         except Exception as exc:  # fail-closed: surface, never crash the UI
             self._last_test_error = str(exc)
             self._show_queue_status(
-                f"Test run could not be issued: {exc}"
+                STRINGS.TEST_ISSUE_FAILED.format(exc=exc)
             )
             # UI-6 Task 2/3: with the error recorded, the stored tuple is
             # the PREVIOUS run's — stale for display. Clear the stored
@@ -1958,7 +2141,7 @@ class OrderConfigurationPage(QWidget):
         # signal BEFORE the send pass started (see above).
         self._refresh_result_display()
         self._show_queue_status(
-            f"Test run issued (dry-run): execution {execution_id}"
+            STRINGS.TEST_ISSUED.format(execution_id=execution_id)
         )
 
     # ---------------------------------------------------------
@@ -2667,19 +2850,20 @@ class OrderConfigurationPage(QWidget):
     def _refresh_symbol_info(self):
         instrument = self.config.selected_instrument
         if instrument is None:
-            self.symbol_name_label.setText("—")
+            self.symbol_name_label.setText("-")
         else:
             # Display comes from the REAL Instrument object only.
             market = getattr(instrument, "market", None)
             market_part = f" ({market})" if market else ""
             self.symbol_name_label.setText(
-                f"{getattr(instrument, 'symbol', '')} — "
+                f"{getattr(instrument, 'symbol', '')} - "
                 f"{getattr(instrument, 'name', '')}{market_part}"
             )
         # Fail-closed display: without a verified source this is never
         # "tradable"/"permitted".
         self.symbol_status_label.setText(
-            f"Status: {self.config.symbol_status()}"
+            STRINGS.LABEL_SYMBOL_STATUS_PREFIX
+            + _symbol_status_display(self.config.symbol_status())
         )
 
     # ---------------------------------------------------------
@@ -2690,7 +2874,7 @@ class OrderConfigurationPage(QWidget):
         try:
             self.config.set_side(side)
         except OrderConfigError as exc:  # pragma: no cover — buttons are fixed
-            QMessageBox.warning(self, "Invalid side", str(exc))
+            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_SIDE, str(exc))
 
     def _on_price_changed(self):
         text = self.price_input.text().strip()
@@ -2704,7 +2888,7 @@ class OrderConfigurationPage(QWidget):
             # valid state is preserved.
             self.config.set_price(int(text))
         except (OrderConfigError, ValueError) as exc:
-            QMessageBox.warning(self, "Invalid price", str(exc))
+            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_PRICE, str(exc))
         self._refresh_amounts()
 
     def _on_quantity_changed(self):
@@ -2719,7 +2903,7 @@ class OrderConfigurationPage(QWidget):
             # previous valid state is preserved.
             self.config.set_quantity(int(text))
         except (OrderConfigError, ValueError) as exc:
-            QMessageBox.warning(self, "Invalid quantity", str(exc))
+            QMessageBox.warning(self, STRINGS.DIALOG_INVALID_QUANTITY, str(exc))
         self._refresh_amounts()
 
     # ---------------------------------------------------------
@@ -2802,18 +2986,20 @@ class OrderConfigurationPage(QWidget):
             return SYNC_STATE_FAILED if service.last_sync_attempt else SYNC_STATE_NEVER
         if age > SCHEDULE_SYNC_MAX_AGE_SECONDS:
             return (
-                f"Last sync {age:.0f}s ago is older than the "
-                f"{SCHEDULE_SYNC_MAX_AGE_SECONDS:.0f}s schedule limit — "
-                f"press «{SYNC_BUTTON_LABEL}» again (system clock in use)"
+                STRINGS.SYNC_STALE.format(
+                age=STRINGS.format_technical(age),
+                limit=STRINGS.format_technical(SCHEDULE_SYNC_MAX_AGE_SECONDS),
+                button=SYNC_BUTTON_LABEL,
+            )
             )
         text = (
-            f"Synced {age:.0f}s ago — source {status.source.value}, "
-            f"offset {format_offset(status.applied_offset)}, "
-            f"uncertainty {format_uncertainty(status.uncertainty)}, "
+            f"{STRINGS.SYNC_OK_PREFIX.format(age=STRINGS.format_technical(age), source=status.source.value)}"
+            f"{STRINGS.SYNC_OK_OFFSET.format(offset=format_offset(status.applied_offset))}"
+            f"{STRINGS.SYNC_OK_UNCERTAINTY.format(uncertainty=format_uncertainty(status.uncertainty))}"
             f"{status.precision_note}"
         )
         if not service.last_sync_ok:
-            text += " (the latest attempt failed)"
+            text += STRINGS.SYNC_OK_FAILED_SUFFIX
         return text
 
     def _on_clock_succeeded(self, sample):
@@ -2987,7 +3173,7 @@ class OrderConfigurationPage(QWidget):
         entries = tuple(self.order_queue.list_pending())
         if not entries:
             return (
-                "the order queue is empty — add at least one order before "
+                "the order queue is empty - add at least one order before "
                 "scheduling a dispatch"
             )
         store = self.store
@@ -2996,7 +3182,7 @@ class OrderConfigurationPage(QWidget):
             if record is None or record.account is None:
                 return (
                     f"queued order {getattr(entry.order, 'nsc_id', entry)} "
-                    f"has no valid account ({entry.account_id}) — "
+                    f"has no valid account ({entry.account_id}) - "
                     f"add that account first"
                 )
             if record.broker_name != entry.broker_name:
@@ -3076,7 +3262,7 @@ class OrderConfigurationPage(QWidget):
             self._pending_schedule = None
             self._pending_dispatch_interval_ms = None
             self.schedule_summary_label.setText(
-                f"Schedule rejected — {rejection}"
+                STRINGS.SCHEDULE_REJECTED.format(reason=rejection)
             )
             return False
 
@@ -3399,8 +3585,10 @@ class OrderConfigurationPage(QWidget):
         seconds = total_seconds % 60
         self._countdown_target = next_run
         self.countdown_label.setText(
-            f"Next run in: {hours:02d}:{minutes:02d}:{seconds:02d} "
-            f"(at {next_run.strftime('%H:%M:%S')} Tehran)"
+            STRINGS.COUNTDOWN_NEXT_RUN.format(
+                clock="{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds),
+                tehran=next_run.strftime("%H:%M:%S"),
+            )
         )
 
         if now < timing.start_time:
@@ -3513,7 +3701,9 @@ class OrderConfigurationPage(QWidget):
         except (ScheduleValidationError, DispatchIntervalError) as exc:
             self._clear_accepted_schedule()
             self._pending_schedule = None
-            self.schedule_summary_label.setText(f"Schedule rejected — {exc}")
+            self.schedule_summary_label.setText(
+                STRINGS.SCHEDULE_REJECTED.format(reason=exc)
+            )
             return
 
         if target_rejection is not None:
@@ -3521,7 +3711,7 @@ class OrderConfigurationPage(QWidget):
             self._pending_schedule = None
             self._pending_dispatch_interval_ms = None
             self.schedule_summary_label.setText(
-                f"Schedule rejected — {target_rejection}"
+                STRINGS.SCHEDULE_REJECTED.format(reason=target_rejection)
             )
             return
 
@@ -3564,7 +3754,7 @@ class OrderConfigurationPage(QWidget):
             )
         elif status.last_sync_attempt is None:
             service.note_unavailable(
-                "no market clock sync has completed yet — press the sync "
+                "no market clock sync has completed yet - press the sync "
                 "button before applying"
             )
         # A sync that already failed keeps its own, more specific reason.
@@ -3596,7 +3786,9 @@ class OrderConfigurationPage(QWidget):
         except ScheduleValidationError as exc:
             self._clear_accepted_schedule()
             self._pending_schedule = None
-            self.schedule_summary_label.setText(f"Schedule rejected — {exc}")
+            self.schedule_summary_label.setText(
+                STRINGS.SCHEDULE_REJECTED.format(reason=exc)
+            )
             return
 
         self._pending_schedule = None
@@ -3729,12 +3921,16 @@ class OrderConfigurationPage(QWidget):
         base = self.config.base_amount()
         # base is an int (price * quantity, both int per the Core Order
         # contract) — format it as a plain integer, no scientific notation.
+        # UI-9 Task 3: money uses PERSIAN digits through the ONE
+        # centralized formatter - no ad-hoc conversion here.
         self.base_amount_label.setText(
-            "—" if base is None else f"{base:,}".replace(",", "\u066c")
+            STRINGS.VALUE_EMPTY_DASH
+            if base is None
+            else STRINGS.format_grouped(base)
         )
         # Fee / Final Amount: no contract exists — never fabricated.
-        self.fee_label.setText("Not available")
-        self.final_amount_label.setText("Not available")
+        self.fee_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
 
     # ---------------------------------------------------------
     # Account display (verbatim from the UI-2.1 store)
@@ -3744,9 +3940,9 @@ class OrderConfigurationPage(QWidget):
         active_id = self.store.active_account_id()
         if active_id is None:
             # No fallback to accounts[0]/first/default — shown transparently.
-            return "No active account — select one on the Accounts page"
+            return STRINGS.NO_ACTIVE_ACCOUNT
         record = self.store.get(active_id)
-        return f"{record.account_id} → {record.broker_name}"
+        return f"{record.account_id} - {record.broker_name}"
 
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""

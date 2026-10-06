@@ -69,6 +69,7 @@ from ui.schedule_settings import (  # noqa: E402
     SYNC_STATE_FAILED,
     SYNC_STATE_NEVER,
 )
+from ui import strings as STRINGS
 
 
 @pytest.fixture(scope="module")
@@ -427,8 +428,10 @@ def test_2_manual_sync_reports_result_and_never_runs_twice_at_once(qapp):
     assert status.uncertainty is not None
 
     text = page.sync_status_label.text()
-    assert "Synced" in text and "ago" in text, text        # freshness
-    assert "source MARKET" in text, text                   # source
+    # UI-9 Task 3: the line is Persian; the freshness wording and the
+    # source token now come from ui.strings.
+    assert STRINGS.SYNC_OK_PREFIX.split("{", 1)[0] in text, text   # freshness
+    assert f"منبع {status.source.value}" in text, text          # source
     assert "+0." in text or "-0." in text or "+1" in text, text  # offset
     assert "+/-" in text, text                             # uncertainty
     assert "failed" not in text.lower(), text
@@ -647,7 +650,9 @@ def test_5_freshness_uses_the_monotonic_clock_not_the_wall_clock(qapp):
     )
     # the stale reading was refused rather than silently reused
     assert "+/-" not in page.clock_status().notice
-    assert page.sync_status_label.text().startswith("Last sync ")
+    assert page.sync_status_label.text().startswith(
+        STRINGS.SYNC_STALE.split("{", 1)[0]
+    )
 
 
 # ============================================================
@@ -682,7 +687,7 @@ def test_5b_the_freshness_display_expires_without_any_new_request(qapp):
     # The display timer is running and does no work of its own.
     assert page._sync_freshness_timer is not None
     assert page._sync_freshness_timer.isActive(), "the freshness timer is off"
-    assert "Synced" in page.sync_status_label.text(), (
+    assert STRINGS.SYNC_OK_PREFIX.split("{", 1)[0] in page.sync_status_label.text(), (
         "the sync line does not report a fresh reading"
     )
 
@@ -694,10 +699,10 @@ def test_5b_the_freshness_display_expires_without_any_new_request(qapp):
         "the freshness refresh performed a network request"
     )
     text = page.sync_status_label.text()
-    assert text.startswith("Last sync "), (
+    assert text.startswith(STRINGS.SYNC_STALE.split("{", 1)[0]), (
         f"the line still claims a fresh reading: {text!r}"
     )
-    assert f"{SCHEDULE_SYNC_MAX_AGE_SECONDS:.0f}s schedule limit" in text
+    assert STRINGS.format_technical(SCHEDULE_SYNC_MAX_AGE_SECONDS) in text
 
     # --- and it moved neither the countdown nor the locked time base ----
     assert page._locked_base_time == base_before, "the locked base moved"
@@ -743,7 +748,9 @@ def test_6_apply_locks_every_control_and_becomes_stop(qapp):
         SCHEDULE_STATE_START_NOW,
     }
     assert page.schedule_state_label.text() == page.schedule_lifecycle_state()
-    assert page.countdown_label.text().startswith("Next run in:")
+    assert page.countdown_label.text().startswith(
+        STRINGS.COUNTDOWN_NEXT_RUN.split("{", 1)[0]
+    )
 
 
 # ============================================================
@@ -862,7 +869,8 @@ def test_8_a_later_sync_or_clock_step_cannot_move_the_countdown(qapp):
     assert page._countdown_target > target_before
     assert page.schedule_lifecycle_state() == SCHEDULE_STATE_COUNTING
     assert page.countdown_label.text() != label_before
-    assert "at 13:00:15" in page.countdown_label.text()
+    # UI-9 Task 3: the countdown keeps LATIN digits (technical timestamp).
+    assert "13:00:15" in page.countdown_label.text()
 
 
 # ============================================================
@@ -981,7 +989,7 @@ def test_9_expiry_frees_the_controls_and_the_next_apply_is_clean(qapp):
     assert page.schedule_timing() is not None
     assert page.schedule_times()
     assert "13:00:00" in page.schedule_summary_label.text()
-    assert "expired" in page.countdown_label.text().lower()
+    assert STRINGS.COUNTDOWN_NO_UPCOMING in page.countdown_label.text()
 
     # --- a brand-new Apply inherits nothing ------------------------------
     fill(page, "13:20:00", "13:25:00", "15")
@@ -1119,6 +1127,8 @@ def test_rejected_input_leaves_nothing_active(qapp):
     assert page.schedule_timing() is None
     assert page.schedule_lifecycle_state() == SCHEDULE_STATE_CONFIG
     assert page.apply_schedule_button.text() == APPLY_BUTTON_LABEL
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
+        page.schedule_summary_label.text()
+    )
     for name, w in locked_controls(page).items():
         assert w.isEnabled() == before[name], f"{name} stayed locked"

@@ -2926,6 +2926,49 @@ Next step: UI-4 — Order Queue
 7. آماده‌سازی برای عرضه نرم‌افزار
 
 وضعیت فعلی:
-`UI / User Application — UI-7 COMPLETE; UI-8 COMPLETE (all four tasks complete and verified offline; next phase is Central Server)`
+`UI / User Application — UI-7 COMPLETE; UI-8 COMPLETE; UI-9.1–UI-9.3 COMPLETE (dark theme, two-column layout, Persian + RTL). UI-9.4 and UI-9.5 not started. Next phase remains Central Server.`
 
 ---
+
+## 10. UI-9 — Dark Theme, Layout & Localization
+
+**Scope:** presentation and localization only. No change to the order-send path, the M6-A…M6-E gates, the SafetyGate, or live-trading permission. PySide6 is kept.
+
+| Task | Content | Status |
+|---|---|---|
+| UI-9.1 | Dark theme foundation — `ui/theme.py`, applied in `ui/app.py` and `MainWindow` | COMPLETED — verified |
+| UI-9.2 | Order page: two columns + bottom tables + inner `QScrollArea` | COMPLETED — verified |
+| UI-9.2b | Queue status moved into its own bordered group box | COMPLETED — verified |
+| UI-9.3 | Persian localization, RTL, digit policy, glyph fixes | COMPLETED — verified |
+| UI-9.4 | Inline validation errors instead of modal dialogs | NOT STARTED |
+| UI-9.5 | Propagate the style to the other pages + documentation | NOT STARTED |
+
+**Verified results (Architect, 2026-10-04, independent runs):**
+- mandated baseline: **310 passed, 2 deselected, EXIT=0**
+- **all 30 `test_ui*.py` files: 563 passed, 2 deselected, EXIT=0** — the whole UI suite is green
+- two pre-existing Block 8 `broker_received_at` failures remain; they are unrelated to UI-9
+- `core/` order path untouched; `ui/test_runner.py` still carries only its own pre-existing
+  uncommitted change (23+/10−), which is **not** part of UI-9
+- RTL applied **only** in `create_app()` (`ui/app.py`); measured column orientation is
+  **RIGHT = order information, LEFT = scheduling**, exactly as required
+
+**Two verified technical findings — recorded so they are not rediscovered:**
+1. **RTL + programmatic row selection.** With app-level `RightToLeft`, a `QTableWidget` that uses
+   `setSelectionBehavior(SelectRows)` and was *created while RTL was already active* silently turns
+   `selectRow()` into a no-op (`currentRow()` → −1). **Real mouse clicks are not affected** —
+   verified on the real `AccountsPage` — and `setCurrentCell(row, 0)` works under RTL. No product
+   behaviour was changed; the one affected test now uses `setCurrentCell`.
+2. **Missing glyphs in IRANSansX.** The font cannot draw U+2014 (`—`), U+2013, U+2010, U+2015,
+   U+00B7, U+2022, U+2192 (`→`), tatweel or ZWNJ — they render as empty boxes; only U+002D (`-`)
+   renders. All user-facing `—` and `→` were replaced with `-`, and the UI is now verified free of
+   missing-glyph characters in both NORMAL and DIAGNOSTIC mode (independent `QRawFont` audit: 0
+   missing). One U+2014 remains on purpose in `ui/order_config_state.py`, inside a developer-facing
+   exception message that never reaches a widget.
+
+**Documentation:** the UI-9 master record is `UI-9_dark_theme_tasks.md`. The per-task handover files
+(`UI-9.2_task.md`, `UI-9.2b_task.md`, `UI-9.3_task.md`) and the `design/` reference images are working
+notes and are deliberately **not** tracked in the repository. See `DECISIONS.md` Decision 029.
+
+**Known limitations:** the two pre-existing Block 8 failures; the two UI-3.1 tests that hang on modal
+dialogs (to be resolved by UI-9.4) and are therefore deselected; no font file is bundled, so a machine
+without IRANSansX falls back through the chain.

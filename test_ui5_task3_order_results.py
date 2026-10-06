@@ -74,6 +74,7 @@ from ui.order_configuration_page import (
     OrderConfigurationPage,
 )
 from ui.test_runner import TestRunner
+from ui import strings as STRINGS
 
 
 # ---------------------------------------------------------------------------
@@ -609,7 +610,7 @@ def test_e1_empty_state_before_first_run(qapp):
     assert page.result_list is not None
     assert page.result_status_label.text() == RESULT_EMPTY_STATE
     assert page.result_list.count() == 0
-    assert page.result_list.parent().title() == "Test Results"
+    assert page.result_list.parent().title() == STRINGS.GROUP_TEST_RESULTS
 
 
 # ===========================================================================

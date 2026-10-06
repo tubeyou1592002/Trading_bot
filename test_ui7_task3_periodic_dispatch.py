@@ -75,6 +75,7 @@ from ui.schedule_settings import (  # noqa: E402
     SCHEDULE_STATE_EXPIRED,
     STOP_BUTTON_LABEL,
 )
+from ui import strings as STRINGS
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1195,9 @@ def test_an_invalid_interval_rejects_apply_and_dispatches_nothing(qapp):
     fill(page, "13:00:00", "13:05:00", "15", dispatch_ms="0")
     apply_schedule(page)
 
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
+        page.schedule_summary_label.text()
+    )
     assert page.dispatch_turns == (), "a rejected interval dispatched something"
     assert not page.countdown_active
     assert page.dispatch_interval_ms is None
@@ -1260,9 +1263,21 @@ def test_the_frozen_set_is_really_frozen_across_turns(qapp):
 def test_the_page_labels_the_interval_in_milliseconds():
     """The label and the placeholder both say MILLISECONDS."""
     import ui.schedule_dispatcher as module
+    from ui import strings as STRINGS
 
-    assert "ms" in module.EXECUTION_INTERVAL_LABEL.lower()
-    assert "millisecond" in module.EXECUTION_INTERVAL_PLACEHOLDER.lower()
+    # Both must name the millisecond unit explicitly, so the interval can
+    # never be misread as seconds. The wording is Persian (UI-9.3), so the
+    # contract is checked against the catalogue, not an English literal.
+    assert STRINGS.LABEL_DISPATCH_INTERVAL_MS == module.EXECUTION_INTERVAL_LABEL
+    assert (
+        STRINGS.PLACEHOLDER_DISPATCH_INTERVAL
+        == module.EXECUTION_INTERVAL_PLACEHOLDER
+    )
+    for text in (
+        module.EXECUTION_INTERVAL_LABEL,
+        module.EXECUTION_INTERVAL_PLACEHOLDER,
+    ):
+        assert "\u0645\u06cc\u0644\u06cc\u200c\u062b\u0627\u0646\u06cc\u0647" in text
 
 
 # ---------------------------------------------------------------------------\
@@ -1540,7 +1555,9 @@ def test_an_empty_queue_refuses_to_activate_a_schedule(qapp, _no_sends):
     fill(page, "13:00:00", "13:05:00", "15")
     apply_schedule(page)
 
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
+        page.schedule_summary_label.text()
+    )
     assert page.schedule_timing() is None
     _assert_schedule_refused(page, before, _no_sends)
 
@@ -1563,7 +1580,7 @@ def test_an_order_without_a_valid_account_refuses_the_whole_schedule(
     apply_schedule(page)
 
     summary = page.schedule_summary_label.text().lower()
-    assert "rejected" in summary
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in summary
     assert "acct-missing" in summary, summary
     _assert_schedule_refused(page, before, _no_sends)
 
@@ -1583,7 +1600,7 @@ def test_a_broker_mismatch_refuses_the_whole_schedule(qapp, _no_sends):
     apply_schedule(page)
 
     summary = page.schedule_summary_label.text().lower()
-    assert "rejected" in summary
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in summary
     assert "zarin" in summary and "saman" in summary, summary
     _assert_schedule_refused(page, before, _no_sends)
 
@@ -1641,7 +1658,9 @@ def test_failed_second_destination_check_does_not_start_countdown(
     )
     apply_schedule(page)
 
-    assert "rejected" in page.schedule_summary_label.text().lower()
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
+        page.schedule_summary_label.text()
+    )
     assert page.schedule_timing() is None
     assert page.countdown_active is False
     assert page._schedule_locked is False

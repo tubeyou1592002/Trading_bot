@@ -94,7 +94,7 @@ COLUMN_CORE_REGISTERED_AT = 5
 COLUMN_QUEUE_STATUS = 6
 
 # The one and only rendering of "this information does not exist yet".
-EMPTY_CELL = "—"
+EMPTY_CELL = "-"
 
 
 def format_timestamp(value) -> str:

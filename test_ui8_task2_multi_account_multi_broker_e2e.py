@@ -71,6 +71,7 @@ from core.simulation_harness import (
 from models.instrument import Instrument
 from models.order import SELL
 
+from ui import strings as STRINGS
 from ui.account_store import AccountStore
 from ui.order_configuration_page import (
     RESULT_STATUS_SUCCESS,
@@ -440,9 +441,9 @@ def test_task2_mixed_account_broker_queue_is_rejected_fail_closed(
     # reason is shown to the user (exact current wording).
     assert page._last_test_run is None
     assert page._last_test_error is None
+    # UI-9 Task 3: the message is Persian and centralized in ui.strings.
     assert page.queue_status_label.text() == (
-        "Test run skipped: active account does not match the queue "
-        "entries (fail-closed)"
+        STRINGS.TEST_SKIPPED_ACCOUNT_MISMATCH
     )
     # the runner was never reached: no run counter, no plan, no dispatch.
     assert runner._run_counter == 0

@@ -90,11 +90,14 @@ from ui.order_configuration_page import (
     DIAGNOSTIC_EMPTY_STATE,
     DIAGNOSTIC_LATENCY_TOTAL_LABEL,
     DIAGNOSTIC_SECTION_TITLE,
+    DIAGNOSTIC_LATENCY_BROKER_PREFIX,
+    DIAGNOSTIC_LATENCY_STAGE_PREFIX,
     DIAGNOSTIC_TRACE_LABEL,
     DIAGNOSTIC_TRACE_UNAVAILABLE,
     DIAGNOSTIC_VALUE_UNAVAILABLE,
     OrderConfigurationPage,
 )
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -328,7 +331,7 @@ class TestDiagnosticSectionIsRealAndModeGated:
         assert page.diagnostic_list.count() == 1
         item_text = page.diagnostic_list.item(0).text()
         assert DIAGNOSTIC_SECTION_TITLE in page.diagnostic_section.title()
-        assert "Order #1" in item_text
+        assert STRINGS.DIAGNOSTIC_ENTRY_PREFIX.format(position=1) in item_text
         assert "\u0622\u06a9\u0648" in item_text
         assert "\u0645\u0648\u0641\u0642" in item_text
 
@@ -764,7 +767,10 @@ class TestDiagnosticTraceId:
 
         # 4) Existing behavior intact: the error is surfaced, no new
         #    dispatch happened, and a completed NEW run shows its own id.
-        assert "could not be issued" in page.queue_status_label.text()
+        assert (
+            STRINGS.TEST_ISSUE_FAILED.split("{", 1)[0]
+            in page.queue_status_label.text()
+        )
         page._test_runner_instance = None
         page.set_test_runner_factory(
             lambda: _StubRunner(
@@ -1194,25 +1200,35 @@ class TestDiagnosticLatencyDisplay:
         texts = self._diag_texts(page)
 
         assert any(
-            "Order ORDER-A" in t and "مرحله plan_item" in t
+            DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
+                order="ORDER-A", stage="plan_item"
+            ) in t
             and t.endswith("1.000 ms") for t in texts
         )
         assert any(
-            "Order ORDER-B" in t and "مرحله plan_item" in t
+            DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
+                order="ORDER-B", stage="plan_item"
+            ) in t
             and t.endswith("3.000 ms") for t in texts
         )
         # Same operation name is not collapsed into a cross-order sum;
         # each measured call has its own order and call number.
         assert any(
-            "Order ORDER-A" in t and "place_order #1" in t
+            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
+                order="ORDER-A", operation="place_order", call_number=1
+            ) in t
             and t.endswith("4.500 ms") for t in texts
         )
         assert any(
-            "Order ORDER-B" in t and "place_order #1" in t
+            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
+                order="ORDER-B", operation="place_order", call_number=1
+            ) in t
             and t.endswith("2.000 ms") for t in texts
         )
         assert any(
-            "Order ORDER-B" in t and "place_order #2" in t
+            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
+                order="ORDER-B", operation="place_order", call_number=2
+            ) in t
             and t.endswith("3.000 ms") for t in texts
         )
         assert not any(t.endswith("9.500 ms") for t in texts)
@@ -1249,7 +1265,10 @@ class TestDiagnosticLatencyDisplay:
             assert "12.346" not in page.latency_detail_list.item(i).text()
         # Existing failure behavior intact: the error is surfaced, no new
         # dispatch happened, and a completed NEW run shows its own data.
-        assert "could not be issued" in page.queue_status_label.text()
+        assert (
+            STRINGS.TEST_ISSUE_FAILED.split("{", 1)[0]
+            in page.queue_status_label.text()
+        )
         order2 = Order(nsc_id="NSC-L3", side=BUY, price=2, quantity=1)
         result2 = _dry_run_result(order2)
         page._order_symbols[id(order2)] = "\u0641\u0648\u0644\u0627\u062f"

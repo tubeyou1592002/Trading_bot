@@ -59,6 +59,7 @@ from ui.order_configuration_page import (
     RESULT_SEQUENCE_ROLE,
     SEARCH_STATE_NO_RESULTS,
     SEARCH_STATE_SEARCHING,
+    SYMBOL_STATUS_NOT_AVAILABLE,
     OrderConfigurationPage,
 )
 from ui.symbol_search_worker import (
@@ -66,6 +67,7 @@ from ui.symbol_search_worker import (
     SymbolSearchWorker,
     SymbolResolveWorker,
 )
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -290,7 +292,7 @@ def test_6_results_displayed_symbol_dash_name(qapp, store):
     ]
     assert texts[0].startswith("آکو")
     assert "آکو باتري ايرانيان" in texts[0]
-    assert " \u2014 " in texts[0]  # SYMBOL — NAME separator
+    assert " - " in texts[0]  # SYMBOL - NAME separator
     assert texts[1].startswith("فولاد")
 
 
@@ -552,8 +554,9 @@ def test_16_no_results_state(qapp, store):
     _drain(qapp, page)
 
     assert page.results_list.count() == 0
+    # UI-9 Task 3: the search state is Persian and centralized.
     assert page.search_status_label.text() == SEARCH_STATE_NO_RESULTS == (
-        "No symbols found"
+        STRINGS.SEARCH_NO_RESULTS
     )
     assert page.config.selected_instrument is None
 
@@ -676,8 +679,13 @@ def test_18_tsetmc_trading_state_never_called(qapp, store):
     _drain(qapp, page)
 
     # full search + selection flow done; status still fail-closed
-    assert page.config.symbol_status() == "Not available"
-    assert "Status: Not available" in page.symbol_status_label.text()
+    assert page.config.symbol_status() == SYMBOL_STATUS_NOT_AVAILABLE == (
+        "Not available"
+    )
+    assert (
+        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
+        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
+    ) in page.symbol_status_label.text()
     assert "tradable" not in page.symbol_status_label.text().lower()
     # The UI never touches TSETMC itself: no import of market.tsetmc,
     # no code reference to it, and no mapping of the raw TSETMC fields
@@ -835,7 +843,7 @@ def test_22_active_account_from_existing_store(qapp):
     window.account_store.add("ACC-001", "آگاه")
     # no fallback: without explicit activation nothing is shown
     window.order_configuration_page.refresh_active_account()
-    assert "No active account" in (
+    assert STRINGS.NO_ACTIVE_ACCOUNT in (
         window.order_configuration_page.active_account_label.text()
     )
 
@@ -867,9 +875,12 @@ def test_23_prior_ui_contracts_preserved(qapp):
 
     # UI-3.1 amounts/status contracts intact on this page
     page = window.order_configuration_page
-    assert page.fee_label.text() == "Not available"
-    assert page.final_amount_label.text() == "Not available"
-    assert "Status: Not available" in page.symbol_status_label.text()
+    assert page.fee_label.text() == STRINGS.VALUE_NOT_AVAILABLE
+    assert page.final_amount_label.text() == STRINGS.VALUE_NOT_AVAILABLE
+    assert (
+        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
+        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
+    ) in page.symbol_status_label.text()
 
     # the MainWindow seam is the only market import path: a lazy factory
     import ui.main_window as mw

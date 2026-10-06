@@ -56,6 +56,7 @@ from ui.order_config_state import (
     OrderConfiguration,
 )
 from ui.order_configuration_page import OrderConfigurationPage
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -206,8 +207,8 @@ def test_4_price_enter_and_store(qapp, store, monkeypatch):
     page.price_input.editingFinished.emit()
     assert page.config.price == 15000
     assert [title for title, _message in warnings] == [
-        "Invalid price",
-        "Invalid price",
+        STRINGS.DIALOG_INVALID_PRICE,
+        STRINGS.DIALOG_INVALID_PRICE,
     ]
 
     with pytest.raises(OrderConfigError):
@@ -270,8 +271,9 @@ def test_6_base_amount_is_price_times_quantity(qapp, store):
     # displayed as a plain integer — scientific notation is never used
     # for the integer base amount
     assert "e" not in page.base_amount_label.text().lower()
-    digits = page.base_amount_label.text().replace(",", "").replace("\u066c", "")
-    assert digits == "7500000"
+    # UI-9 Task 3: money renders with PERSIAN digits through the ONE
+    # centralized formatter, so the expectation uses it too.
+    assert page.base_amount_label.text() == STRINGS.format_grouped(15000 * 500)
 
 
 # ============================================================
@@ -288,7 +290,7 @@ def test_7_final_amount_not_computed(qapp, store):
     page.quantity_input.editingFinished.emit()
 
     assert page.config.final_amount() is None
-    assert page.final_amount_label.text() == "Not available"
+    assert page.final_amount_label.text() == STRINGS.VALUE_NOT_AVAILABLE
 
 
 # ============================================================
@@ -299,7 +301,7 @@ def test_7_final_amount_not_computed(qapp, store):
 def test_8_fee_never_fabricated(qapp, store):
     page = OrderConfigurationPage(store)
 
-    assert page.fee_label.text() == "Not available"
+    assert page.fee_label.text() == STRINGS.VALUE_NOT_AVAILABLE
     # the config object carries no fee field/value at all
     assert not hasattr(page.config, "fee")
     assert not hasattr(page.config, "fee_rate")
@@ -351,7 +353,7 @@ def test_10_active_account_from_store_no_fallback(qapp):
     window.account_store.add("ACC-001", "آگاه")
     window.order_configuration_page.refresh_active_account()
     text_no_active = window.order_configuration_page.active_account_label.text()
-    assert "No active account" in text_no_active
+    assert STRINGS.NO_ACTIVE_ACCOUNT in text_no_active
     assert "ACC-001" not in text_no_active  # accounts[0] never used
 
     # explicit selection in UI-2.1 is what UI-3.1 shows
@@ -369,7 +371,7 @@ def test_11_no_active_account_shown_transparently(qapp, store):
     page = OrderConfigurationPage(store)
 
     assert store.active_account_id() is None
-    assert "No active account" in page.active_account_label.text()
+    assert STRINGS.NO_ACTIVE_ACCOUNT in page.active_account_label.text()
 
 
 # ============================================================
@@ -388,7 +390,10 @@ def test_12_symbol_status_fail_closed(qapp, store):
         Instrument(symbol="آکو", name="آکو", ins_code="1")
     )
     page._refresh_symbol_info()
-    assert "Status: Not available" in page.symbol_status_label.text()
+    assert (
+        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
+        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
+    ) in page.symbol_status_label.text()
 
 
 # ============================================================
@@ -772,8 +777,9 @@ def test_extra_active_account_refreshed_on_page_reentry(qapp):
 from core.order_queue import OrderQueue
 from models.order import Order as CoreOrder
 
-TEST_BUTTON_LABEL_OFF = "Test"
-TEST_BUTTON_LABEL_ON = "Test (On)"
+# UI-9 Task 3: the button labels are Persian and centralized.
+TEST_BUTTON_LABEL_OFF = STRINGS.BUTTON_TEST
+TEST_BUTTON_LABEL_ON = STRINGS.BUTTON_TEST_ON
 
 
 def _make_valid_page(qapp, store, queue):

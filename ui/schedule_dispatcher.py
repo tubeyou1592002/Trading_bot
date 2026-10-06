@@ -144,6 +144,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
+from ui import strings as STRINGS
+
 
 # ---------------------------------------------------------------------------
 # Contract constants (named, documented, never silently changed)
@@ -162,8 +164,8 @@ _LOGGER = logging.getLogger(__name__)
 #: one meaning, and never a second: "50" here is 50 ms, never 50 seconds.
 EXECUTION_INTERVAL_PATTERN = re.compile(r"^[0-9]+$")
 
-EXECUTION_INTERVAL_LABEL = "Dispatch interval (ms):"
-EXECUTION_INTERVAL_PLACEHOLDER = "Milliseconds between dispatch turns"
+EXECUTION_INTERVAL_LABEL = STRINGS.LABEL_DISPATCH_INTERVAL_MS
+EXECUTION_INTERVAL_PLACEHOLDER = STRINGS.PLACEHOLDER_DISPATCH_INTERVAL
 
 
 class DispatchIntervalError(ValueError):

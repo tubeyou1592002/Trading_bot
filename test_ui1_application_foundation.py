@@ -53,13 +53,16 @@ from PySide6.QtWidgets import QApplication
 import ui  # noqa: F401  (Test 1: the package is importable)
 import ui.app as ui_app
 from ui.main_window import ApplicationMode, MainWindow
+from ui import strings as STRINGS
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 # The em dash is spelled as an escape so title comparisons can never be
 # corrupted by editor/terminal encoding handling.
-EXPECTED_TITLE = "Trading Bot \u2014 User Application"
+# UI-9 Task 3: the title is Persian and centralized in ui.strings, so the
+# assertion follows the product instead of hardcoding a literal.
+EXPECTED_TITLE = STRINGS.WINDOW_TITLE
 
 
 @pytest.fixture(scope="module")

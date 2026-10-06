@@ -47,8 +47,10 @@ from PySide6.QtWidgets import (
 
 from ui.account_store import AccountStore
 from ui.accounts_page import AccountsPage
+from ui import strings as STRINGS
 from ui.order_config_state import OrderConfiguration
 from ui.order_configuration_page import OrderConfigurationPage
+from ui.theme import apply_theme
 
 # UI-7 Task 2 — delay between showing the window and the ONE startup clock
 # sync. The sync must start only once the window is up and the event loop
@@ -134,9 +136,19 @@ class MainWindow(QMainWindow):
         # Window identity / initial logical size
         # ---------------------------------------------
 
-        self.setWindowTitle("Trading Bot \u2014 User Application")
+        self.setWindowTitle(STRINGS.WINDOW_TITLE)
         self.resize(1024, 680)
         self.setMinimumSize(800, 560)
+
+        # ---------------------------------------------
+        # UI-9 Task 1 — dark theme
+        # ---------------------------------------------
+
+        # Applied to the WINDOW (not only to the QApplication) so a
+        # directly-constructed MainWindow is themed too: several existing
+        # tests build the window without ever calling create_app().
+        # Presentation only — no attribute, slot, string or logic change.
+        apply_theme(self)
 
         # ---------------------------------------------
         # Main layout: Navigation area | Content area
@@ -162,7 +174,9 @@ class MainWindow(QMainWindow):
         self.nav_buttons = {}
 
         for name in NAVIGATION_ITEMS:
-            button = QPushButton(name, self.navigation_area)
+            # UI-9 Task 3: `name` stays the PAGE KEY (tests look pages up
+            # by key). Only the DISPLAYED text is Persian.
+            button = QPushButton(STRINGS.nav_display(name), self.navigation_area)
             button.setCheckable(True)
             button.clicked.connect(
                 lambda checked=False, page_name=name: self.select_page(page_name)
@@ -181,7 +195,7 @@ class MainWindow(QMainWindow):
 
         for name in PLACEHOLDER_ITEMS:
             page = QLabel(
-                f"{name}\n\n(placeholder \u2014 implemented in a later UI task)",
+                f"{STRINGS.nav_display(name)}\n\n{STRINGS.PLACEHOLDER_PAGE_BODY}",
                 self.content_area,
             )
             page.setAlignment(Qt.AlignCenter)
@@ -252,13 +266,9 @@ class MainWindow(QMainWindow):
         # the UI mechanism that changes it. The toggle mirrors the EXISTING
         # ApplicationMode state holder (self.mode / set_mode) — no new
         # architecture, no settings system, no separate state object.
-        self.mode_toggle = QPushButton("Diagnostic Mode", self)
+        self.mode_toggle = QPushButton(STRINGS.BUTTON_DIAGNOSTIC_MODE, self)
         self.mode_toggle.setCheckable(True)
-        self.mode_toggle.setToolTip(
-            "Switch between the NORMAL and DIAGNOSTIC application modes "
-            "(UI-6): Diagnostic mode may show technical execution "
-            "diagnostics."
-        )
+        self.mode_toggle.setToolTip(STRINGS.TOOLTIP_DIAGNOSTIC_MODE)
         self.mode_toggle.clicked.connect(self._on_mode_toggle_clicked)
         self.statusBar().addPermanentWidget(self.mode_toggle)
         self._sync_mode_toggle()
@@ -452,7 +462,14 @@ class MainWindow(QMainWindow):
         return self.mode
 
     def _update_mode_label(self):
-        self.mode_label.setText(f"Mode: {self.mode.value}")
+        # UI-9 Task 3: the mode VALUE stays the Core/enum-owned English
+        # token; only the surrounding label text is Persian.
+        label = (
+            STRINGS.MODE_DIAGNOSTIC
+            if self.mode.value == "DIAGNOSTIC"
+            else STRINGS.MODE_NORMAL
+        )
+        self.mode_label.setText(f"{STRINGS.MODE_LABEL_PREFIX} {label}")
 
     # ---------------------------------------------------------
     # UI-6 Task 1 — mode changer (reuses the existing ApplicationMode)
