@@ -2332,6 +2332,101 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 
 
+### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
+
+**Status:** NOT STARTED
+
+This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
+
+#### Overview
+
+The user must be able to introduce an account once, choose a display name, later select it from a table and Login/Logout, enter Captcha if needed, view each account's status independently, and for entering the order page, must have exactly one Active Account that is also Logged In with a Valid Session.
+
+The system must be scalable for multiple accounts and in the future multiple Brokers, but only actually-existing Brokers in the repository are implemented. No unknown API or behavior should be guessed.
+
+#### Flow
+
+```
+Add Account → Select Broker → Account name + account_id → Secure Credential Storage → Display in Table
+Select Account → Login → Captcha if needed → Successful Login → Independent Session → Logged-in Status
+Select Active Account → Verify Login/Session → Enter Order Page → Use that Account
+```
+
+#### Sub-tasks
+
+1. **Account Management Foundation**
+   - Add, edit, delete, select, and sort accounts
+   - Independent display name
+   - Active Account
+   - Compatibility preservation with `Account`
+
+2. **Secure Credential Store**
+   - Secure storage and retrieval of Username/Password
+   - Delete Credential when account is deleted
+   - No Credential storage in Account Model/AccountStore
+
+3. **Account Session Manager**
+   - Independent session per account
+   - Login state
+   - Logout
+   - Token lifecycle
+   - Prevent session mixing
+
+4. **Agah Login & Captcha Flow**
+   - Connect real Agah login to account session
+   - Use existing `get_captcha()` and `login()`
+   - Show Captcha only when needed
+   - Successful Login only after real success
+
+5. **Token / Session Lifecycle**
+   - Real Access Token / Refresh Token verification
+   - Refresh or re-Login based on real API behavior
+   - Session persistence and expiration/error management
+   - No guessing of API behavior
+
+6. **Accounts Page Visual & UX Redesign**
+   - Complete redesign of Accounts page based on new model
+   - Central table for account management
+   - Clear status
+   - Login / Logout / Edit / Delete / Select
+   - Captcha only during Login when needed
+   - **Before implementation, visual design must be presented and approved by Product Owner/Architect**
+
+7. **Login / Logout UI Integration**
+   - Independent Login and Logout per row
+   - Independent status display per account
+   - No impact of one account on another's session
+
+8. **Order Page Access Gate**
+   - Access to order page only if:
+     `Active Account exists + Logged In + Valid Session`
+   - Otherwise prevent entry/order preparation
+   - Gate at appropriate Application/UI layer
+
+9. **Account-Aware Order Routing**
+   - Active Account → Session of that account → Broker Instance/Adapter of that account → existing `DispatchCore → OrderEngine → M6` path
+   - No Account/Session mixing
+   - No parallel order path creation
+
+10. **Full Regression & Acceptance**
+    - Test Add/Edit/Delete/Sort/Select/Login/Logout/Captcha
+    - Test multiple accounts and multiple sessions
+    - Test Order Page Gate
+    - Test Account-aware routing
+    - Regression on UI/Core/M6/Block 8
+    - Live Trading must not be accidentally enabled
+
+#### Block Boundaries
+
+This block must NOT without separate decision:
+- Redesign Core Dispatch
+- Change M6-A through M6-E
+- Change SafetyGate
+- Enable Live Trading
+- Implement Central Server/Admin Panel/License
+
+---
+
 ## 20. Critical Rule for Future Agents
 
 \*\*Do not modify the architecture, broker API implementation, authentication mechanism, or real-order behavior based on assumptions.\*\*
