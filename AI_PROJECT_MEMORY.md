@@ -2438,6 +2438,42 @@ Tests:
 
 Next: **Task 2 — Secure Credential Store** (NOT STARTED).
 
+#### Task 4 — Agah Login & Captcha Flow — Execution Plan
+
+**Status:** PLANNED (NOT STARTED). Task 4 connects real Agah login (including CAPTCHA) to the per-account session state introduced in Task 3, without redesigning the existing account / session / broker / order architecture. The three stages below MUST be executed in order.
+
+**Stage 1 — Architecture Review & Contract**
+- Review the current account, session, broker, and order-placement architecture.
+- Define a common authentication contract that is broker-independent.
+- Determine how each account is assigned its own broker instance and independent session.
+- Review `BrokerManager` dependencies and the current order-placement path.
+- This stage is review and design only; NO code may be changed.
+- Until this review is complete, NO implementation task may be issued.
+
+**Stage 2 — Agah Login Implementation**
+- Implement the common contract and the Agah-specific adapter based on the Stage 1 results.
+- Connect the stored credentials to the login flow and connect the login result to `SessionManager`.
+- Use only the real, existing Agah API behavior for login and CAPTCHA; unknown behavior MUST NOT be guessed.
+- Record login state only after a real, confirmed successful login.
+- Test successful login, failed login, and the independence of two accounts' sessions.
+
+**Stage 3 — Integration & Regression**
+- Integrate with the current application structure and keep the existing order-placement path intact; this does NOT include full account-aware order routing (out of scope — sub-task 9).
+- Verify that sessions and authentication data of different accounts do not interfere.
+- Ensure no parallel order-placement path is created.
+- Run the relevant tests and regression.
+- Report the exact tests run, their results, and any pre-existing errors.
+
+#### Task 4 — Architectural Constraints (Broker-Independent Auth Boundary)
+
+1. The common authentication architecture MUST be broker-independent; Agah-specific logic MUST live only in the Agah adapter.
+2. Every account MUST have independent authentication state and an independent session.
+3. A single broker instance with mutable authentication state MUST NOT be shared across multiple accounts.
+4. The existing `DispatchCore → OrderEngine → M6` path MUST be preserved; any necessary change to its dependencies MUST first be documented and justified in Stage 1.
+5. Token lifecycle, expiry, renewal, and persistence are OUT OF SCOPE for this task and are handled in **Task 5**.
+6. Redesigning the Accounts page, the general login/logout UI integration, restricting access to the order page, and full account-aware routing are OUT OF SCOPE for Task 4 and are performed in later tasks per the roadmap (sub-tasks 6, 7, 8, 9).
+7. CAPTCHA display MUST follow the confirmed API behavior; because the current Agah method requires CAPTCHA, CAPTCHA-less login MUST NOT be assumed.
+
 #### Block Boundaries
 
 This block must NOT without separate decision:
