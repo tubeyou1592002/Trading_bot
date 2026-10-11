@@ -2334,7 +2334,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED
+**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) IMPLEMENTATION STARTED (commits `4dc4231`, `4ce8aab`) but **completion/acceptance NOT independently verified**; Task 4 Stage 2 (Agah Login Implementation) COMPLETED, **Task 4 Stage 3 (Integration & Regression) NOT STARTED**.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
@@ -2436,11 +2436,15 @@ Tests:
 - Task-specific run: `20 passed, 2 failed`. The two failures (`test_11_accounts_page_creates_no_real_broker`, `test_extra_page_add_and_active_flow`) are caused by the still-unmigrated `ui/accounts_page.py` calling `store.add(account_id, broker_name)` with two arguments; they are intentionally out of scope here and must be resolved in the later UI redesign task (sub-task 6).
 - Full suite: `1386 passed, 4 failed` — two pre-existing Block 8 `broker_received_at` contract failures (unchanged) plus the two UI failures above. No new failure was introduced.
 
-Next: **Task 2 — Secure Credential Store** (NOT STARTED).
+Task 2 — Secure Credential Store: **IMPLEMENTATION STARTED — completion/acceptance NOT independently verified.** Commit `4dc4231 — feat: add secure credential store foundation` exists in git history, but no independent completion record has been reviewed for this task; do NOT treat it as completed or accepted.
+
+Task 3 — Account Session Manager: **IMPLEMENTATION STARTED — completion/acceptance NOT independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history, but no independent completion record has been reviewed for this task; do NOT treat it as completed or accepted.
+
+Next: **Independent verification of Task 2 (Secure Credential Store) and Task 3 (Account Session Manager)**. Task 4 Stage 3 MUST NOT start until completion and acceptance of both Task 2 and Task 3 have been independently verified.
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
-**Status:** PLANNED (NOT STARTED). Task 4 connects real Agah login (including CAPTCHA) to the per-account session state introduced in Task 3, without redesigning the existing account / session / broker / order architecture. The three stages below MUST be executed in order.
+**Status:** IN PROGRESS — Stage 1 (Architecture Review & Contract) COMPLETED; **Stage 2 (Agah Login Implementation) COMPLETED**; **Stage 3 (Integration & Regression) NOT STARTED**. Task 4 connects real Agah login (including CAPTCHA) to the per-account session state introduced in Task 3, without redesigning the existing account / session / broker / order architecture. The three stages below MUST be executed in order.
 
 **Stage 1 — Architecture Review & Contract**
 - Review the current account, session, broker, and order-placement architecture.
@@ -2450,14 +2454,25 @@ Next: **Task 2 — Secure Credential Store** (NOT STARTED).
 - This stage is review and design only; NO code may be changed.
 - Until this review is complete, NO implementation task may be issued.
 
-**Stage 2 — Agah Login Implementation**
+**Stage 2 — Agah Login Implementation** — COMPLETED
 - Implement the common contract and the Agah-specific adapter based on the Stage 1 results.
 - Connect the stored credentials to the login flow and connect the login result to `SessionManager`.
 - Use only the real, existing Agah API behavior for login and CAPTCHA; unknown behavior MUST NOT be guessed.
 - Record login state only after a real, confirmed successful login.
 - Test successful login, failed login, and the independence of two accounts' sessions.
 
-**Stage 3 — Integration & Regression**
+##### Stage 2 — Completion Report
+
+- **Broker-independent authentication contract** implemented in `brokers/authentication.py`.
+- **Authentication service** implemented in `ui/authentication_service.py`, with the **Agaah-specific adapter** in `brokers/agaah/auth_adapter.py`. Agah-specific logic lives only in the adapter; the contract and the service remain broker-independent.
+- **Tests** added for all three layers: the contract (`test_block9_task4_authentication_contract.py`), the service (`test_block9_task4_authentication_service.py`), and the Agaah adapter (`test_block9_task4_agah_auth_adapter.py`).
+- **Commit:** `51ee992` — `feat: add broker authentication and Agaah login adapter`.
+- **Actual test result for Task 4:** **107 passed**; pytest exit code successful.
+- **Test method / honesty boundary:** the tests run against test doubles and an injected fake HTTP session. They do NOT perform a real login against a real user account and do NOT open a live connection to the broker. No real, live authentication is claimed or exercised.
+- **Architectural constraints preserved:** the existing `DispatchCore → OrderEngine → M6` path is unchanged; token lifecycle, expiry, renewal and persistence remain OUT OF SCOPE for Task 4 (deferred to Task 5); the confirmed Agah CAPTCHA requirement is respected and CAPTCHA-less login is not assumed.
+- **Real trading:** disabled. No real order was sent and no real broker login was performed.
+
+**Stage 3 — Integration & Regression** — NOT STARTED
 - Integrate with the current application structure and keep the existing order-placement path intact; this does NOT include full account-aware order routing (out of scope — sub-task 9).
 - Verify that sessions and authentication data of different accounts do not interfere.
 - Ensure no parallel order-placement path is created.
