@@ -1,0 +1,250 @@
+"""
+brokers/authentication.py — Block 9, Task 4, Stage 2.
+
+قرارداد عمومی احراز هویت، مستقل از بروکر.
+
+هدف
+---
+یک لایه‌ی قراردادی واحد برای ورود به حساب کارگزاری که پیاده‌سازی هر
+بروکر (آگاه، و غیره) پشت یک رابط مشترک قرار گیرد. لایه‌های بالاتر
+(``ui.authentication_service.AuthenticationService`` و در نهایت رابط
+کاربری) فقط با این قرارداد کار می‌کنند و هیچ جزئیات اختصاصی بروکر
+(مثل ``captchaId`` آگاه، ساختار توکن یا endpointها) را نمی‌بینند.
+
+مرز معماری (مستقل از بروکر بودن):
+
+    LoginChallenge              چالش عمومیِ قابل‌نمایش (مثلاً تصویر کپچا)
+        │
+        ▼
+    AuthenticationAdapter      پیاده‌سازی اختصاصی هر بروکر
+        │   begin_login(username, password)  -> LoginChallenge
+        │   complete_login(response)         -> AuthenticatedSession
+        │   cancel_login()                   -> None
+        │   is_authenticated()               -> bool
+        │   get_authenticated_session()      -> AuthenticatedSession | None
+        ▼
+    AuthenticatedSession       نتیجه‌ی موفق احراز هویت (توکن، شناسه کاربر)
+
+قوانین قرارداد:
+
+    * هیچ فیلد محرمانه‌ای (رمز عبور، توکن) در ``LoginChallenge`` قرار
+      نمی‌گیرد؛ چالش فقط چیزی است که باید به کاربر نمایش داده شود.
+    * ``AuthenticatedSession`` توکن را در خود نگه می‌دارد اما در
+      ``repr`` / ``str`` و خروجی‌های عمومی هرگز آن را افشا نمی‌کند.
+    * خطاهای احراز هویت هرگز رمز عبور یا توکن را در پیام، ``__cause__``
+      یا ``__context__`` خود قرار نمی‌دهند.
+    * ``complete_login`` فقط پس از دریافت پاسخ چالش و تأیید موفقیت
+      واقعی API مجاز به برگرداندن ``AuthenticatedSession`` است؛ پاسخ
+      ظاهراً موفق اما ناقص باید با ``IncompleteLoginError`` رد شود.
+    * رفتار API ناشناخته حدس زده نمی‌شود؛ هر بروکر فقط همان رفتار
+      تأییدشده‌ی واقعی خود را پیاده‌سازی می‌کند.
+"""
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Optional
+
+
+class AuthenticationError(Exception):
+    """
+    پایه‌ی تمام خطاهای قرارداد احراز هویت.
+
+    پیام این خطاها هرگز رمز عبور یا توکن را شامل نمی‌شود.
+    """
+
+
+class LoginNotInProgressError(AuthenticationError):
+    """
+    تکمیل یا لغو ورود بدون یک تلاش ورود در حال انجام، فراخوانی شده است.
+
+    یا هیچ ``begin_login``‌ای انجام نشده، یا تلاش قبلاً تکمیل/لغو شده است.
+    """
+
+
+class LoginChallengeError(AuthenticationError):
+    """
+    دریافت چالش (مثلاً کپچا) از سمت بروکر ناموفق بود.
+
+    هیچ پاسخی از کاربر نباید در انتظار بماند.
+    """
+
+
+class LoginRejectedError(AuthenticationError):
+    """
+    بروکر ورود را رد کرد: اعتبارنامه نادرست، کپچای اشتباه، حساب مسدود و
+    مشابه آن.
+
+    این یک خطای «قابل تکرار توسط کاربر» است: کاربر می‌تواند با چالش
+    جدیدی دوباره تلاش کند.
+    """
+
+
+class IncompleteLoginError(AuthenticationError):
+    """
+    بروکر گزارش موفقیت داد اما نتیجه‌ی کامل احراز هویت را ارائه نکرد.
+
+    برای آگاه: وجود توکن دسترسی معتبر و ``userIdentifier`` الزامی است.
+    یک پاسخ ظاهراً موفق اما ناقص هرگز نباید حساب را به حالت واردشده
+    ببرد؛ این خطا fail-closed است.
+    """
+
+
+class AuthenticationUnavailableError(AuthenticationError):
+    """
+    ارتباط با سرویس احراز هویت بروکر ممکن نشد (شبکه، قطعی سرویس،
+    timeout یا پاسخ غیرقابل تفسیر).
+
+    این یک خطای زیرساختی است، نه رد اعتبارنامه توسط بروکر.
+    """
+
+
+@dataclass(frozen=True)
+class LoginChallenge:
+    """
+    چالش عمومی و قابل‌نمایشِ یک تلاش ورود.
+
+    فیلدها:
+
+        kind            نوع چالش، مثلاً ``"captcha_image"``. ثابت‌های
+                        ``CHALLENGE_*`` در همین ماژول.
+
+        display_payload محتوای قابل نمایش به کاربر. برای کپچای تصویری،
+                        داده‌ی Base64 تصویر است.
+
+        prompt          راهنمای کوتاه فارسی برای نمایش کنار چالش.
+
+    این شیء عمداً **هیچ** جزئیات اختصاصی بروکر (مانند ``captchaId`` آگاه)
+    را حمل نمی‌کند. آن جزئیات فقط داخل آداپتر همان بروکر و همان حساب
+    باقی می‌مانند و هرگز از مرز قرارداد عبور نمی‌کنند.
+    """
+
+    kind: str
+    display_payload: str
+    prompt: str
+
+
+#: ثابت‌های نوع چالش شناخته‌شده (افزایش با افزودن بروکرها).
+CHALLENGE_CAPTCHA_IMAGE = "captcha_image"
+
+
+@dataclass(frozen=True)
+class AuthenticatedSession:
+    """
+    نتیجه‌ی موفق و تأییدشده‌ی احراز هویت یک حساب.
+
+    این شیء فقط پس از تأیید موفقیت واقعی API ساخته می‌شود و توکن‌ها را
+    در خود دارد. توکن‌ها محرمانه‌اند و هرگز نباید در لاگ، پیام خطا،
+    رابط کاربری یا ``repr`` نمایش داده شوند؛ به همین دلیل ``__repr__``
+    و ``__str__`` این کلاس بازنویسی شده‌اند و فقط شناسه‌های غیرمحرمانه
+    را نشان می‌دهند.
+    """
+
+    access_token: str
+    user_identifier: str
+    refresh_token: Optional[str] = None
+    user_name: Optional[str] = None
+
+    def __repr__(self) -> str:
+        return (
+            f"AuthenticatedSession("
+            f"user_identifier={self.user_identifier!r}, "
+            f"has_refresh_token={bool(self.refresh_token)}, "
+            f"user_name={self.user_name!r})"
+        )
+
+    __str__ = __repr__
+
+
+class AuthenticationAdapter(ABC):
+    """
+    رابط عمومی احراز هویت یک بروکر.
+
+    هر پیاده‌سازی متعلق به **یک** حساب است: یک نمونه مستقل از بروکر،
+    یک نشست HTTP مستقل و یک تلاش ورود واحد. دو حساب روی یک بروکر هرگز
+    یک آداپتر (و در نتیجه یک نمونه بروکر) را به اشتراک نمی‌گذارند.
+
+    چرخه‌ی یک تلاش ورود:
+
+        begin_login(username, password)
+            -> LoginChallenge            (چالش به کاربر نمایش داده می‌شود)
+
+        complete_login(response)
+            -> AuthenticatedSession      (فقط پس از تأیید موفقیت واقعی API)
+
+        cancel_login()
+            -> None                      (تلاش رها می‌شود، وضعیت پاک می‌شود)
+
+    هر تلاش ورود یک‌بار است: پس از ``complete_login`` یا ``cancel_login``،
+    آداپتر به حالت بدون تلاش فعال برمی‌گردد.
+    """
+
+    @property
+    @abstractmethod
+    def broker_name(self) -> str:
+        """
+        نام بروکری که این آداپتر به آن تعلق دارد (مثل ``"آگاه"``).
+
+        باید با نام ثبت‌شده‌ی همان بروکر در ``BrokerManager`` یکسان باشد.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def begin_login(self, username: str, password: str) -> LoginChallenge:
+        """
+        شروع یک تلاش ورود و دریافت چالش.
+
+        اعتبارنامه فقط برای همین تلاش نگه داشته می‌شود و بلافاصله پس از
+        پایان آن (موفق، ناموفق یا لغو) از حافظه پاک می‌شود.
+
+        در صورت شکست دریافت چالش، ``LoginChallengeError`` پرتاب می‌شود و
+        هیچ تلاش فعلی‌ای باز نمی‌ماند.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def complete_login(self, response: str) -> AuthenticatedSession:
+        """
+        تکمیل تلاش ورود با پاسخ کاربر به چالش.
+
+        فقط پس از تأیید موفقیت واقعی API، یک ``AuthenticatedSession``
+        برمی‌گرداند. در غیر این صورت یکی از خطاهای قرارداد را پرتاب
+        می‌کند:
+
+            ``LoginNotInProgressError``    تلاش فعالی وجود ندارد.
+            ``LoginRejectedError``          اعتبارنامه یا چالش رد شد.
+            ``IncompleteLoginError``        پاسخ ظاهراً موفق اما ناقص.
+            ``AuthenticationUnavailableError``  ارتباط ممکن نشد.
+
+        در هر حالت شکست، تلاش فعلی پایان می‌یابد و وضعیت موقت پاک می‌شود.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def cancel_login(self) -> None:
+        """
+        لغو تلاش ورود در حال انجام.
+
+        وضعیت موقت تلاش (از جمله چالش و اعتبارانه‌ی نگه‌داشته‌شده) پاک
+        می‌شود. اگر تلاشی در حال انجام نباشد، ``LoginNotInProgressError``
+        پرتاب می‌شود.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_authenticated(self) -> bool:
+        """
+        آیا این حساب در حال حاضر احراز هویت شده است؟
+
+        فقط بر اساس نتیجه‌ی تأییدشده‌ی یک ورود کامل تصمیم می‌گیرد؛ هرگز
+        حالت واردشده را فرض نمی‌کند.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_authenticated_session(self) -> Optional[AuthenticatedSession]:
+        """
+        نشست احراز شده‌ی این حساب، یا ``None`` اگر وارد نشده است.
+
+        شیء برگشتی محرمانه است و نباید لاگ یا نمایش داده شود.
+        """
+        raise NotImplementedError
