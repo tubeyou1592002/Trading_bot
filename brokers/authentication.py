@@ -22,6 +22,7 @@ brokers/authentication.py — Block 9, Task 4, Stage 2.
         │   cancel_login()                   -> None
         │   is_authenticated()               -> bool
         │   get_authenticated_session()      -> AuthenticatedSession | None
+        │   refresh_authenticated_session()  -> AuthenticatedSession
         ▼
     AuthenticatedSession       نتیجه‌ی موفق احراز هویت (توکن، شناسه کاربر)
 
@@ -96,6 +97,46 @@ class AuthenticationUnavailableError(AuthenticationError):
 
     این یک خطای زیرساختی است، نه رد اعتبارنامه توسط بروکر.
     """
+
+
+class TokenRefreshError(AuthenticationError):
+    """
+    نوسازی نشست احرازشدهٔ یک حساب ممکن نشد.
+
+    دلایل ممکن: آداپتر از نوسازی توکن پشتیبانی نمی‌کند، حساب هنوز
+    احراز هویت نشده است، یا درخواست نوسازی بروکر شکست خورد. پیام،
+    ``__cause__`` و ``__context__`` این خطا هرگز توکن دسترسی یا توکن
+    تازه‌سازی را افشا نمی‌کنند.
+
+    سیاست نهاییِ invalidation پس از شکست نوسازی بخشی از Stage 2C است و
+    در این مرحله تعریف نمی‌شود.
+    """
+
+
+def _raise_clean(error: Exception) -> None:
+    """
+    انتشار یک خطای پاک‌سازی‌شده بدون زنجیره‌ی استثنای محرمانه.
+
+    صرف ``raise ... from None`` یا صفر کردن ``__context__`` پیش از
+    ``raise`` کافی نیست: وقتی این تابع داخل یک بلوک ``except`` بیرونی
+    صدا زده شود، خود مفسر در لحظه‌ی ``raise`` مقدار ``__context__`` را
+    روی استثنای در حال هندل تنظیم می‌کند و محرمانه دوباره برمی‌گردد.
+
+    راه‌حل: خطا داخل یک ``try/except`` داخلی بالا انداخته، گرفته و دوباره
+    پاک‌سازی می‌شود و سپس با ``raise`` بدون آرگومان منتشر می‌گردد. در آن
+    لحظه استثنای فعال همان خطای جاری است، پس مفسر ``__context__`` جدیدی
+    روی آن نمی‌گذارد و مقدار ``None`` حفظ می‌شود.
+    """
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    try:
+        raise error
+    except BaseException as exc:
+        exc.__cause__ = None
+        exc.__context__ = None
+        exc.__suppress_context__ = True
+        raise
 
 
 @dataclass(frozen=True)
@@ -248,3 +289,36 @@ class AuthenticationAdapter(ABC):
         شیء برگشتی محرمانه است و نباید لاگ یا نمایش داده شود.
         """
         raise NotImplementedError
+
+    def refresh_authenticated_session(self) -> AuthenticatedSession:
+        """
+        نوسازی نشست احرازشدهٔ همین حساب و بازگرداندن یک
+        ``AuthenticatedSession`` تازه.
+
+        این قرارداد **مستقل از بروکر** است: هیچ endpoint، مسیر، فیلد
+        JSON یا نام بروکر در این امضا ظاهر نمی‌شود. پیاده‌سازی هر بروکر
+        جزئیات اختصاصی خود را پشت همین متد نگه می‌دارد.
+
+        پیش‌نیاز قرارداد: این حساب باید از قبل احراز هویت شده باشد
+        (``is_authenticated()`` برابر ``True`` و
+        ``get_authenticated_session()`` غیر ``None``). در غیر این صورت
+        پیاده‌سازی باید fail-closed شکست بخورد.
+
+        در صورت موفقیت، پیاده‌سازی باید نشست احرازشدهٔ خود را با توکن‌های
+        تازه به‌روز کند و همان نشست را برگرداند. در صورت شکست، نشست
+        قبلی باید دست‌نخورده باقی بماند و ``TokenRefreshError`` پرتاب
+        شود؛ هیچ توکنی نباید در پیام خطا یا زنجیرهٔ استثنا افشا شود.
+
+        پیاده‌سازی پیش‌فرض این متد **abstract نیست** تا آداپترهای موجودی
+        که نوسازی توکن را پشتیبانی نمی‌کنند همچنان قابل ساخت بمانند؛
+        چنین آداپتری به‌صورت صریح و ایمن ``TokenRefreshError`` پرتاب
+        می‌کند و هیچ رفتاری فرض نمی‌شود.
+
+        خطای پرتاب‌شده حتی اگر این متد داخل یک بلوک ``except`` بیرونی صدا
+        زده شود، ``__context__`` و ``__cause__`` محرمانه را حمل نمی‌کند.
+        """
+        _raise_clean(
+            TokenRefreshError(
+                "این آداپتر از نوسازی نشست احرازشده پشتیبانی نمی‌کند"
+            )
+        )

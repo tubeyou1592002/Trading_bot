@@ -64,6 +64,7 @@ from brokers.authentication import (
     LoginChallengeError,
     LoginNotInProgressError,
     LoginRejectedError,
+    TokenRefreshError,
 )
 
 from .broker import AgaahBroker
@@ -419,6 +420,92 @@ class AgahAuthenticationAdapter(AuthenticationAdapter):
     def get_authenticated_session(self) -> Optional[AuthenticatedSession]:
         """نشست احرازشده‌ی این حساب، یا None اگر وارد نشده است."""
         return self._authenticated
+
+    def refresh_authenticated_session(self) -> AuthenticatedSession:
+        """
+        نوسازی توکن‌های آگاه برای همین حسابِ احرازشده.
+
+        این متد فقط قرارداد مستقل از بروکر
+        (``AuthenticationAdapter.refresh_authenticated_session``) را
+        پیاده می‌کند و جزئیات اختصاصی آگاه (endpoint، فیلدهای JSON،
+        ساختار پاسخ) داخل خودِ ``AgaahBroker.refresh_tokens()``
+        می‌مانند.
+
+        مسیر کار:
+
+            1. پیش‌نیاز: این آداپتر باید از قبل احراز هویت شده و یک
+               ``AuthenticatedSession`` داشته باشد؛ در غیر این صورت
+               بدون هیچ درخواستی ``TokenRefreshError`` پرتاب می‌شود.
+            2. فراخوانی ``self._broker.refresh_tokens()`` روی نمونه‌ی
+               بروکر همین حساب (هیچ نمونه یا آداپتر دیگری دخالت ندارد).
+            3. در صورت شکست، نشست قبلی دست‌نخورده می‌ماند و یک خطای
+               پاک‌سازی‌شده بدون افشای توکن یا زنجیره‌ی استثنای حساس
+               پرتاب می‌شود.
+            4. در صورت موفقیت، توکن‌های تازه‌ی بروکر اعتبارسنجی شده و یک
+               ``AuthenticatedSession`` تازه ساخته می‌شود که
+               ``user_identifier`` و ``user_name`` قبلی را حفظ می‌کند
+               (این endpoint بازگرداندن مقدار تازه‌ای برای آن‌ها تأیید
+               نشده است). تنها پس از اعتبارسنجی کامل، ``_authenticated``
+               جایگزین می‌شود.
+
+        هیچ نوسازی یا retry خودکاری در متدهای درخواست انجام نمی‌شود؛ این
+        متد فقط با فراخوانی صریح اجرا می‌گردد.
+        """
+        if self._authenticated is None:
+            self._raise_clean(
+                TokenRefreshError(
+                    "این حساب هنوز احراز هویت نشده است؛ نوسازی توکن "
+                    "ممکن نیست."
+                )
+            )
+
+        previous = self._authenticated
+
+        error = None
+        try:
+            self._broker.refresh_tokens()
+        except Exception as exc:
+            error = exc
+
+        if error is not None:
+            secrets = self._get_redact_secrets()
+            detail = _redact(str(error), secrets)
+            # خود استثنای اصلی نیز پاک‌سازی می‌شود تا حتی اگر جایی نگه
+            # داشته شود، محرمانه را حمل نکند.
+            error.args = (detail,)
+            self._raise_clean(
+                TokenRefreshError(
+                    "نوسازی توکن آگاه ناموفق بود"
+                    + (f": {detail}" if detail else ".")
+                )
+            )
+
+        access_token = getattr(self._broker, "access_token", None)
+        refresh_token = getattr(self._broker, "refresh_token", None)
+
+        if not isinstance(access_token, str) or not access_token.strip():
+            self._raise_clean(
+                TokenRefreshError(
+                    "accessToken جایگزین پس از نوسازی معتبر نیست."
+                )
+            )
+
+        if not isinstance(refresh_token, str) or not refresh_token.strip():
+            self._raise_clean(
+                TokenRefreshError(
+                    "refreshToken جایگزین پس از نوسازی معتبر نیست."
+                )
+            )
+
+        refreshed = AuthenticatedSession(
+            access_token=access_token,
+            user_identifier=previous.user_identifier,
+            refresh_token=refresh_token,
+            user_name=previous.user_name,
+        )
+
+        self._authenticated = refreshed
+        return refreshed
 
 
 # ---------------------------------------------------------------------------

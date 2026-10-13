@@ -17,6 +17,7 @@ ui/authentication_service.py — Block 9, Task 4, Stage 2.
         ├── begin_login(account_id)               -> LoginChallenge
         ├── complete_login(account_id, response)  -> Session
         ├── cancel_login(account_id)              -> None
+        ├── refresh_session(account_id)           -> Session
         ├── is_logged_in(account_id)              -> bool
         └── get_adapter(account_id)               -> AuthenticationAdapter | None
 
@@ -94,6 +95,32 @@ class InconsistentSessionError(AuthenticationServiceError):
 
 class NoPendingLoginError(AuthenticationServiceError):
     """تلاش ورودی برای این حساب در حال انجام نیست."""
+
+
+def _raise_clean(error: Exception) -> None:
+    """
+    انتشار یک خطای پاک‌سازی‌شده بدون زنجیره‌ی استثنای محرمانه.
+
+    صرف ``raise ... from None`` یا صفر کردن ``__context__`` پیش از
+    ``raise`` کافی نیست: وقتی این تابع داخل یک بلوک ``except`` بیرونی
+    صدا زده شود، خود مفسر در لحظه‌ی ``raise`` مقدار ``__context__`` را
+    روی استثنای در حال هندل تنظیم می‌کند و محرمانه دوباره برمی‌گردد.
+
+    راه‌حل: خطا داخل یک ``try/except`` داخلی بالا انداخته، گرفته و دوباره
+    پاک‌سازی می‌شود و سپس با ``raise`` بدون آرگومان منتشر می‌گردد. در آن
+    لحظه استثنای فعال همان خطای جاری است، پس مفسر ``__context__`` جدیدی
+    روی آن نمی‌گذارد و مقدار ``None`` حفظ می‌شود.
+    """
+    error.__cause__ = None
+    error.__context__ = None
+    error.__suppress_context__ = True
+    try:
+        raise error
+    except BaseException as exc:
+        exc.__cause__ = None
+        exc.__context__ = None
+        exc.__suppress_context__ = True
+        raise
 
 
 class AuthenticationService:
@@ -330,6 +357,139 @@ class AuthenticationService:
             adapter.cancel_login()
         finally:
             self._clear_pending(account_id)
+
+    def refresh_session(self, account_id: str) -> Session:
+        """
+        نوسازی صریح نشست احرازشدهٔ یک حساب و همگام‌سازی نمای توکن.
+
+        این عملیات **مستقل از بروکر** است: سرویس هیچ endpoint، مسیر یا
+        فیلد JSON اختصاصی آگاه را نمی‌شناسد و فقط قرارداد
+        ``AuthenticationAdapter.refresh_authenticated_session()`` را
+        فراخوانی می‌کند. هیچ نوسازی خودکار، retry، trigger، یا تغییر در
+        مسیر سفارش انجام نمی‌شود؛ این متد فقط با فراخوانی صریح اجرا
+        می‌گردد.
+
+        ترتیب کار:
+
+            1. رزولوشن و اعتبارسنجی حساب و نشست آن (fail-closed).
+            2. پیش‌نیازها: حساب باید ``LOGGED_IN``، آداپتر همین حساب
+               موجود و احرازشده باشد. اگر هر یک برقرار نباشد، **پیش از**
+               فراخوانی آداپتر یا ارسال هر درخواستی رد می‌شود.
+            3. فراخوانی قرارداد نوسازی روی آداپتر همین حساب.
+            4. اعتبارسنجی ``AuthenticatedSession`` برگشتی و بررسی سازگاری
+               نمای آداپتر، پیش از تغییر وضعیت مشترک.
+            5. جایگزینی فقط توکن دسترسی همین حساب در ``SessionManager``.
+
+        در شکست نوسازی، توکن ``SessionManager`` جایگزین نمی‌شود و وضعیت
+        احرازشده دست‌نخورده می‌ماند. اگر پس از نوسازی موفق، همگام‌سازی
+        نشست به‌دلیل یک خطای غیرمنتظره ممکن نشود، نگه‌داشتن حساب در وضعیت
+        «واردشده» با سه نمای ناهماهنگ ناامن است: بنابراین آداپتر احرازشده
+        **در هر صورت** و مستقل از موفقیتِ logout از دسترس سرویس خارج
+        می‌شود، حساب از مسیر موجود logout از وضعیت واردشده خارج می‌گردد و
+        خطا صریحاً به ورود مجدد اشاره می‌کند. اگر خود logout با خطا مواجه
+        شود، از ``SessionManager.invalidate_session`` به‌عنوان مسیر
+        اضطراریِ مستقل استفاده می‌شود تا نشست محلی همین حساب باطل شود و
+        خطا صریح بگوید ورود مجدد لازم است. اگر ابطال اضطراری هم ممکن نشود،
+        شکست صریحاً اعلام می‌شود و هیچ وضعیت امن‌سازی‌شده‌ای ادعا و هیچ
+        توکن کهنه‌ای بازگردانده نمی‌شود؛ موفقیت کاذب هرگز اعلام نمی‌گردد.
+
+        خروجی همیشه یک ``Session`` عمومی است و هرگز توکن در آن نیست.
+        """
+        # 1. رزولوشن حساب و بررسی سازگاری نشست با بروکر حساب.
+        self._resolve_account(account_id)
+
+        # 2. پیش‌نیازها، پیش از هر تماس با آداپتر یا درخواست HTTP.
+        if not self._sessions.is_logged_in(account_id):
+            raise AuthenticationServiceError(
+                "این حساب در وضعیت واردشده نیست؛ نوسازی نشست مجاز نیست"
+            )
+
+        adapter = self._adapters.get(account_id)
+        if adapter is None:
+            raise AuthenticationServiceError(
+                "آداپتر احرازشدهٔ این حساب موجود نیست؛ نوسازی نشست ممکن "
+                "نیست"
+            )
+
+        if not adapter.is_authenticated():
+            raise AuthenticationServiceError(
+                "آداپتر این حساب احراز هویت نشده است؛ نوسازی نشست ممکن "
+                "نیست"
+            )
+
+        # 3. فراخوانی قرارداد نوسازی روی آداپتر همین حساب. هر شکستی بدون
+        #    هیچ تغییری به فراخواننده منتقل می‌شود.
+        refreshed = adapter.refresh_authenticated_session()
+
+        # 4. اعتبارسنجی نتیجهٔ برگشتی، پیش از تغییر وضعیت مشترک. سرویس
+        #    فقط صورت‌بندی قرارداد را می‌سنجد (ساختار و سازگاری) و به نوع
+        #    هیچ پیاده‌سازی بروکری وابسته نیست؛ از همین رو از ماژول
+        #    احراز هویت چیزی import نمی‌کند.
+        token = getattr(refreshed, "access_token", None)
+        if not isinstance(token, str) or not token.strip():
+            raise AuthenticationServiceError(
+                "توکن نوسازی‌شدهٔ این حساب معتبر نیست"
+            )
+
+        current = adapter.get_authenticated_session()
+        current_token = getattr(current, "access_token", None)
+        if not isinstance(current_token, str) or current_token != token:
+            raise AuthenticationServiceError(
+                "نمای نشست آداپتر پس از نوسازی سازگار نیست"
+            )
+
+        # 5. جایگزینی فقط توکن دسترسی همین حساب در SessionManager.
+        try:
+            session = self._sessions.replace_token(account_id, token)
+        except Exception:
+            # بروکر و آداپتر همین حساب تازه شده‌اند، اما SessionManager نتوانست
+            # توکن را جایگزین کند. نگه‌داشتن حساب در وضعیت «واردشده» با سه
+            # نمای ناهماهنگ (توکن تازه‌ی بروکر/آداپتر و توکن کهنه‌ی نشست)
+            # ناامن است؛ ضمن اینکه توکن قبلی پس از تمدید به‌احتمال زیاد در سمت
+            # سرور دیگر معتبر نیست و نباید کورکورانه بازگردانده شود.
+            #
+            # آداپتر احرازشده **همیشه** و مستقل از موفقیتِ logout از دسترس
+            # سرویس خارج می‌شود تا هیچ نمای احرازشده‌ای کهنه قابل دسترسی
+            # نماند و حساب برای ادامه‌ی احراز/نوسازی یا ارسال سفارش قابل
+            # استفاده تلقی نشود؛ سپس از مسیر موجود logout برای خروج از
+            # وضعیت واردشده اقدام می‌شود. اگر این پاک‌سازی کامل نشود، شکست
+            # صریحاً اعلام می‌شود و هیچ ادعای وضعیت امن‌سازی‌شده‌ای مطرح
+            # نمی‌گردد.
+            self._adapters.pop(account_id, None)
+            try:
+                self._sessions.logout(account_id)
+            except Exception:
+                # مسیر پاک‌سازی موجود شکست خورد. به‌عنوان مسیر اضطراریِ
+                # مستقل، نشست محلی همین حساب مستقیماً باطل می‌شود.
+                try:
+                    self._sessions.invalidate_session(account_id)
+                except Exception:
+                    # حتی ابطال اضطراری هم ممکن نشد: هیچ ادعای امن‌شدن
+                    # نمی‌شود و هیچ اطلاعات محرمانه‌ای افشا نمی‌گردد.
+                    _raise_clean(
+                        AuthenticationServiceError(
+                            "نوسازی انجام شد اما همگام‌سازی توکن نشست این "
+                            "حساب کامل نشد و ابطال اضطراری نشست محلی هم "
+                            "ممکن نشد؛ وضعیت امن ادعا نمی‌شود و ورود "
+                            "مجدد لازم است"
+                        )
+                    )
+                _raise_clean(
+                    AuthenticationServiceError(
+                        "نوسازی انجام شد اما همگام‌سازی توکن نشست این "
+                        "حساب کامل نشد؛ نشست محلی این حساب باطل شد و "
+                        "ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "نوسازی انجام شد اما همگام‌سازی توکن نشست این حساب کامل "
+                    "نشد؛ حساب از وضعیت واردشده خارج شد و به ورود مجدد نیاز "
+                    "دارد"
+                )
+            )
+
+        return session
 
     def is_logged_in(self, account_id: str) -> bool:
         """آیا این حساب در حال حاضر وارد شده است؟"""

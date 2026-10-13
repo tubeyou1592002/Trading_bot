@@ -24,7 +24,9 @@ Task 3 boundary
         mark_logged_in(account_id, token)  -> Session
         fail_login(account_id)             -> Session
         logout(account_id)                 -> Session
+        invalidate_session(account_id)     -> Session
         get_token(account_id)              -> token | None
+        replace_token(account_id, token)   -> Session
 
     * This module is a BROKER-INDEPENDENT primitive: it imports NOTHING
       from ``brokers/``, ``core/``, ``market/``, ``models/`` or ``main.py``
@@ -167,7 +169,9 @@ class SessionManager:
         mark_logged_in(account_id, token)  -> Session
         fail_login(account_id)             -> Session
         logout(account_id)                 -> Session
+        invalidate_session(account_id)     -> Session
         get_token(account_id)              -> token | None
+        replace_token(account_id, token)   -> Session
 
     Rules:
 
@@ -369,4 +373,81 @@ class SessionManager:
             new_state=SessionState.LOGGED_OUT,
         )
         self._tokens[account_id] = None
+        return session
+
+    def invalidate_session(self, account_id):
+        """
+        ابطال مستقیم و مستقلِ نشست محلی یک حساب.
+
+        این متد یک مسیر اضطراری است: **به‌طور کامل مستقل از ``logout``
+        پیاده‌سازی شده** است و در صورت شکست ``logout`` می‌تواند وضعیت و
+        توکن همان حساب را بدون تکیه بر هیچ گذار حالت دیگری پاک کند.
+
+        قوانین (fail-closed و قابل‌پیش‌بینی):
+
+            * حساب ناشناخته طبق قرارداد همین ماژول
+              ``SessionNotFoundError`` می‌دهد.
+            * وضعیت همان حساب مستقیماً به ``LOGGED_OUT`` رسانده می‌شود،
+              فارغ از وضعیت فعلی (``LOGGED_IN``، ``LOGIN_PENDING`` یا
+              ``LOGGED_OUT``).
+            * توکن ذخیره‌شدهٔ همان حساب پاک می‌شود.
+            * فراخوانی مجدد قابل‌پیش‌بینی و بی‌اثر است: حساب در
+              ``LOGGED_OUT`` می‌ماند و خطا پرتاب نمی‌شود.
+            * وضعیت و توکن هیچ حساب دیگری تغییر نمی‌کند.
+
+        هیچ وابستگی بروکری، درخواست شبکه‌ای یا ذخیره‌سازی دائمی در این
+        متد وجود ندارد؛ این متد فقط نشست محلی برنامه را باطل می‌کند و
+        هرگز ادعا نمی‌کند توکن‌های صادرشده در سمت بروکر از راه دور لغو
+        شده‌اند.
+        """
+        session = self._get(account_id)
+        invalidated = Session(
+            account_id=session.account_id,
+            broker_name=session.broker_name,
+            state=SessionState.LOGGED_OUT,
+        )
+        self._sessions[account_id] = invalidated
+        self._tokens[account_id] = None
+        return invalidated
+
+    def replace_token(self, account_id, token):
+        """
+        جایگزینی ایمنِ توکن درون‌حافظه‌ای یک حسابِ واردشده.
+
+        این یک عملیات صریح و مستقل از بروکر است: هیچ ورودی بروکری، هیچ
+        درخواست شبکه‌ای و هیچ منطق نوسازی‌ای در این ماژول وجود ندارد.
+        فراخواننده (لایهٔ احراز هویت) توکن تازه را تأمین می‌کند.
+
+        قوانین (fail-closed):
+
+            * فقط برای حسابی که از قبل ثبت شده و در وضعیت ``LOGGED_IN``
+              است مجاز است؛ حساب ناشناخته ``SessionNotFoundError`` و
+              وضعیت ``LOGGED_OUT`` یا ``LOGIN_PENDING`` مقدار
+              ``SessionStateError`` می‌دهد.
+            * توکن باید یک رشتهٔ غیرخالی و بدون فاصلهٔ خالی باشد؛ در غیر
+              این صورت ``SessionValidationError`` پرتاب می‌شود و پیام
+              هیچ‌گاه خودِ توکن را بازگو نمی‌کند.
+            * تنها توکن همین حساب جایگزین می‌شود؛ وضعیت ``LOGGED_IN`` و
+              هویت عمومی ``Session`` دست‌نخورده می‌مانند و هیچ حساب
+              دیگری تحت تأثیر قرار نمی‌گیرد.
+            * توکن هرگز در ``Session``، ``repr``، پیام خطا یا هیچ
+              ذخیره‌سازیِ ماندگاری نوشته نمی‌شود.
+
+        در صورت موفقیت، همان ``Session`` عمومیِ حساب بازگردانده می‌شود
+        (که طبق طراحی هیچ توکنی در خود ندارد).
+        """
+        session = self._get(account_id)
+
+        if session.state is not SessionState.LOGGED_IN:
+            raise SessionStateError(
+                f"account {account_id!r} cannot replace its token from "
+                f"{session.state.value!r} state"
+            )
+
+        if not isinstance(token, str) or not token.strip():
+            raise SessionValidationError(
+                "token must be a non-empty, non-whitespace string"
+            )
+
+        self._tokens[account_id] = token
         return session
