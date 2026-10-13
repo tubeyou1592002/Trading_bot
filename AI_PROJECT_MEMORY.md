@@ -2440,7 +2440,7 @@ Task 2 — Secure Credential Store: **COMPLETED and independently verified.** Co
 
 Task 3 — Account Session Manager: **COMPLETED and independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history. Independent verification evidence: `test_block9_task3_session_manager.py` — **56 passed**, exit code successful. `ui/session_manager.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), tracks per-account login state independently, and rejects overlapping login flows and invalid state transitions fail-closed. Tokens are held in memory only and never written to a `Session` snapshot, a model, a file or an error message. No real credential, broker or network was used.
 
-Next: **Task 5 — Token / Session Lifecycle** (NOT STARTED).
+Next: **Task 5 — Token / Session Lifecycle** — Stage 1 (Read-Only Audit) COMPLETED; Stage 2A is next. Implementation remains NOT STARTED.
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
@@ -2523,6 +2523,76 @@ This addendum records one architectural-review correction and its real, offline 
 5. Token lifecycle, expiry, renewal, and persistence are OUT OF SCOPE for this task and are handled in **Task 5**.
 6. Redesigning the Accounts page, the general login/logout UI integration, restricting access to the order page, and full account-aware routing are OUT OF SCOPE for Task 4 and are performed in later tasks per the roadmap (sub-tasks 6, 7, 8, 9).
 7. CAPTCHA display MUST follow the confirmed API behavior; because the current Agah method requires CAPTCHA, CAPTCHA-less login MUST NOT be assumed.
+
+#### Task 5 — Token / Session Lifecycle — Execution Plan
+
+**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**. Stage 2A is the next task. No Task 5 production implementation has started.
+
+##### Stage 1 — Discovery Findings (Verified vs. Unverified)
+
+**Evidence source:** The project owner inspected the official Agah Online application's browser Sources/Network code. This records observed client behavior only; it does not establish every server-side guarantee. No real token values or user-specific data are recorded here.
+
+**Verified from the inspected browser client code**
+- Refresh endpoint: `POST https://tseonlineapi.agah.com/api/v1/users/refresh-token`.
+- Request JSON fields: `accessToken` and `refreshToken` (the currently stored token values).
+- On a response where `isSuccess` is true, the client reads `data.accessToken` and `data.refreshToken` and stores both.
+- The client's HTTP error handling attempts refresh for certain `401` responses when both tokens are available, then retries the original request after a successful refresh. If refresh fails, or if a refresh-token/NATS-pusher request returns `401`/`403`, the client logs out and redirects. A specific OIDC invalid-token error also triggers logout.
+- The website's `silentRenew: false` / `useRefreshToken: false` settings belong to its separate OIDC configuration; they do not negate the custom API refresh method observed above.
+- The browser client stores the tokens in browser storage after client-side AES-CBC encryption. This implementation must NOT be copied into Trading_bot as a token-persistence design.
+
+**Verified from the current Python repository**
+- `AgaahBroker.login()` parses `accessToken`, `refreshToken`, and `userIdentifier` and holds them on that account's broker instance (`brokers/agaah/broker.py`).
+- The retained Agah adapter also holds an immutable `AuthenticatedSession` containing both tokens. `AuthenticationService` retains one adapter per account.
+- `SessionManager` stores only the access token in memory; it has no atomic token-replacement API for an already-`LOGGED_IN` account.
+- Authenticated request paths use `_auth_headers()` and call `raise_for_status()`; the production Python code currently has no refresh endpoint method, no dedicated `401` handling, no token replacement after login, and no refresh/retry coordination.
+- Tokens are not persisted to disk, configuration, environment variables, or the OS credential vault. Keep this boundary: the OS vault stores login credentials only; access and refresh tokens remain in memory.
+- Existing offline test seams include the replaceable `AgaahBroker.session`, fake HTTP sessions/responses from Task 4 tests, injected adapter factories, and a directly testable `SessionManager`.
+
+**Open questions — do not guess**
+- Exact server behavior for HTTP failures versus an `isSuccess: false` response envelope.
+- Whether refresh tokens are single-use/rotated on every success, and what happens if the refresh response is incomplete.
+- Any headers beyond the observed JSON fields that the endpoint may require.
+- Actual token lifetime and whether every `401` represents expiration.
+- Whether the server guarantees a live order was not accepted whenever its response is `401`. Until independently established, treat live-order retry as a safety-sensitive operation and do not automatically replay a live `POST /order`.
+
+##### Task 5 Roadmap
+
+**Stage 1 — Read-Only Audit: COMPLETED**
+- Trace tokens through the broker, adapter, authentication service, and SessionManager.
+- Inventory authenticated HTTP paths and their current error handling.
+- Record observed browser-client refresh behavior separately from unverified server semantics.
+- No source files were modified and no tests or live requests were executed during this audit.
+
+**Stage 2A — Agah Refresh Primitive and Independent Tests: NEXT**
+- Allowed files: `brokers/agaah/broker.py` and new `test_block9_task5_refresh_token.py` only.
+- Implement one Agah-specific refresh method using the observed endpoint and JSON fields.
+- Require both current tokens before a request; validate HTTP status, the response envelope, and both replacement token fields.
+- Replace access and refresh tokens atomically only after complete validation. Do not partially update token state on any failure.
+- No automatic `401` interception/retry, SessionManager changes, UI changes, order-path changes, persistence, commit, or push in this subtask.
+- Use fake sessions and fake responses only. Test URL/method/body, success, missing tokens, HTTP failure, `isSuccess: false`, malformed/missing replacement tokens, atomic failure behavior, and absence of token leakage.
+
+**Stage 2B — Per-Account Session and Token Replacement**
+- Design and implement an explicit API to replace the access token for an already-`LOGGED_IN` account without forcing a logout/login state cycle.
+- Keep the common `SessionManager` / authentication contract broker-independent; Agah endpoint and response semantics stay in Agah-specific code.
+- Keep the broker, adapter's authenticated-session view, authentication service, and SessionManager consistent after replacement.
+- Preserve the per-account isolation rule: no account may read, replace, invalidate, or use another account's tokens.
+- Do not persist access or refresh tokens; do not alter order dispatch or UI unless a separately approved dependency change is demonstrated.
+
+**Stage 2C — HTTP 401 Handling and Renewal Coordination**
+- Add bounded refresh handling for confirmed Agah-authenticated request paths, based on Stage 2A/2B APIs.
+- A successful refresh may trigger at most one retry for an eligible non-order request. Prevent retry loops and coordinate concurrent requests so a single account does not launch multiple overlapping refresh operations.
+- A refresh failure or invalid/incomplete refresh response must invalidate only that account's authenticated state and require login again; do not silently keep a stale token.
+- Do NOT automatically replay a live `POST /order` after `401`. Surface a clear authentication failure for explicit user recovery; no duplicate-order risk may be introduced by automatic replay.
+- Audit the broker, instrument provider, and NATS/queue-position paths individually. Do not assume all request paths can share the same synchronous retry mechanism.
+
+**Stage 3 — Offline Integration and Regression**
+- Use fake HTTP transport; no live broker calls, real credentials, real tokens, CAPTCHA, or orders.
+- Verify token replacement is atomic and account-scoped; renewal failure affects only the relevant account.
+- Verify bounded retry behavior, no loops, no duplicate refresh under concurrent requests, no automatic live-order replay, and no secret leakage.
+- Run the new tests plus the relevant Task 2/3/4 authentication, broker, and order-path regression tests. Report exact commands, results, and pre-existing failures separately.
+- Preserve `DispatchCore → OrderEngine → M6`, the live-trading safety lock, and the existing broker-independent authentication boundary.
+
+**Execution control:** Complete and review each substage before issuing the next. The Task 2A implementation must stop at the allowed two files and must not begin Stage 2B or Stage 2C.
 
 #### Block Boundaries
 
