@@ -78,14 +78,18 @@ USER_IDENTIFIER = "user-identifier-789"
 class StubBackend:
     def __init__(self):
         self.entries = {}
+        self.calls = []
 
     def set_password(self, service, account, password):
+        self.calls.append(("set", service, account))
         self.entries[(service, account)] = password
 
     def get_password(self, service, account):
+        self.calls.append(("get", service, account))
         return self.entries.get((service, account))
 
     def delete_password(self, service, account):
+        self.calls.append(("delete", service, account))
         del self.entries[(service, account)]
 
 
@@ -736,8 +740,225 @@ def test_challenge_failure_keeps_session_logged_out():
 
 
 # ---------------------------------------------------------------------------
-# 8. Offline guarantees
+# 9. Repeated / simultaneous login attempts are rejected with no side effects
 # ---------------------------------------------------------------------------
+
+def test_repeated_login_while_logged_in_rejected_with_no_factory_call():
+    """
+    Logging in again while already LOGGED_IN must raise the generic
+    AuthenticationServiceError. It must NOT build a new adapter, read
+    credentials, or touch the session; the established login is untouched.
+    """
+    service = make_service()
+    seed_and_begin(service)
+    service.complete_login(ACC_A, "1234")
+
+    adapter_before = service.get_adapter(ACC_A)
+    adapters_before = len(service.created_adapters)
+    session_state_before = service._sessions.state(ACC_A)
+    token_before = service._sessions.get_token(ACC_A)
+
+    with pytest.raises(AuthenticationServiceError):
+        service.begin_login(ACC_A)
+
+    # No new adapter instance was built by the failed re-login attempt.
+    assert len(service.created_adapters) == adapters_before
+
+    # State, token and adapter identity are unchanged.
+    assert service._sessions.state(ACC_A) is session_state_before
+    assert service._sessions.get_token(ACC_A) == token_before
+    assert service.get_adapter(ACC_A) is adapter_before
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_IN
+
+
+def test_concurrent_login_attempt_rejected_and_first_still_completable():
+    """
+    Starting a second login for an account that already has a pending
+    attempt must be rejected with no extra factory/credential work, while
+    the first attempt remains completable. A different account must be
+    unaffected.
+    """
+    service = make_service()
+    seed_account(service._accounts, service._credentials)
+
+    adapters_before = len(service.created_adapters)
+
+    # First attempt goes fully through: factory -> credentials -> challenge.
+    challenge_a = service.begin_login(ACC_A)
+    adapters_after_first = len(service.created_adapters)
+    assert adapters_after_first == adapters_before + 1
+    adapter_a = service.created_adapters[-1]
+    assert adapter_a is service._pending_logins[ACC_A]
+
+    # Second attempt for the same account: rejected immediately.
+    with pytest.raises(AuthenticationServiceError):
+        service.begin_login(ACC_A)
+
+    # No new factory call and no credential read happened for the second
+    # attempt (tracked via the service's in-memory credential backend).
+    credential_backend = service._credentials._backend
+    reads_during = len(
+        [c for c in credential_backend.calls if c[0] == "get"]
+    )
+    # Exactly one read: the first attempt's credential lookup. The rejected
+    # second attempt added no further read.
+    assert reads_during == 1
+
+    assert len(service.created_adapters) == adapters_after_first
+    assert service._pending_logins[ACC_A] is adapter_a
+    assert service._sessions.state(ACC_A) is SessionState.LOGIN_PENDING
+
+    # The first attempt is still completable.
+    session_b = service.complete_login(ACC_A, "1234")
+    assert session_b.state is SessionState.LOGGED_IN
+    assert service.is_logged_in(ACC_A) is True
+
+
+def test_credential_read_not_repeated_on_rejected_relogin():
+    """
+    A rejected re-login (already logged in) must not re-read credentials:
+    credential reads happen only during the successful begin_login.
+    """
+    service = make_service()
+    seed_account(service._accounts, service._credentials)
+    service.begin_login(ACC_A)
+    service.complete_login(ACC_A, "1234")
+
+    reads_before = len(
+        [c for c in service._credentials._backend.calls if c[0] == "get"]
+    )
+
+    with pytest.raises(AuthenticationServiceError):
+        service.begin_login(ACC_A)
+
+    reads_after = len(
+        [c for c in service._credentials._backend.calls if c[0] == "get"]
+    )
+    assert reads_after == reads_before
+
+
+def test_adapter_build_failure_resets_session_to_logged_out():
+    """
+    Failure while building the adapter (after session reservation) must
+    reset the session to LOGGED_OUT and clear the temp attempt.
+    """
+    accounts, credentials, sessions = make_stores()
+    accounts.add(ACC_A, BROKER_AGAH, "حساب")
+    credentials.save_credentials(ACC_A, BROKER_AGAH, USERNAME, PASSWORD)
+
+    factory_calls = []
+
+    def failing_factory():
+        factory_calls.append(1)
+        raise UnknownBrokerError("آداپتر ساخته نشد")
+
+    service = AuthenticationService(
+        accounts, credentials, sessions,
+        adapter_factories={BROKER_AGAH: failing_factory},
+    )
+
+    with pytest.raises(UnknownBrokerError):
+        service.begin_login(ACC_A)
+
+    assert factory_calls == [1]
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+    assert ACC_A not in service._pending_logins
+
+
+def test_missing_credentials_after_reservation_resets_session():
+    """
+    Missing credentials (read after session reservation) must reset the
+    session to LOGGED_OUT and clear the temp attempt; the service error
+    propagates unchanged.
+    """
+    service = make_service()
+    # Account exists, credentials intentionally NOT saved.
+    service._accounts.add(ACC_A, BROKER_AGAH, "حساب")
+
+    with pytest.raises(AuthenticationServiceError):
+        service.begin_login(ACC_A)
+
+    # Session was registered during _resolve_account, then reset to LOGGED_OUT.
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+    assert ACC_A not in service._pending_logins
+    # Session remains registered (count = 1), just in LOGGED_OUT state.
+    assert len(service._sessions.all_sessions()) == 1
+
+
+def test_challenge_failure_resets_session_and_re_retry_after_fix():
+    """
+    A challenge failure (after session reservation) must reset the session
+    to LOGGED_OUT and clear the temp attempt, and the original error must
+    propagate unchanged.
+    """
+    service = make_service()
+    seed_account(service._accounts, service._credentials)
+
+    challenge_error = LoginChallengeError("captcha down")
+    built = []
+    outcome = ["fail"]
+
+    def failing_begin_login(username, password):
+        raise challenge_error
+
+    def adapter_factory():
+        adapter = FakeAgahAdapter()
+        if outcome[0] == "fail":
+            adapter.begin_login = failing_begin_login
+        built.append(adapter)
+        return adapter
+
+    service._adapter_factories[BROKER_AGAH] = adapter_factory
+
+    with pytest.raises(LoginChallengeError):
+        service.begin_login(ACC_A)
+
+    assert len(built) == 1
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+    assert ACC_A not in service._pending_logins
+
+    # After the cause is fixed, a fresh login attempt works.
+    outcome[0] = "success"
+    challenge = service.begin_login(ACC_A)
+    assert isinstance(challenge, LoginChallenge)
+    session = service.complete_login(ACC_A, "1234")
+    assert session.state is SessionState.LOGGED_IN
+
+
+def test_failure_of_one_account_does_not_touch_the_other_after_reservation():
+    """
+    A failure that happens after session reservation must only affect the
+    failing account: another account's state and token remain unchanged.
+    """
+    service = make_service({ACC_A: "bad_captcha", ACC_B: "success"})
+    seed_account(service._accounts, service._credentials, account_id=ACC_A)
+    seed_account(service._accounts, service._credentials, account_id=ACC_B)
+
+    service.begin_login(ACC_A)
+    with pytest.raises(LoginRejectedError):
+        service.complete_login(ACC_A, "bad")
+
+    # A is back to a clean logged-out state.
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.is_logged_in(ACC_A) is False
+    assert service.get_adapter(ACC_A) is None
+
+    # B is completely unaffected (no session yet, so no state to check).
+    assert service.is_logged_in(ACC_B) is False
+    assert service.get_adapter(ACC_B) is None
+
+    service.begin_login(ACC_B)
+    session_b = service.complete_login(ACC_B, "1234")
+    assert session_b.state is SessionState.LOGGED_IN
+    assert service._sessions.get_token(ACC_B) == ACCESS_TOKEN
+    assert service.get_adapter(ACC_B) is not None
 
 def test_no_real_network_is_used():
     class NoNetwork(socket.socket):

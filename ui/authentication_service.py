@@ -214,38 +214,62 @@ class AuthenticationService:
         """
         شروع ورود یک حساب.
 
-        مراحل:
-            1. خواندن حساب و نام بروکر از AccountStore.
-            2. بررسی/ثبت نشست در SessionManager.
-            3. ساخت یک آداپتر مستقل برای این حساب (fail-closed اگر نام
-               بروکر ثبت نشده است).
-            4. دریافت اعتبارانه از CredentialStore.
-            5. انتقال نشست به LOGIN_PENDING.
-            6. دریافت چالش از بروکر و برگرداندن آن.
+        ترتیب اصلاح‌شده:
 
-        در هر شکلتی، نشست حساب در LOGGED_OUT باقی می‌ماند.
+            1. خواندن حساب و نام بروکر از AccountStore و بررسی/ثبت نشست
+               در SessionManager.
+            2. بررسی وضعیت نشست: اگر نشست از قبل LOGGED_IN یا
+               LOGIN_PENDING باشد، AuthenticationServiceError پرتاب می‌شود.
+            3. گذار نشست به LOGIN_PENDING از طریق SessionManager، پیش از
+               هر کار جانبیِ پرهزینه (ساخت آداپتر، خواندن اعتبارانه یا
+               درخواست کپچا).
+            4. ساخت یک آداپتر مستقل برای این حساب (fail-closed اگر نام
+               بروکر ثبت نشده است).
+            5. دریافت اعتبارانه از CredentialStore.
+            6. دریافت چالش از بروکر.
+            7. در صورت موفقیت، آداپتر به عنوان تلاشِ در حال انجام ثبت
+               می‌شود.
+
+        یک شکست در هر مرحله‌ی پس از رزرو نشست (گام ۳)، نشست همان حساب
+        را به LOGGED_OUT بازمی‌گرداند و وضعیت موقت آن تلاش را پاک می‌کند؛
+        خطای اصلی به فراخواننده منتقل می‌شود.
         """
         record = self._resolve_account(account_id)
-        adapter = self._build_adapter(record.broker_name)
-        credentials = self._load_credentials(
-            account_id, record.broker_name
-        )
 
+        # اگر حساب از قبل وارد شده یا یک تلاش ورود برای همین حساب در حال
+        # انجام است: ورود تکراری/هم‌زمان رد می‌شود و هیچ عملیات جانبی
+        # (ساخت آداپتر، خواندن اعتبارانه، درخواست بروکری) انجام نمی‌شود.
+        current_state = self._sessions.state(account_id)
+        if current_state is SessionState.LOGGED_IN:
+            raise AuthenticationServiceError(
+                "حساب از قبل وارد شده است؛ ورود مجدد مجاز نیست"
+            )
+        if current_state is SessionState.LOGIN_PENDING:
+            raise AuthenticationServiceError(
+                "یک تلاش ورود برای این حساب از قبل در حال انجام است"
+            )
+
+        # گذار نشست به LOGIN_PENDING، پیش از ساخت آداپتر، خواندن
+        # اعتبارانه یا ارسال درخواست بروکری.
+        self._sessions.begin_login(account_id)
+
+        # ساخت آداپتر مستقل، خواندن اعتبارانه و شروع ورود بروکری.
         try:
+            adapter = self._build_adapter(record.broker_name)
+            credentials = self._load_credentials(
+                account_id, record.broker_name
+            )
             challenge = adapter.begin_login(
                 credentials.username, credentials.password
             )
         except Exception:
-            # چالش نگرفتیم؛ آداپتر هنوز در هیچ نگاشتی ثبت نشده و خودبه‌خود
-            # دور انداخته می‌شود. نشست دست‌نخورده در LOGGED_OUT می‌ماند.
+            # شکست در ساخت آداپتر، بازیابی اعتبارانه یا دریافت چالش:
+            # رزرو نشست لغو و وضعیت موقت آن تلاش پاک می‌شود؛ خطای اصلی
+            # به فراخواننده منتقل می‌شود.
+            self._clear_pending(account_id)
             raise
 
-        try:
-            self._sessions.begin_login(account_id)
-        except SessionStateError as exc:
-            # یک تلاش دیگر از قبل در حال انجام است.
-            raise AuthenticationServiceError(str(exc)) from None
-
+        # چالش دریافت شد: این آداپتر، تلاش ورود در حال انجام این حساب است.
         self._pending_logins[account_id] = adapter
         return challenge
 

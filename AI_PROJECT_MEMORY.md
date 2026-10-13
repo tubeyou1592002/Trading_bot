@@ -2334,7 +2334,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) IMPLEMENTATION STARTED (commits `4dc4231`, `4ce8aab`) but **completion/acceptance NOT independently verified**; Task 4 Stage 2 (Agah Login Implementation) COMPLETED, **Task 4 Stage 3 (Integration & Regression) NOT STARTED**.
+**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) COMPLETED and independently verified; Task 4 Stage 2 (Agah Login Implementation) COMPLETED; Task 4 Stage 3 (Integration & Regression) COMPLETED.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
@@ -2436,15 +2436,15 @@ Tests:
 - Task-specific run: `20 passed, 2 failed`. The two failures (`test_11_accounts_page_creates_no_real_broker`, `test_extra_page_add_and_active_flow`) are caused by the still-unmigrated `ui/accounts_page.py` calling `store.add(account_id, broker_name)` with two arguments; they are intentionally out of scope here and must be resolved in the later UI redesign task (sub-task 6).
 - Full suite: `1386 passed, 4 failed` — two pre-existing Block 8 `broker_received_at` contract failures (unchanged) plus the two UI failures above. No new failure was introduced.
 
-Task 2 — Secure Credential Store: **IMPLEMENTATION STARTED — completion/acceptance NOT independently verified.** Commit `4dc4231 — feat: add secure credential store foundation` exists in git history, but no independent completion record has been reviewed for this task; do NOT treat it as completed or accepted.
+Task 2 — Secure Credential Store: **COMPLETED and independently verified.** Commit `4dc4231 — feat: add secure credential store foundation` exists in git history. Independent verification evidence: `test_block9_task2a_credential_store.py` — **71 passed**, exit code successful. `ui/credential_store.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), stores credentials only in the OS secure vault addressed by `(service_id, account_id)`, and never writes credentials to any model, file or environment variable. No real credential, broker or network was used.
 
-Task 3 — Account Session Manager: **IMPLEMENTATION STARTED — completion/acceptance NOT independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history, but no independent completion record has been reviewed for this task; do NOT treat it as completed or accepted.
+Task 3 — Account Session Manager: **COMPLETED and independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history. Independent verification evidence: `test_block9_task3_session_manager.py` — **56 passed**, exit code successful. `ui/session_manager.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), tracks per-account login state independently, and rejects overlapping login flows and invalid state transitions fail-closed. Tokens are held in memory only and never written to a `Session` snapshot, a model, a file or an error message. No real credential, broker or network was used.
 
-Next: **Independent verification of Task 2 (Secure Credential Store) and Task 3 (Account Session Manager)**. Task 4 Stage 3 MUST NOT start until completion and acceptance of both Task 2 and Task 3 have been independently verified.
+Next: **Task 5 — Token / Session Lifecycle** (NOT STARTED).
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
-**Status:** IN PROGRESS — Stage 1 (Architecture Review & Contract) COMPLETED; **Stage 2 (Agah Login Implementation) COMPLETED**; **Stage 3 (Integration & Regression) NOT STARTED**. Task 4 connects real Agah login (including CAPTCHA) to the per-account session state introduced in Task 3, without redesigning the existing account / session / broker / order architecture. The three stages below MUST be executed in order.
+**Status:** IN PROGRESS — Stage 1 (Architecture Review & Contract) COMPLETED; **Stage 2 (Agah Login Implementation) COMPLETED**; **Stage 3 (Integration & Regression) COMPLETED**. Task 4 connects real Agah login (including CAPTCHA) to the per-account session state introduced in Task 3, without redesigning the existing account / session / broker / order architecture. The three stages below MUST be executed in order.
 
 **Stage 1 — Architecture Review & Contract**
 - Review the current account, session, broker, and order-placement architecture.
@@ -2472,12 +2472,47 @@ Next: **Independent verification of Task 2 (Secure Credential Store) and Task 3 
 - **Architectural constraints preserved:** the existing `DispatchCore → OrderEngine → M6` path is unchanged; token lifecycle, expiry, renewal and persistence remain OUT OF SCOPE for Task 4 (deferred to Task 5); the confirmed Agah CAPTCHA requirement is respected and CAPTCHA-less login is not assumed.
 - **Real trading:** disabled. No real order was sent and no real broker login was performed.
 
-**Stage 3 — Integration & Regression** — NOT STARTED
+**Stage 3 — Integration & Regression** — COMPLETED
 - Integrate with the current application structure and keep the existing order-placement path intact; this does NOT include full account-aware order routing (out of scope — sub-task 9).
 - Verify that sessions and authentication data of different accounts do not interfere.
 - Ensure no parallel order-placement path is created.
 - Run the relevant tests and regression.
 - Report the exact tests run, their results, and any pre-existing errors.
+
+##### Stage 3 — Completion Report
+
+- **Changed files:** `test_block9_task4_integration.py` (new; the only code change) and this documentation record. No production program file was changed; the `DispatchCore → OrderEngine → M6` order path, `BrokerManager`, `MainWindow`, `ui/accounts_page.py` and `ui/order_configuration_page.py` are untouched.
+- **Integration scenario (fully offline):** the real `AccountStore`, `CredentialStore` (with an in-memory stub backend), `SessionManager`, `AuthenticationService`, real `AgahAuthenticationAdapter`, and the real `AgaahBroker.get_captcha()`/`login()` logic are wired together; the only replaced seams are the OS credential vault (→ in-memory stub) and the HTTP transport (→ per-account in-memory fake session serving the same response shapes the real broker code parses). No real network request, real account, credential, token or order is used.
+- **Test result:** `test_block9_task4_integration.py` — **19 passed** (exit 0).
+- **Independence proven (explicit tests):** two Agah accounts get two independent adapters/brokers/HTTP sessions; each account's credentials reach only its own adapter; a successful login of one does not log the other in; each account's token is recorded only in its own session and never swapped; a failure or cancel of one account leaves the other untouched; incomplete/failed broker responses never mark a login successful; no password/access token/refresh token leaks through an error message, exception chain or public output; no real network request is sent (socket patched).
+- **Regression (12 files, run at repo root with `python3 -m pytest -q`):** integration **19 passed**; authentication_contract **21 passed**; agah_auth_adapter **46 passed**; authentication_service **40 passed**; task2a_credential_store **64 passed, 7 skipped**; task3_session_manager **56 passed**; broker_manager **18 passed**; dispatch_core **17 passed**; ui1_application_foundation **13 passed**; ui3_1_order_configuration **32 passed**; ui2_1_account_management **20 passed / 2 failed** (exit 1); order_engine **0 items collected** (exit 5, it is an interactive script, not a pytest suite). Combined Task 2/3/4 auth suites plus integration: **246 passed, 7 skipped, 2 failed**.
+- **Pre-existing failures (NOT caused by Stage 3, reported separately):** `test_ui2_1_account_management.py::test_11_accounts_page_creates_no_real_broker` and `test_ui2_1_account_management.py::test_extra_page_add_and_active_flow` fail because `ui/accounts_page.py` (line 152) calls `self.store.add(account_id, broker_name)` with two arguments while `AccountStore.add(account_id, broker_name, display_name)` requires three. Both files are byte-identical to HEAD (verified with `git status`/`git diff`) and the failure reproduces when the file is run in isolation. Proposed fix (not applied here, separate scope): pass a display-name argument at the accounts-page call site.
+- **Real trading / real login:** disabled. No real broker login, no real CAPTCHA and no real order were performed anywhere in this stage.
+- **Commit:** none; nothing was committed or pushed.
+
+##### Post-Review Correction — Final Verification
+
+This addendum records one architectural-review correction and its real, offline verification. It does not change any production logic beyond the reorder described below, and it does not alter the accepted Task 2 / Task 3 results or the historical Stage 3 report above.
+
+- **Correction (login-state check order):** in `ui/authentication_service.py`, `begin_login()` now checks the account's current session state (`LOGGED_IN`, then `LOGIN_PENDING`) immediately after resolving the account and session, *before* building an adapter, reading credentials, or issuing the broker captcha request. Only after passing that check does it reserve the session (`LOGGED_OUT → LOGIN_PENDING`), build the adapter, load credentials, and fetch the challenge. A failure after reservation clears the temporary attempt and returns the session to `LOGGED_OUT`. This avoids the previous order, in which a rejected duplicate attempt could construct an adapter / read credentials / contact the broker before the rejection was detected. No order-placement path, broker API, session contract, or other production file was changed.
+- **No-extra-request tests (integration, fully offline):** the two existing rejection tests in `test_block9_task4_integration.py` were completed rather than duplicated; no new duplicate test was created. The fake per-account HTTP session is the `FakeAgahSession` installed on the real `AgaahBroker.session`; its request list is snapshotted before the rejected attempt and compared afterwards.
+  - `test_relogin_while_logged_in_rejected_no_factory_call` — account already `LOGGED_IN`: the second `begin_login` raises `AuthenticationServiceError`; the HTTP request count is unchanged; the adapter instance, session state (`LOGGED_IN`) and token (`ACCESS_A`) are untouched.
+  - `test_second_login_attempt_while_pending_rejected_no_extra_work` — a first login attempt is still `LOGIN_PENDING`: the second `begin_login` raises `AuthenticationServiceError`; the HTTP request count is unchanged; the pending adapter, the `LOGIN_PENDING` state and the absent token are untouched; the first attempt still completes to `LOGGED_IN` using the same adapter.
+- **Commands executed and exact results** (repo root; Python 3.14.4, pytest 9.1.1; UI files run with `QT_QPA_PLATFORM=offscreen`):
+  - `python3 -m pytest -q test_block9_task4_authentication_service.py` → **47 passed** (exit 0)
+  - `python3 -m pytest -q test_block9_task4_integration.py` → **23 passed** (exit 0)
+  - `python3 -m pytest -q test_block9_task4_authentication_contract.py` → **21 passed** (exit 0)
+  - `python3 -m pytest -q test_block9_task4_agah_auth_adapter.py` → **46 passed** (exit 0)
+  - `python3 -m pytest -q test_block9_task2a_credential_store.py` → **64 passed, 7 skipped** (exit 0)
+  - `python3 -m pytest -q test_block9_task3_session_manager.py` → **56 passed** (exit 0)
+  - `python3 -m pytest -q test_broker_manager.py` → **18 passed** (exit 0)
+  - `python3 -m pytest -q test_dispatch_core.py` → **17 passed** (exit 0)
+  - `QT_QPA_PLATFORM=offscreen python3 -m pytest -q test_ui1_application_foundation.py` → **13 passed** (exit 0)
+  - `QT_QPA_PLATFORM=offscreen python3 -m pytest -q test_ui2_1_account_management.py` → **20 passed, 2 failed** (exit 1)
+  - `QT_QPA_PLATFORM=offscreen python3 -m pytest -q test_ui3_1_order_configuration.py` → **32 passed** (exit 0)
+  - `test_order_engine.py` was **not** run as pytest: it is an interactive script, not a test suite.
+- **Known pre-existing errors (reported separately; NOT caused by and NOT attributed to this correction):** `test_ui2_1_account_management.py::test_11_accounts_page_creates_no_real_broker` and `test_ui2_1_account_management.py::test_extra_page_add_and_active_flow` fail with `TypeError: AccountStore.add() missing 1 required positional argument: 'display_name'` at `ui/accounts_page.py:152`, where `self.store.add(account_id, broker_name)` is called while `AccountStore.add(account_id, broker_name, display_name)` requires three arguments. `ui/accounts_page.py` is byte-identical to HEAD (verified with `git status`/`git diff`); the failure reproduces in isolation and is unchanged from the Stage 3 report above.
+- **Scope / honesty boundary:** only `test_block9_task4_integration.py` and this memory file were changed by this addendum. The already-present working-tree changes in `ui/authentication_service.py` and `test_block9_task4_authentication_service.py` were preserved, not rewritten. No real network request, real account, real credential, real CAPTCHA, or real order was used, and no live connection was opened. Nothing was committed or pushed.
 
 #### Task 4 — Architectural Constraints (Broker-Independent Auth Boundary)
 
