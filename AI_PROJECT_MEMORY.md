@@ -2334,7 +2334,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) COMPLETED and independently verified; Task 4 Stage 2 (Agah Login Implementation) COMPLETED; Task 4 Stage 3 (Integration & Regression) COMPLETED.
+**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) COMPLETED and independently verified; Task 4 Stage 2 (Agah Login Implementation) and Stage 3 (Integration & Regression) COMPLETED; Task 5 Stages 2A (Agah Refresh Primitive) and 2B (Per-Account Session and Token Replacement) COMPLETED and reviewed; Task 5 Stage 2C (HTTP 401 Handling and Renewal Coordination) is NEXT.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
@@ -2440,7 +2440,7 @@ Task 2 — Secure Credential Store: **COMPLETED and independently verified.** Co
 
 Task 3 — Account Session Manager: **COMPLETED and independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history. Independent verification evidence: `test_block9_task3_session_manager.py` — **56 passed**, exit code successful. `ui/session_manager.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), tracks per-account login state independently, and rejects overlapping login flows and invalid state transitions fail-closed. Tokens are held in memory only and never written to a `Session` snapshot, a model, a file or an error message. No real credential, broker or network was used.
 
-Next: **Task 5 — Token / Session Lifecycle** — Stage 1 (Read-Only Audit) COMPLETED; Stage 2A is next. Implementation remains NOT STARTED.
+Next: **Task 5 — Token / Session Lifecycle** — Stage 1 (Read-Only Audit), Stage 2A (Agah Refresh Primitive), and Stage 2B (Per-Account Session and Token Replacement) COMPLETED and reviewed; Stage 2C (HTTP 401 Handling and Renewal Coordination) is next. Automatic 401 handling/retry and renewal coordination remain NOT STARTED.
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
@@ -2526,7 +2526,7 @@ This addendum records one architectural-review correction and its real, offline 
 
 #### Task 5 — Token / Session Lifecycle — Execution Plan
 
-**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**; Stage 2A (Agah Refresh Primitive and Independent Tests) **COMPLETED and reviewed**. Stage 2B is next. Automatic 401 retry and SessionManager integration have NOT started.
+**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**; Stage 2A (Agah Refresh Primitive and Independent Tests) and Stage 2B (Per-Account Session and Token Replacement) **COMPLETED and reviewed**. Stage 2C is next. HTTP 401 handling/retry and renewal coordination have NOT started.
 
 ##### Stage 1 — Discovery Findings (Verified vs. Unverified)
 
@@ -2577,15 +2577,22 @@ This addendum records one architectural-review correction and its real, offline 
 - Owner-run related Agah / Task 4 regression: `py -3 -m pytest -q test_agah_instrument.py test_agah_login.py test_block9_task4_agah_auth_adapter.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_integration.py` → **137 passed** (exit 0; 1.00s).
 - Architect review: inspected the added `refresh_tokens()` implementation and the full new test file in three sections. The implementation validates replacement tokens before assignment, fails closed on non-boolean success flags, preserves prior tokens on failure, avoids secret-bearing error context, and makes no automatic retry.
 - Total across the two pytest commands above: **194 passed**, with no failures reported.
-- Remaining scope: Stage 2A provides the broker-level primitive only. Synchronizing refreshed token state across the broker, adapter, AuthenticationService and SessionManager, handling HTTP 401, coordinating concurrent refreshes, and bounded retry remain unimplemented and belong to later stages.
+- Stage 2A provides the broker-level refresh primitive. Stage 2B synchronization across the broker, adapter, AuthenticationService and SessionManager is completed and recorded below. HTTP 401 handling, bounded retry, and concurrent-refresh coordination remain unimplemented and belong to Stage 2C.
 
 
-**Stage 2B — Per-Account Session and Token Replacement: NEXT**
-- Design and implement an explicit API to replace the access token for an already-`LOGGED_IN` account without forcing a logout/login state cycle.
-- Keep the common `SessionManager` / authentication contract broker-independent; Agah endpoint and response semantics stay in Agah-specific code.
-- Keep the broker, adapter's authenticated-session view, authentication service, and SessionManager consistent after replacement.
-- Preserve the per-account isolation rule: no account may read, replace, invalidate, or use another account's tokens.
-- Do not persist access or refresh tokens; do not alter order dispatch or UI unless a separately approved dependency change is demonstrated.
+**Stage 2B — Per-Account Session and Token Replacement: COMPLETED and reviewed**
+- Added a broker-independent `SessionManager.replace_token(account_id, token)` API. It only replaces a non-empty access token for an already-`LOGGED_IN` account and preserves that account's state and public `Session` snapshot; unknown accounts or invalid states fail closed.
+- Added `SessionManager.invalidate_session(account_id)` as an emergency, idempotent local invalidation path that is independent of `logout()`. It sets only that account to `LOGGED_OUT` and clears its in-memory token. It does not claim to revoke broker-side tokens.
+- Integrated explicit `AuthenticationService.refresh_session(account_id)` through the broker-independent adapter contract. The service checks login/adaptor state, validates the refreshed access-token view, then synchronizes the SessionManager token. No automatic refresh trigger, 401 handling/retry, UI change, token persistence, or order-dispatch change was introduced.
+- On token-sync failure, the service removes the account's adapter, attempts the existing logout path, and uses emergency invalidation if logout fails. If all cleanup paths fail, it emits a sanitized error explicitly stating that emergency invalidation did not succeed and a safe state is not confirmed. The test deliberately verifies the real unresolved local state in this final-failure case rather than falsely asserting safety.
+- Per-account isolation is verified: invalidation of account A does not alter account B's login state, token, or adapter. Tests also check secret non-disclosure through messages, `repr`, and exception chains.
+
+##### Stage 2B — Verification and Review Record
+- **Changed files (commit `3258a351a420a3ea98c57b0f289c9a6145adb33e`):** `brokers/agaah/auth_adapter.py`, `brokers/authentication.py`, `ui/authentication_service.py`, `ui/session_manager.py`, and new `test_block9_task5_token_sync.py`.
+- **Final Stage 2B test:** `python3 -m pytest -q test_block9_task5_token_sync.py` → **55 passed** (exit 0; run after the final explicit unsafe-state assertion was added).
+- **Focused final-failure test:** `python3 -m pytest -q test_block9_task5_token_sync.py -k "sync_logout_and_invalidate_failure" -v` → **1 passed, 54 deselected** (exit 0).
+- **Related authentication regression:** `python -m pytest -q test_block9_task3_session_manager.py test_block9_task4_agah_auth_adapter.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_integration.py test_block9_task5_refresh_token.py test_block9_task5_token_sync.py` → **304 passed** (exit 0; run before the final assertion-only strengthening; the final Task 5 suite was rerun afterward).
+- The tests use fake/offline broker transports and do not perform real broker login, send orders, or enable live trading. No commit/push was performed by the test agent; implementation commit is `3258a351a420a3ea98c57b0f289c9a6145adb33e`.
 
 **Stage 2C — HTTP 401 Handling and Renewal Coordination**
 - Add bounded refresh handling for confirmed Agah-authenticated request paths, based on Stage 2A/2B APIs.
@@ -2601,7 +2608,7 @@ This addendum records one architectural-review correction and its real, offline 
 - Run the new tests plus the relevant Task 2/3/4 authentication, broker, and order-path regression tests. Report exact commands, results, and pre-existing failures separately.
 - Preserve `DispatchCore → OrderEngine → M6`, the live-trading safety lock, and the existing broker-independent authentication boundary.
 
-**Execution control:** Complete and review each substage before issuing the next. The Task 2A implementation must stop at the allowed two files and must not begin Stage 2B or Stage 2C.
+**Execution control:** Each substage must be reviewed before the next starts. Stages 2A and 2B are completed and reviewed. Stage 2C is the next permitted implementation scope; Stage 3 must not begin until Stage 2C is completed and reviewed.
 
 #### Block Boundaries
 
