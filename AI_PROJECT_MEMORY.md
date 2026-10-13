@@ -2526,7 +2526,7 @@ This addendum records one architectural-review correction and its real, offline 
 
 #### Task 5 — Token / Session Lifecycle — Execution Plan
 
-**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**. Stage 2A is the next task. No Task 5 production implementation has started.
+**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**; Stage 2A (Agah Refresh Primitive and Independent Tests) **COMPLETED and reviewed**. Stage 2B is next. Automatic 401 retry and SessionManager integration have NOT started.
 
 ##### Stage 1 — Discovery Findings (Verified vs. Unverified)
 
@@ -2563,15 +2563,24 @@ This addendum records one architectural-review correction and its real, offline 
 - Record observed browser-client refresh behavior separately from unverified server semantics.
 - No source files were modified and no tests or live requests were executed during this audit.
 
-**Stage 2A — Agah Refresh Primitive and Independent Tests: NEXT**
-- Allowed files: `brokers/agaah/broker.py` and new `test_block9_task5_refresh_token.py` only.
-- Implement one Agah-specific refresh method using the observed endpoint and JSON fields.
-- Require both current tokens before a request; validate HTTP status, the response envelope, and both replacement token fields.
-- Replace access and refresh tokens atomically only after complete validation. Do not partially update token state on any failure.
-- No automatic `401` interception/retry, SessionManager changes, UI changes, order-path changes, persistence, commit, or push in this subtask.
-- Use fake sessions and fake responses only. Test URL/method/body, success, missing tokens, HTTP failure, `isSuccess: false`, malformed/missing replacement tokens, atomic failure behavior, and absence of token leakage.
+**Stage 2A — Agah Refresh Primitive and Independent Tests: COMPLETED and reviewed**
+- Allowed and changed files only: `brokers/agaah/broker.py` and new `test_block9_task5_refresh_token.py`.
+- Added `AgaahBroker.refresh_tokens()`, using the discovered endpoint `POST /api/v1/users/refresh-token` and the confirmed JSON fields `accessToken` / `refreshToken`.
+- Both current tokens are required before sending a request. The method validates the HTTP response, JSON envelope, requires `isSuccess is True` (JSON boolean only), and validates both replacement tokens before changing either broker attribute.
+- Failures leave both original token values unchanged and raise a sanitized error without exposing the old/new token values or sensitive exception context. No token persistence was added.
+- Tests use fake HTTP responses/sessions and an offline socket guard; no live broker calls, real credentials, real tokens, CAPTCHA, or orders were used.
+- No automatic `401` interception/retry, SessionManager/auth-adapter integration, UI change, order-path change, or commit/push was performed by the Stage 2A agent.
 
-**Stage 2B — Per-Account Session and Token Replacement**
+##### Stage 2A — Verification and Review Record
+- Owner-run compile command: `py -3 -m py_compile brokers/agaah/broker.py test_block9_task5_refresh_token.py` → successful (exit 0).
+- Owner-run refresh tests: `py -3 -m pytest -q test_block9_task5_refresh_token.py` → **57 passed** (exit 0; 1.27s).
+- Owner-run related Agah / Task 4 regression: `py -3 -m pytest -q test_agah_instrument.py test_agah_login.py test_block9_task4_agah_auth_adapter.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_integration.py` → **137 passed** (exit 0; 1.00s).
+- Architect review: inspected the added `refresh_tokens()` implementation and the full new test file in three sections. The implementation validates replacement tokens before assignment, fails closed on non-boolean success flags, preserves prior tokens on failure, avoids secret-bearing error context, and makes no automatic retry.
+- Total across the two pytest commands above: **194 passed**, with no failures reported.
+- Remaining scope: Stage 2A provides the broker-level primitive only. Synchronizing refreshed token state across the broker, adapter, AuthenticationService and SessionManager, handling HTTP 401, coordinating concurrent refreshes, and bounded retry remain unimplemented and belong to later stages.
+
+
+**Stage 2B — Per-Account Session and Token Replacement: NEXT**
 - Design and implement an explicit API to replace the access token for an already-`LOGGED_IN` account without forcing a logout/login state cycle.
 - Keep the common `SessionManager` / authentication contract broker-independent; Agah endpoint and response semantics stay in Agah-specific code.
 - Keep the broker, adapter's authenticated-session view, authentication service, and SessionManager consistent after replacement.
