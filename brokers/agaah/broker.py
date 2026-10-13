@@ -436,6 +436,147 @@ class AgaahBroker(Broker):
         }
 
     # =================================================
+    # Token Refresh
+    # =================================================
+    # POST /api/v1/users/refresh-token
+    #
+    # Confirmed client behavior (Block 9, Task 5, Stage 1 audit):
+    #   request JSON: {"accessToken": <current>, "refreshToken": <current>}
+    #   success response: isSuccess=true and
+    #       data.accessToken / data.refreshToken are the replacement tokens.
+    #
+    # این متد فقط «primitives» نوسازی توکن است: هیچ interception خودکار
+    # 401، هیچ retry، هیچ ذخیره‌سازی و هیچ ادغامی با SessionManager یا UI
+    # ندارد. پیش از ارسال درخواست، وجود هر دو توکن فعلی الزامی است؛ هر دو
+    # توکن جایگزین پیش از تغییر وضعیت در متغیرهای محلی اعتبارسنجی می‌شوند
+    # و تنها پس از اعتبارسنجی کامل با هم جایگزین می‌گردند؛ بنابراین هر خطا
+    # جفت توکن اصلی را دست‌نخورده باقی می‌گذارد.
+    #
+    # امنیت: هیچ مقدار توکن، بدنه پاسخ یا زمینه‌ی استثنای حساس در پیام خطا
+    # یا خروجی تشخیصی افشا نمی‌شود.
+
+    @staticmethod
+    def _raise_clean(error):
+        """
+        پرتاب یک خطای پاک‌سازی‌شده بدون زنجیره‌ی استثنای محرمانه.
+
+        حتی وقتی متد از داخل یک بلوک ``except`` بیرونی صدا زده شود،
+        ``__context__``/``__cause__`` پاک می‌مانند تا هیچ استثنای حاوی
+        توکن در زنجیره باقی نماند.
+        """
+        error.__cause__ = None
+        error.__context__ = None
+        error.__suppress_context__ = True
+        try:
+            raise error
+        except BaseException as exc:
+            exc.__cause__ = None
+            exc.__context__ = None
+            exc.__suppress_context__ = True
+            raise
+
+    def refresh_tokens(self):
+        """
+        نوسازی توکن دسترسی و توکن تازه‌سازی آگاه.
+
+        Endpoint: ``POST /api/v1/users/refresh-token``
+        Request JSON: ``{"accessToken": ..., "refreshToken": ...}``
+        Response: ``isSuccess=true`` و ``data.accessToken`` /
+        ``data.refreshToken`` به‌عنوان مقادیر جایگزین.
+
+        - پیش از درخواست، وجود هر دو توکن فعلی بررسی می‌شود؛ در غیر این
+          صورت هیچ درخواستی ارسال نمی‌شود.
+        - در صورت موفقیت، هر دو توکن با هم جایگزین می‌شوند.
+        - در صورت هر خطای HTTP / شبکه / پاسخ ناقص یا نامعتبر، هر دو توکن
+          اصلی بدون تغییر باقی می‌مانند و یک خطای پاک‌سازی‌شده پرتاب
+          می‌شود که هیچ توکنی را افشا نمی‌کند.
+        - توکن‌ها فقط در حافظه نگه داشته می‌شوند.
+        """
+
+        current_access = self.access_token
+        current_refresh = self.refresh_token
+
+        if not isinstance(current_access, str) or not current_access.strip():
+            self._raise_clean(
+                RuntimeError(
+                    "توکن دسترسی فعلی در دسترس نیست؛ "
+                    "نوسازی توکن انجام نشد."
+                )
+            )
+
+        if not isinstance(current_refresh, str) or not current_refresh.strip():
+            self._raise_clean(
+                RuntimeError(
+                    "توکن تازه‌سازی فعلی در دسترس نیست؛ "
+                    "نوسازی توکن انجام نشد."
+                )
+            )
+
+        error = None
+        data = None
+
+        try:
+            response = self.session.post(
+                self._url("users/refresh-token"),
+                json={
+                    "accessToken": current_access,
+                    "refreshToken": current_refresh,
+                },
+                timeout=10,
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+        except Exception as exc:
+            error = exc
+
+        if error is not None:
+            self._raise_clean(
+                RuntimeError(
+                    "درخواست نوسازی توکن آگاه ناموفق بود."
+                )
+            )
+
+        if not isinstance(data, dict) or data.get("isSuccess") is not True:
+            self._raise_clean(
+                RuntimeError(
+                    "پاسخ نوسازی توکن آگاه ناموفق بود."
+                )
+            )
+
+        payload = data.get("data")
+
+        if not isinstance(payload, dict):
+            self._raise_clean(
+                RuntimeError(
+                    "پاسخ نوسازی توکن آگاه فاقد data معتبر است."
+                )
+            )
+
+        new_access = payload.get("accessToken")
+        new_refresh = payload.get("refreshToken")
+
+        if not isinstance(new_access, str) or not new_access.strip():
+            self._raise_clean(
+                RuntimeError(
+                    "accessToken جایگزین در پاسخ نوسازی "
+                    "معتبر نیست."
+                )
+            )
+
+        if not isinstance(new_refresh, str) or not new_refresh.strip():
+            self._raise_clean(
+                RuntimeError(
+                    "refreshToken جایگزین در پاسخ نوسازی "
+                    "معتبر نیست."
+                )
+            )
+
+        self.access_token = new_access
+        self.refresh_token = new_refresh
+
+    # =================================================
     # BUY Capacity
     # =================================================
     # GET /api/v1/trades/calculatedquantity
