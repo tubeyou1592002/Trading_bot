@@ -62,7 +62,7 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 - Safety: no real login, credential-vault operation, network request or order; no change to Accounts-page UI or order dispatch. Same-instance account-aware authentication/dispatch remains incomplete.
 - Follow-up audit after Task 2C: MainWindow passes its cached `BrokerManager` to both AuthenticationService's adapter factory and the TestRunner/DispatchCore path. `AccountsPage` does not yet call AuthenticationService, so user-facing login/logout remains unwired. The trading-state and feedback factories still use name-only broker/provider APIs, and order identity resolution constructs a separate manager.
 - Phase 3 Task 3A is complete and pushed as `fbdc112` — `feat: add account display names to accounts page`. The owner verified 24 account-management tests and 37 UI-foundation/account-management tests passing. The Accounts page still does not invoke AuthenticationService.
-- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15; see `AI_HANDOFF.md` for scope and safety rules. Next, the Architect prepares the exact bounded Task 3B-1 handoff. Implement each task only after receiving its allowlist/acceptance criteria; review it before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
+- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15. Task 3B-1 is complete and pushed as `e4a0796`; next is Task 3B-2 credential save/delete UI, whose exact allowlist and acceptance criteria are in `AI_HANDOFF.md`. Implement each task only after receiving its allowlist/acceptance criteria; review it before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
 
 
 ## Accepted follow-up sequence — Block 9 Phase 3 Task 3B
@@ -76,3 +76,14 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 5. **Task 3B-5 — Integrated offline UX acceptance.** Verify the entire credential → challenge → response → status flow, offline construction, and regressions. No real vault/network/login/order is allowed.
 
 **Rules for all five tasks:** implement in sequence; Architect reviews each report/diff before the next task starts; each task gets its own exact allowed-file list and focused test commands; never stage broadly or touch unrelated local work; keep account-bound trading-state, instrument identity, order routing, NATS/queue-position, and feedback fixes in the separate later phase. The current approval does not itself authorize implementation outside the individually issued task. Preserve the existing dark RTL direction and do not perform a broad redesign without separate approval.
+
+
+## Completion Record — Block 9 Phase 3 Task 3B-1: Lazy service composition/injection — COMPLETE (2026-10-15)
+
+- **Commit pushed:** `e4a0796` — `feat: inject lazy account services`.
+- **Changed and committed files:** `ui/main_window.py`, `ui/accounts_page.py`, `test_block9_phase2_service_composition.py`.
+- **Design:** MainWindow lazily caches one CredentialStore and one SessionManager; AuthenticationService uses those exact shared instances. AccountsPage accepts optional keyword-only service callbacks; MainWindow injects lazy lambdas without executing them during page/window construction. Construction failure does not cache an incomplete AuthenticationService.
+- **Owner/agent-reported offline verification:** `python3 -m pytest -q test_block9_phase2_service_composition.py` → **4 passed**; account-management tests → **24 passed**; UI foundation + account-management tests → **37 passed**; focused AuthenticationService/Agah adapter/integration suite → **145 passed**. `py_compile` and targeted `git diff --check` succeeded. The agent environment did not have the Windows `py` launcher, so equivalent `python3` commands were used.
+- **Final owner review:** only the three allowed Task 3B-1 files were staged and committed; cached diff check passed. The unrelated local `test_ui2_1_account_management.py` worktree marker had no content diff; `ui/test_runner.py` and other unrelated artifacts remained unstaged.
+- **Scope boundary:** no credential/login UI action, real vault access, network request, broker login, or order was added/performed.
+
