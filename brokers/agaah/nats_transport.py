@@ -410,19 +410,20 @@ class AgahQueuePositionService:
             return None
 
         try:
-            url = self.broker._url("order/getorderposition")
-            headers = self.broker._auth_headers()
-
             params = {
                 "nscId": nsc_id,
                 "hostOrderNumber": host_order_number,
                 "orderDate": order_date,
             }
 
-            response = self.broker.session.get(
-                url, headers=headers, params=params, timeout=10
+            # Bounded HTTP 401 recovery is owned by the broker helper, which
+            # inspects the status, refreshes the token via the installed
+            # account-scoped handler and retries at most once, keeping the
+            # effective 10s timeout. This method stays synchronous; the caller
+            # (queue_position.py) already runs it through asyncio.to_thread.
+            response = self.broker._authed_get_with_recovery(
+                "order/getorderposition", params=params
             )
-            response.raise_for_status()
 
             data = response.json()
 
