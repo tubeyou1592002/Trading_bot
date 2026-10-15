@@ -1,5 +1,52 @@
 # PROJECT STATE
 
+> **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-15.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
+
+## Current Status — Block 9, Task 5
+
+**Repository:** `tubeyou1592002/Trading_bot`  
+**Branch:** `master`  
+**Latest pushed implementation commit:** `55189733e3d0515cff427bca231b5ff9281a38c3` — `fix: recover Agah instrument search from expired token`.
+
+### Completed and reviewed
+
+- Block 9 Tasks 1–4: complete within their documented scopes.
+- Task 5 Stage 1 (read-only token lifecycle audit), Stage 2A (Agah refresh primitive), and Stage 2B (per-account token/session synchronization): complete and reviewed.
+- Task 5 Stage 2C.1: bounded HTTP 401 recovery for four read-only GET methods implemented directly in `brokers/agaah/broker.py`; retry is at most once, concurrent refresh is coordinated per broker instance, failure cleanup is account-scoped, and `POST /order` is never automatically replayed.
+- Task 5 Stage 2C.2: instrument search in `AgaahInstrumentProvider._search_candidates()` now routes through `AgaahBroker._authed_get_with_recovery()`. No direct-session fallback or provider-owned refresh/retry layer was added. Exact `tse_id == ins_code` mapping and cache behavior are preserved.
+- Stage 2C.2 commit changed exactly four files: `brokers/agaah/instrument_provider.py`, `test_instrument_provider.py`, `test_engine_provider_integration.py`, `test_block9_task5_401_instrument_provider.py`.
+
+### Verification evidence
+
+- `test_block9_task5_401_instrument_provider.py`: **8 passed** after adding the saved password to the secret-leak assertions.
+- Stage 2C.1 token/recovery regression: **139 passed**.
+- Task 3/4 authentication regression: **193 passed**.
+- All Block 9 suites: **489 passed, 7 skipped**.
+- A broader sweep previously reported **1722 passed, 20 skipped, 13 failed**; it was reported as the same known failures: Block 8 `broker_received_at` contract tests, environment-related `nats` imports, and UI account-store `display_name` contract tests. The broader sweep was not rerun after the final test-only password assertion; Block 9 suites were rerun.
+
+### Next action — READ-ONLY ARCHITECTURE AUDIT (no implementation yet)
+
+Audit the remaining Agah HTTP request paths independently before defining another implementation task:
+
+- `brokers/agaah/nats_transport.py`: `_fetch_connection_info()` (`pusher/nats`) and `_fetch_message_types()` (`Pusher/message-types`).
+- `AgahQueuePositionService.get_queue_position()` and the async/correlation path in `brokers/agaah/queue_position.py` for `order/getorderposition`.
+
+The audit must document request construction, status/error behavior, current catch-and-return behavior, sync/async/thread boundaries, current broker/session instance ownership, and related tests. Do not guess undocumented API behavior, do not make code/test changes during the audit, and do not blindly force the synchronous 401 helper into async code. The architect must review the audit and define an explicitly bounded implementation task before changes are made.
+
+### Critical unresolved integration boundary
+
+`AuthenticationService` installs the 401 recovery callback on an account-owned broker instance created by that account's adapter. The `BrokerManager`/`DispatchCore` order path may use a different broker instance. Stage 2C.1/2C.2 do not prove that production order/instrument lookup uses the account-owned broker with the correct callback. Full account-aware routing remains a separate Block 9 Task 9 item. Do not share a mutable authenticated broker instance between accounts.
+
+### Safety and worktree rules
+
+- Do not automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
+- Live trading remains disabled. The Stage 2C.1/2C.2 tests use fake HTTP and offline test seams; no real order or broker request was made.
+- The owner's local worktree previously had an unrelated modification in `ui/test_runner.py` and numerous untracked local files. Do not stage broadly, use `git add -A`, overwrite, or delete those files. The pushed implementation commit contains only the approved four files.
+- Stage 2C as a whole is **NOT COMPLETE**. Stage 3 integration/regression closure must wait until all remaining Stage 2C request paths are reviewed, implemented in approved bounded tasks, and verified.
+
+---
+
+
 ## 1. Project Goal
 
 هدف اصلی پروژه، ساخت یک ربات معاملاتی پایتونی برای بازار سرمایه ایران است که بتواند:
@@ -500,7 +547,7 @@ Project State: M5 completed (ca3e2cbf, pushed) + M6-A completed (Architect appro
 
 Last Completed Milestone: Block 6 — Multi-Account Execution (all Tasks 6.1–6.7 implemented, tested, and committed).
 
-Next Action: None (awaiting architect definition of next milestone).
+Historical checkpoint only — superseded by the AUTHORITATIVE CURRENT HANDOFF at the top. Current next action is a read-only audit of the remaining Block 9 Task 5 NATS/queue-position request paths.
 
 ---
 
