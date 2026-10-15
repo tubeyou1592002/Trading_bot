@@ -19,7 +19,7 @@
 - Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
 - Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
 - Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
-- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Next is Phase 3 Task 3A for the display-name UI contract; those other consumers remain later work.
+- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A is complete and pushed as `fbdc112`; next is Phase 3 Task 3B, a read-only Accounts-page authentication UX/integration proposal for Product Owner approval; those other consumers remain later work.
 
 ### Stage 2C — implementation and verification status
 
