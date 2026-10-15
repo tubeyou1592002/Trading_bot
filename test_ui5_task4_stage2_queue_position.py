@@ -62,6 +62,19 @@ class FakeBroker:
             "UserIdentifier": self.user_identifier,
         }
 
+    def _authed_get_with_recovery(self, path, params=None):
+        """Minimal shim matching AgaahBroker._authed_get_with_recovery().
+
+        Performs a single request with the same URL, auth header and 10s
+        timeout as before, delegating the actual HTTP call to the mocked
+        ``session.get``. No recovery/retry logic is implemented here.
+        """
+        url = self._url(path)
+        headers = self._auth_headers()
+        response = self.session.get(url, params=params, headers=headers, timeout=10)
+        response.raise_for_status()
+        return response
+
 
 class MockWebSocket:
     def __init__(self, messages=None):

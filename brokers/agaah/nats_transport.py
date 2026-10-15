@@ -183,14 +183,13 @@ class AgahNatsTransport:
 
     async def _fetch_connection_info(self) -> None:
         """Fetch NATS connection info from Agah."""
-        url = self.broker._url("pusher/nats")
-        headers = self.broker._auth_headers()
-
-        # Run sync HTTP in thread pool to avoid blocking event loop
+        # Bounded HTTP 401 recovery is owned by the broker helper, which
+        # performs at most one retry with the refreshed token and keeps the
+        # effective 10s timeout. The synchronous request runs in a thread pool
+        # so the event loop is never blocked.
         response = await asyncio.to_thread(
-            self.broker.session.get, url, headers=headers, timeout=10
+            self.broker._authed_get_with_recovery, "pusher/nats"
         )
-        response.raise_for_status()
 
         data = response.json()
         if not data.get("isSuccess"):
@@ -218,13 +217,12 @@ class AgahNatsTransport:
 
     async def _fetch_message_types(self) -> None:
         """Fetch message types schema from Agah."""
-        url = self.broker._url("Pusher/message-types")
-        headers = self.broker._auth_headers()
-
+        # Same bounded HTTP 401 recovery path as _fetch_connection_info: the
+        # broker helper owns retry/refresh, and the sync request runs in a
+        # thread pool so the event loop is never blocked.
         response = await asyncio.to_thread(
-            self.broker.session.get, url, headers=headers, timeout=10
+            self.broker._authed_get_with_recovery, "Pusher/message-types"
         )
-        response.raise_for_status()
 
         data = response.json()
         if not data.get("isSuccess"):
