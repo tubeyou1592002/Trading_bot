@@ -102,43 +102,41 @@ The read-only audit confirms that `MainWindow.authentication_service` and `TestR
 - **Safety:** offline/mocked tests only; no real credentials, network request, broker login or order. Live trading remains disabled.
 - **Boundary:** this commit does not prove that production authentication and dispatch use the exact same account-owned broker instance, nor does it complete active-session gating, trading-state routing or account-correct feedback/NATS/queue-position integration.
 
-## Next bounded implementation task — Block 9 Phase 3 Task 3A: Accounts-page display-name contract
+## Completion Record — Block 9 Phase 3 Task 3A: Accounts-page display-name contract — COMPLETE (2026-10-15)
 
-**Allowed files only:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Implementation commit pushed:** `fbdc112` — `feat: add account display names to accounts page`.
+- **Changed files only:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Behavior:** AccountsPage collects a Persian-labeled display name, calls `AccountStore.add(account_id, broker_name, display_name)`, shows the display name in its own table column, rejects empty/whitespace-only names through inline validation, clears fields on success, and retains selection/activation by the actual account ID.
+- **Owner-run verification (Windows):** `py -3 -m pytest -q test_ui2_1_account_management.py` → **24 passed in 5.39s**; `py -3 -m pytest -q test_ui1_application_foundation.py test_ui2_1_account_management.py` → **37 passed in 3.70s**. `git diff --cached --check` was clean before commit.
+- **Git synchronization:** the first push was rejected because remote documentation commits were ahead. `git pull --rebase --autostash origin master` succeeded; the subsequent push succeeded (`88b68e3..fbdc112)). The unrelated local `ui/test_runner.py` modification and untracked artifacts were retained and remain out of scope.
+- **Boundary:** no authentication service, credential vault, login/logout, CAPTCHA, BrokerManager, trading-state, instrument-identity, feedback or order-routing behavior was changed. This completes only the display-name contract, not account authentication integration.
 
-### Goal
-Fix the Accounts page so account creation satisfies the already-required `AccountStore.add(account_id, broker_name, display_name)` contract and the user's chosen display name is shown in the account table. This is a small UI/data-contract fix, not authentication integration.
+## Next bounded task — Block 9 Phase 3 Task 3B: Accounts-page authentication UX/integration proposal (READ-ONLY; OWNER APPROVAL GATE)
 
-### Required changes
-1. Add a Persian-labeled display-name input using strings from `ui/strings.py`; do not hard-code new user-facing text in `accounts_page.py`.
-2. Pass all three explicit values to `self.store.add(account_id, broker_name, display_name)`. Do not change `AccountStore` or weaken its validation.
-3. Show `record.display_name` in its own table column while preserving the visible account ID, broker name, active-account indicator, and selection by the exact account ID. Update column constants/tests as needed.
-4. Empty/whitespace display names must fail through the existing inline validation mechanism without creating an account or raising an uncaught `TypeError`. On success, clear the form and refresh the table.
-5. Preserve current visual/theme conventions and RTL layout; no broader redesign in this task.
+**Purpose:** Prepare a source-grounded proposal for the next Accounts-page work: secure credential entry/storage, per-account login/logout/status and adapter-provided CAPTCHA. This task ends with a report for Architect review and Product Owner approval. It does **not** authorize implementation or a visual redesign.
 
-### Explicitly out of scope
-No `AuthenticationService`, credential vault, username/password, login/logout, CAPTCHA, `BrokerManager`, network, trading-state, feedback, order or dispatch changes. Keep `AccountsPage` construction offline and preserve unrelated files.
+**Read-only source files to inspect:**
+- `ui/accounts_page.py`, `ui/strings.py`, and `test_ui2_1_account_management.py`
+- `ui/main_window.py`, `ui/credential_store.py`, `ui/authentication_service.py`, `ui/session_manager.py`
+- `brokers/agaah/auth_adapter.py`, `brokers/base.py`, and relevant offline authentication/account tests
+- `AI_PROJECT_MEMORY.md`, `AI_HANDOFF.md`, and `DECISIONS.md` for accepted architecture and scope
 
-### Verification
-Run and report actual results:
-```powershell
-py -3 -m pytest -q test_ui2_1_account_management.py
-py -3 -m pytest -q test_ui1_application_foundation.py test_ui2_1_account_management.py
-git diff --check -- ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
-```
+**Questions the report must answer:**
+1. Map the current AccountsPage/MainWindow/service wiring and identify the exact missing injection/interaction points.
+2. Document the existing public service contracts used for credential save/read/delete, `begin_login(account_id)`, `complete_login(account_id, response)`, per-account `logout(account_id)`, the `LoginChallenge` fields, and session-state observation. Do not invent methods or change service contracts in this task.
+3. Propose one simple Persian RTL layout for account creation, selecting/activating an account, credential management, per-account session status and actions, and the adapter-provided CAPTCHA challenge. Include a compact text wireframe and describe each interaction/state transition.
+4. State how the page remains broker-independent, does not handle tokens, uses only the OS vault through CredentialStore, and stays offline during construction. Login/network/vault work occurs only after an explicit user action.
+5. List a possible sequence of future small implementation tasks with exact likely file boundaries and focused offline acceptance tests. Keep account-bound trading-state, instrument identity, feedback/NATS/queue-position and order-routing fixes in the separate later phase; do not mix them in.
+6. Explicitly identify decisions requiring Product Owner approval. Keep the already accepted dark RTL visual direction; do not broaden the redesign.
 
-No Stage, Commit, or Push. Do not stage broadly. Preserve the unrelated `ui/test_runner.py` modification and all untracked local artifacts. Report exact changed files and outputs.
-
-**Architectural note for later phases:** `MainWindow._real_trading_state_query()` and `_real_feedback_broker_factory()` still use name-only resolution, and `ui/order_configuration_page.py::_default_order_identity_resolver()` constructs a separate `BrokerManager`. Do not attempt to fix those in Task 3A; route them separately by account in the later account-bound activity phase.
-
-
+**Strict constraints:** no file edits of any kind (including docs, screenshots, generated mockups, or tests); no Stage/Commit/Push; no real credentials, OS vault calls, network requests, broker login or order submission. Do not run commands that mutate the worktree. Report source paths/method names and evidence, clearly distinguishing verified contracts from assumptions. Wait for approval before implementation.
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B and Phase 2 Tasks 2A–2C are complete within scope. A read-only source audit confirms authentication composition and TestRunner/DispatchCore share MainWindow's cached manager, but AccountsPage does not yet invoke AuthenticationService. Trading-state, instrument identity and feedback still have name-only/separate-manager paths. Next is Phase 3 Task 3A to align the display-name form/table with AccountStore. Preserve the accepted Accounts-page visual direction and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B and Phase 2 Tasks 2A–2C are complete within scope. Phase 3 Task 3A (display-name form/table contract) is complete and pushed as `fbdc112`. AccountsPage still does not invoke AuthenticationService; trading-state, instrument identity and feedback still have name-only/separate-manager paths. Next is Phase 3 Task 3B: a read-only Accounts-page authentication UX/integration proposal for Product Owner review; do not implement login/credential UI until the proposal is approved. Keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
