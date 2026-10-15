@@ -2334,9 +2334,25 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Task 1 (Account Management Foundation) COMPLETED; Task 2 (Secure Credential Store) and Task 3 (Account Session Manager) COMPLETED and independently verified; Task 4 Stage 2 (Agah Login Implementation) and Stage 3 (Integration & Regression) COMPLETED; Task 5 Stages 2A (Agah Refresh Primitive) and 2B (Per-Account Session and Token Replacement) COMPLETED and reviewed; Task 5 Stage 2C (HTTP 401 Handling and Renewal Coordination) is NEXT.
+**Status:** IN PROGRESS — Tasks 1–4 COMPLETED within their documented scopes; Task 5 Stages 2A, 2B and 2C (HTTP 401 handling and renewal coordination) COMPLETED and reviewed within their documented scopes. The next work is account-management subtask 9 — Account-Aware Order Routing and full Accounts-page integration. The approved execution sequence is tracked below.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
+
+#### Current Execution Roadmap — Per-Account Runtime and Accounts-Page Integration
+
+**Owner-approved direction:** 2026-10-15. The implementation has NOT started. The Accounts-page layout/feature direction is accepted at the concept level and must follow the existing dark, right-to-left application theme; any material departure from this direction needs review before implementation.
+
+Work through these phases in order. Each phase must be split into small tasks with exact allowed files and acceptance tests. Review evidence before beginning the next phase.
+
+| Phase | Scope | Status |
+|---|---|---|
+| **1. Lock contracts and logout lifecycle** | Finalize the account-aware broker/provider manager contract and per-account runtime identity; add a public, fail-closed per-account logout operation to `AuthenticationService`; cover normal logout, cleanup failures and account isolation. | **NEXT — not started** |
+| **2. Compose and inject services** | Wire `AccountStore`, OS-vault `CredentialStore`, `SessionManager`, `AuthenticationService` and the account-aware broker manager once at the `MainWindow`/application boundary. Authentication and dispatch must resolve the same broker instance for each account; no broker object may be shared across accounts. | Pending |
+| **3. Connect the Accounts page** | Implement account add/edit/delete/sort/select and display name; connect credential save/removal, independent row-level login/logout/status and CAPTCHA only when the adapter requires it. The page calls services; it does not implement broker authentication or manage tokens. | Pending |
+| **4. Route all account-bound activity** | Gate order-page/order preparation on one active account with a usable logged-in session; resolve instrument provider, trading-state query, order routing, NATS/queue-position tracking and feedback through that account's runtime; preserve `DispatchCore → OrderEngine → M6-A…M6-E` and fail closed on missing/mismatched runtime. | Pending |
+| **5. Regression and acceptance** | Test at least two accounts on the same broker, proving independent broker/session/provider/token/recovery state and account-correct feedback; run focused and broad regression; preserve M6 gates and keep live trading disabled. Never automatically replay `POST /order` after 401. | Pending |
+
+**Execution rule:** Do not skip phases, combine them into one large agent task, or start the next phase before review. Every task report must include exact changed files, commands, test results and pre-existing failures. The next issued coding task belongs to Phase 1 only.
 
 #### Overview
 
