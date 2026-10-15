@@ -2334,20 +2334,20 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Block 9 Tasks 1–4 are complete within their documented scopes; Task 5 Stages 2A, 2B and 2C are complete and reviewed. Account integration Phase 1 is complete (Task 1A `9efb88e`, Task 1B `39bd0d6`). Phase 2 Task 2A (account-owned authentication adapter identity, `ccdd563`) is complete and pushed. **Next: Task 2B — Lazy Service Composition at MainWindow.** The app still does not compose `AuthenticationService` in `MainWindow`, and production account-aware order routing / same-instance auth-to-dispatch wiring remains incomplete. The approved execution sequence is tracked below.
+**Status:** IN PROGRESS — Block 9 Tasks 1–4 and Task 5 Stages 2A–2C are complete within their documented scopes. Account-integration Phase 1 is complete (Tasks 1A `9efb88e`, 1B `39bd0d6`). Phase 2 Tasks 2A (`ccdd563`) and 2B (`23802a7`) are complete and pushed. **Next: Task 2C — account-scoped broker/provider resolution in `DispatchCore`.** Current `DispatchCore` still resolves by broker name only, so different accounts using the same broker can share the name-scoped path instead of their authenticated account-owned runtime. Same-instance production authentication/dispatch wiring remains incomplete.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
 #### Current Execution Roadmap — Per-Account Runtime and Accounts-Page Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 foundation is complete: Task 1A (`9efb88e`) and Task 1B (`39bd0d6`) are reviewed and pushed. Phase 2 has started: Task 2A (`ccdd563`) is complete; Task 2B — Lazy Service Composition at MainWindow — is next. Accounts-page layout/feature direction remains accepted at concept level and must follow the existing dark RTL theme; material design departures need review before implementation.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`) and 2B (`23802a7`) are complete within their scopes; Task 2C — account-scoped broker/provider resolution in `DispatchCore` — is next. The Accounts-page concept remains the accepted dark RTL direction; material design departures require review before implementation.
 
 Work through these phases in order. Each phase must be split into small tasks with exact allowed files and acceptance tests. Review evidence before beginning the next phase.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize the account-aware broker/provider manager contract and per-account runtime identity; add a public, fail-closed per-account logout operation to `AuthenticationService`; cover normal logout, cleanup failures and account isolation. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
-| **2. Compose and inject services** | Lazily compose `AccountStore`, OS-vault `CredentialStore`, `SessionManager`, `AuthenticationService` and the account-aware broker manager at `MainWindow`; later verify that account-bound authentication and dispatch resolve the same account-owned broker instance. Never share a broker between accounts. | **IN PROGRESS — Task 2A complete; Task 2B next** |
+| **2. Compose and inject services** | Lazily compose the account/session/authentication services and finish wiring the existing dispatch path to the same account-owned broker/provider used by authentication. Never share a broker between accounts or fall back to name-only resolution for account-bound work. | **IN PROGRESS — Tasks 2A and 2B complete; Task 2C next** |
 | **3. Connect the Accounts page** | Implement account add/edit/delete/sort/select and display name; connect credential save/removal, independent row-level login/logout/status and CAPTCHA only when the adapter requires it. The page calls services; it does not implement broker authentication or manage tokens. | Pending |
 | **4. Route all account-bound activity** | Gate order-page/order preparation on one active account with a usable logged-in session; resolve instrument provider, trading-state query, order routing, NATS/queue-position tracking and feedback through that account's runtime; preserve `DispatchCore → OrderEngine → M6-A…M6-E` and fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Test at least two accounts on the same broker, proving independent broker/session/provider/token/recovery state and account-correct feedback; run focused and broad regression; preserve M6 gates and keep live trading disabled. Never automatically replay `POST /order` after 401. | Pending |
@@ -2380,7 +2380,19 @@ Work through these phases in order. Each phase must be split into small tasks wi
 - **Owner's Windows verification:** nine focused authentication, integration, 401-recovery and broker-manager test files → **287 passed in 3.12s**. No live broker login, network request, or real order was performed.
 - **Not complete:** `MainWindow` still does not compose or expose `AuthenticationService`. Existing production dispatch still uses its current name-based broker path; therefore same-account auth-to-order broker identity and production account-aware order routing are **not** established by this task.
 
-**Execution rule:** Do not skip phases, combine them into one large agent task, or start the next phase before review. The next bounded task is **Task 2B — Lazy Service Composition at MainWindow**: create and cache the account-authentication service graph only on first demand, reusing the existing `AccountStore` and shared `BrokerManager`, with focused offline tests. Do not wire Accounts-page UI or change order routing in Task 2B. Every report must list exact changed files, commands, results and pre-existing failures.
+#### Phase 2 — Task 2B: Lazy Service Composition at MainWindow — COMPLETE (2026-10-15)
+
+- **Commit:** `23802a7` — `feat: compose account authentication service lazily`, pushed to `origin/master`.
+- **Changed files:** `ui/main_window.py` and `test_block9_phase2_service_composition.py` only.
+- **Implementation:** `MainWindow.authentication_service` lazily composes and caches `AuthenticationService` from the existing `self.account_store`, one `CredentialStore`, one `SessionManager`, and the Agah adapter factory bound to the same cached `_shared_broker_manager()`. The service is cached only after successful construction; a failed construction can be retried. No login, CAPTCHA, vault operation, network access, or order submission is done by composition.
+- **Owner-reported Windows verification:**
+  - `python3 -m pytest -q test_block9_phase2_service_composition.py` → **3 passed**.
+  - Focused authentication/adapter/integration/BrokerManager regression → **169 passed**.
+  - `test_ui1_application_foundation.py` + `test_ui2_1_account_management.py` → **33 passed, 2 failed**. Both failures are in `AccountsPage` calling `AccountStore.add(account_id, broker_name)` without the required `display_name`; these files are outside Task 2B and remain unresolved. Do not label them pre-existing without baseline reproduction.
+  - `py_compile` succeeded. The owner confirmed the staged `git diff --check` was clean.
+- **Boundary:** no Accounts-page UI, dispatch, provider, feedback or order-routing code was changed. Task 2B does not make production authentication and dispatch use the same account-owned broker yet.
+
+**Execution rule:** Keep tasks bounded and review evidence before moving forward. The next task is **Task 2C — account-scoped broker/provider resolution in `DispatchCore`**. Use each order's explicit `(account_id, broker_name)` binding; key broker resolution by that pair and use `get_for_account()` plus `get_instrument_provider_for_account()`. No name-only fallback is allowed for account-bound dispatch. Preserve `DispatchCore → OrderEngine → M6-A…M6-E`, offline test seams and the no-automatic-`POST /order`-retry rule. Do not wire Accounts-page UI or feedback/NATS/trading-state paths in Task 2C. Every report must list exact changed files, commands, results and unresolved failures.
 
 #### Overview
 

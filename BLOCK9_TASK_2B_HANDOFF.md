@@ -1,4 +1,4 @@
-# Block 9 — Phase 2 — Task 2B: Lazy Service Composition at MainWindow
+# Block 9 — Phase 2 — Task 2B: Lazy Service Composition at MainWindow — COMPLETE (2026-10-15)
 
 ## Goal
 Compose the already-reviewed Block 9 services at the existing application boundary without changing UI behavior or order dispatch.
@@ -53,3 +53,11 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 - Preserve every unrelated local file/change; never use `git add -A`.
 - Do not update project memory in this implementation task; architect will update it after reviewing the report.
 - Final report must list exact changed files, tests/outputs, and any pre-existing failures.
+
+## Completion Record — Owner Report (2026-10-15)
+
+- Commit pushed: `23802a7` — `feat: compose account authentication service lazily`.
+- Changed files: `ui/main_window.py` and `test_block9_phase2_service_composition.py`.
+- Verification: composition tests **3 passed**; focused auth/adapter/integration/BrokerManager suite **169 passed**; UI foundation/account selection **33 passed, 2 failed** (both failures are in the out-of-scope AccountsPage call missing required `display_name`); `py_compile` and staged `git diff --check` passed.
+- Safety: no real login, credential-vault operation, network request or order; no change to Accounts-page UI or order dispatch. Same-instance account-aware authentication/dispatch remains incomplete.
+- Next architectural task: account-scoped broker/provider resolution in `DispatchCore` (Task 2C).
