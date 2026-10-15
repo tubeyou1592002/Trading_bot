@@ -22,6 +22,7 @@ Run:
 
 import sys
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 from brokers.agaah import (
     AgaahBroker,
@@ -39,6 +40,9 @@ class FakeBroker:
 
     def get_instrument(self, nsc_id):
         return FakeBrokerInstrument(nsc_id)
+
+    def login(self):
+        return None
 
     def get_account(self):
         return None
@@ -211,6 +215,190 @@ def test_get_still_works_alongside_provider():
     broker = manager.get("آگاه")
 
     assert isinstance(broker, AgaahBroker)
+
+
+def test_account_scoped_brokers_and_providers_are_isolated_and_cached():
+    manager = BrokerManager()
+    broker_a = manager.get_for_account("account-a", "آگاه")
+    broker_b = manager.get_for_account("account-b", "آگاه")
+    assert broker_a is not broker_b
+    assert manager.get_for_account("account-a", "آگاه") is broker_a
+
+    provider_a = manager.get_instrument_provider_for_account("account-a", "آگاه")
+    provider_b = manager.get_instrument_provider_for_account("account-b", "آگاه")
+    assert provider_a is manager.get_instrument_provider_for_account("account-a", "آگاه")
+    assert provider_b is manager.get_instrument_provider_for_account("account-b", "آگاه")
+    assert provider_a is not provider_b
+    assert provider_a._broker is broker_a
+    assert provider_b._broker is broker_b
+    provider_a._cache["only-a"] = object()
+    assert "only-a" not in provider_b._cache
+
+
+def test_account_scope_fails_closed_for_invalid_or_unavailable_brokers():
+    manager = BrokerManager()
+    for account_id in (None, "", "   "):
+        try:
+            manager.get_for_account(account_id, "آگاه")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid account id must fail")
+
+    for method, args in (
+        (manager.get_for_account, ("account", "unknown")),
+        (manager.get_instrument_provider_for_account, ("account", "unknown")),
+    ):
+        try:
+            method(*args)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("unknown broker must fail")
+
+    manager.register("no-factory", FakeBroker(), FakeInstrumentProvider)
+    try:
+        manager.get_for_account("account", "no-factory")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("missing account factory must fail")
+
+    manager.register("duplicate-factory", FakeBroker(), FakeInstrumentProvider,
+                     broker_factory=lambda: manager.brokers["آگاه"])
+    try:
+        manager.get_for_account("account", "duplicate-factory")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("reused broker must fail")
+    assert ("account", "duplicate-factory") not in manager.account_brokers
+
+
+def test_account_factories_validate_and_allow_retry_after_failure():
+    manager = BrokerManager()
+    try:
+        manager.register("not-callable", FakeBroker(), FakeInstrumentProvider,
+                         broker_factory=42)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-callable factory must fail at registration")
+    assert "not-callable" not in manager.brokers
+
+    for name, factory in (("none-result", lambda: None),
+                          ("wrong-result", lambda: object())):
+        manager.register(name, FakeBroker(), FakeInstrumentProvider,
+                         broker_factory=factory)
+        try:
+            manager.get_for_account("acct", name)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid factory or result must fail")
+        assert ("acct", name) not in manager.account_brokers
+
+    attempts = []
+    def flaky_factory():
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise RuntimeError("temporary")
+        return FakeBroker()
+
+    manager.register("flaky", FakeBroker(), FakeInstrumentProvider,
+                     broker_factory=flaky_factory)
+    try:
+        manager.get_for_account("acct", "flaky")
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("first factory call should fail")
+    assert ("acct", "flaky") not in manager.account_brokers
+    broker = manager.get_for_account("acct", "flaky")
+    assert isinstance(broker, FakeBroker)
+
+
+def test_account_factories_reject_broker_and_provider_reuse():
+    manager = BrokerManager()
+    shared_broker = FakeBroker()
+    manager.register("shared", FakeBroker(), FakeInstrumentProvider,
+                     broker_factory=lambda: shared_broker)
+    assert manager.get_for_account("a", "shared") is shared_broker
+    try:
+        manager.get_for_account("b", "shared")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("broker reuse across accounts must fail")
+
+    manager.register("shared-provider", FakeBroker(), FakeInstrumentProvider,
+                     broker_factory=FakeBroker)
+    broker_for_a = manager.get_for_account("a", "shared-provider")
+    broker_for_b = manager.get_for_account("b", "shared-provider")
+    shared_provider = FakeInstrumentProvider(broker_for_b)
+    manager._provider_classes["shared-provider"] = lambda broker: shared_provider
+    try:
+        manager.get_instrument_provider_for_account("a", "shared-provider")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("provider connected to another account must fail immediately")
+    assert ("a", "shared-provider") not in manager.account_providers
+    assert ("b", "shared-provider") not in manager.account_providers
+    assert broker_for_a is not broker_for_b
+
+
+def test_provider_class_and_broker_contract_are_validated():
+    manager = BrokerManager()
+    try:
+        manager.register("bad-provider", FakeBroker(), 42,
+                         broker_factory=FakeBroker)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("non-callable provider class must be rejected")
+    assert "bad-provider" not in manager.brokers
+
+    for name, factory in (
+        ("without-login", lambda: _BrokerWithout("login")),
+        ("without-name", lambda: _BrokerWithout("name")),
+    ):
+        manager.register(name, FakeBroker(), FakeInstrumentProvider,
+                         broker_factory=factory)
+        try:
+            manager.get_for_account("acct", name)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("broker missing required contract must fail")
+        assert ("acct", name) not in manager.account_brokers
+
+
+class _BrokerWithout(FakeBroker):
+    def __init__(self, attribute):
+        super().__init__()
+        if attribute == "login":
+            self.login = None
+        else:
+            self.name = "   "
+
+    def login(self):
+        pass
+
+
+def test_concurrent_account_resolution_returns_single_instances():
+    manager = BrokerManager()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        brokers = list(pool.map(
+            lambda _: manager.get_for_account("parallel", "آگاه"), range(48)
+        ))
+        providers = list(pool.map(
+            lambda _: manager.get_instrument_provider_for_account("parallel", "آگاه"),
+            range(48),
+        ))
+    assert all(item is brokers[0] for item in brokers)
+    assert all(item is providers[0] for item in providers)
+    assert providers[0]._broker is brokers[0]
 
 
 # =====================================================================
