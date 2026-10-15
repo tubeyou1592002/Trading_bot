@@ -2,11 +2,11 @@
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-15.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Block 9 Account Integration, Phase 2 / Task 2C
+## Current Status — Block 9 Phase 3 Task 3B-2 COMPLETE; Task 3B-3 NEXT
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
-**Latest repository commit:** `56a317b` — `feat: resolve dispatch brokers by account`.  
+**Latest application implementation commit:** `f8764c0` — `feat: add account credential management UI`. This is the Task 3B-2 implementation commit; documentation updates may create later repository commits.  
 **Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry` (Task 5 checkpoint; not the current repository HEAD).  
 **Phase 2 MainWindow composition:** `23802a7` — `feat: compose account authentication service lazily`.  
 **Phase 2 account-auth adapter:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
@@ -19,7 +19,7 @@
 - Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
 - Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
 - Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
-- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A is complete and pushed as `fbdc112`; Task 3B-1 lazy service injection is complete and pushed as `e4a0796`. The Product Owner accepted the Task 3B-1 through 3B-5 order. Next is Task 3B-2 credential save/delete UI; other account-bound consumers remain later work.
+- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A is complete and pushed as `fbdc112`; Task 3B-1 lazy service injection is complete and pushed as `e4a0796`. The Product Owner accepted the Task 3B-1 through 3B-5 order. Task 3B-2 credential save/delete UI is complete and pushed as `f8764c0`. Next is Task 3B-3 begin/cancel login and generic challenge display; other account-bound consumers remain later work.
 
 ### Stage 2C — implementation and verification status
 
@@ -43,13 +43,13 @@ The read-only audit confirms that `MainWindow.authentication_service` and `TestR
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. The source audit confirms that MainWindow passes its same cached `BrokerManager` to authentication-adapter composition and the `TestRunner`/`DispatchCore` path. User-facing account login/logout is still unwired because `AccountsPage` does not call `AuthenticationService`; name-only/separate-manager paths remain in trading-state, instrument identity resolution and feedback. Next bounded implementation is Phase 3 Task 3A, limited to the display-name/account-store UI contract. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. The source audit confirms that MainWindow passes its same cached `BrokerManager` to authentication-adapter composition and the `TestRunner`/`DispatchCore` path. User-facing account login/logout is still unwired because `AccountsPage` does not call `AuthenticationService`; name-only/separate-manager paths remain in trading-state, instrument identity resolution and feedback. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`) and Task 3B-2 (`f8764c0`) are complete and pushed within scope. Task 3B-3 — begin/cancel login and generic challenge display — is the next bounded task. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
 | **2. Compose and inject services** | Compose and inject account/session/authentication services; route the TestRunner/DispatchCore path through MainWindow's shared manager and account-scoped broker/provider registry. User-facing login/logout and active-session gating belong to Phase 3. | **COMPLETE within defined scope — Tasks 2A–2C reviewed/pushed** |
-| **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | Pending |
+| **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | **IN PROGRESS — Task 3A, Task 3B-1 and Task 3B-2 complete; Task 3B-3 next** |
 | **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
 
@@ -127,9 +127,11 @@ The read-only proposal and source/API review have been reported and reviewed by 
 
 **Task 3B-1 completion record:** Commit `e4a0796` — `feat: inject lazy account services` — is pushed to `origin/master`. It changes only `ui/main_window.py`, `ui/accounts_page.py`, and `test_block9_phase2_service_composition.py`. The owner approved the staged diff. Reported verification: composition **4 passed**, account-management **24 passed**, UI foundation + account-management **37 passed**, focused authentication/adapter/integration **145 passed**, and compilation/diff checks succeeded (using `python3` because the agent environment lacked `py -3`). The implementation preserves laziness and injects callbacks without executing them during construction.
 
-## Next bounded implementation task — Block 9 Phase 3 Task 3B-2: Credential save/delete UI
+## Completed implementation handoff — Block 9 Phase 3 Task 3B-2: Credential save/delete UI
 
-**Task type:** Small implementation + offline tests. Task 3B-1 has been reviewed, accepted, committed and pushed.
+**Status:** COMPLETE and architecturally accepted. Commit `f8764c0` — `feat: add account credential management UI` — is pushed to `origin/master`.
+
+**Task type:** Small implementation + offline tests. Task 3B-1 had been reviewed, accepted, committed and pushed before this task.
 
 **Goal:** Let the user explicitly save or delete credentials for the currently selected account, exclusively through the existing `CredentialStore`. Do not implement login, CAPTCHA, logout, or session status in this task.
 
@@ -179,6 +181,71 @@ If `py -3` is unavailable in the agent environment, use `python3` equivalents an
 - Report exact files changed, commands run, outputs, and any pre-existing failures. Stop for Architect review before continuing to Task 3B-3.
 
 
+## Completion Record — Block 9 Phase 3 Task 3B-2: Credential save/delete UI — COMPLETE (2026-10-15)
+
+- **Commit pushed:** `f8764c0` — `feat: add account credential management UI`.
+- **Changed files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Behavior reviewed:** selected-row identity is resolved from the real account ID and broker; CredentialStore is invoked only on explicit save/delete after local validation; values are not read back or prefilled; the password field is masked; input fields are cleared in save/delete finally paths; backend details are replaced by generic user-facing errors.
+- **Owner-reviewed staging:** exactly these three files were staged; `git diff --cached --check` passed and the cached name list matched the allowlist.
+- **Verification reported by the implementation agent (using `python3` because its environment lacked `py -3`):** account-management tests **33 passed**; UI foundation + account-management tests **46 passed**; service-composition + CredentialStore tests **68 passed, 7 skipped**; `py_compile` and scoped `git diff --check` passed. These are agent-reported results, not a claim that the owner reran those suites locally.
+- **Git synchronization:** initial push was rejected because remote documentation commits were ahead. `git pull --rebase --autostash origin master` succeeded and applied the autostash; the subsequent push succeeded, advancing remote `master` from `1f3b838` to `f8764c0`. Unrelated local changes and untracked artifacts were not part of the commit.
+- **Safety boundary:** no real vault operation, login, CAPTCHA request, broker network request or order was performed. Task 3B-2 does not wire login/logout/session status.
+
+## Next bounded implementation task — Block 9 Phase 3 Task 3B-3: Begin/cancel login and generic challenge display
+
+**Task type:** Small implementation + offline tests. Task 3B-2 is accepted, committed and pushed. Stop for Architect review before Task 3B-4.
+
+**Goal:** Wire an explicit user-triggered begin-login action for the selected account, show only a public `LoginChallenge` returned by `AuthenticationService`, and allow cancellation of that exact pending attempt. Do not complete login, submit a CAPTCHA response, add logout, or add per-account status in this task.
+
+**Allowed files only:**
+- `ui/accounts_page.py`
+- `ui/strings.py`
+- `test_ui2_1_account_management.py`
+
+Do not modify `ui/main_window.py`, `ui/authentication_service.py`, `ui/session_manager.py`, `brokers/authentication.py`, `brokers/agaah/auth_adapter.py`, `ui/credential_store.py`, broker-manager/dispatch/order code, or documentation during implementation.
+
+### Required behavior
+
+1. Add explicit Login and Cancel Login controls and a challenge display area to the existing Accounts page, consistent with the current dark RTL direction. All new user-facing strings belong in `ui/strings.py`. Do not perform login when the page is constructed, refreshed, or a row is selected.
+2. On Login click, require a selected table row; resolve its account ID from the ID column and call the injected `authentication_service_factory` only at that point. If no row or no factory exists, fail closed with a generic inline message. Call only `begin_login(account_id)`; do not instantiate an adapter, CredentialStore, broker, or service inside AccountsPage.
+3. Render challenge content only after `begin_login` returns a `LoginChallenge`. Use the public broker-independent contract (`kind`, `display_payload`, `prompt`) and generic challenge-kind constant from `brokers.authentication`; for the currently defined CAPTCHA-image kind, decode the Base64 payload into an image for display rather than showing the raw Base64. Do not import or inspect Agah adapter internals, expose `captchaId`, or display credentials/tokens.
+4. Keep the pending attempt bound to the account ID passed to `begin_login`. Do not silently retarget cancellation when table selection changes; Cancel Login must call `cancel_login(pending_account_id)` for the attempt that produced the displayed challenge. Prevent starting a second UI challenge while one is pending, unless the first is explicitly cancelled.
+5. On successful cancel, clear the displayed challenge and pending-account marker. On begin/cancel errors, show only a generic safe message; never expose raw exception text or credential data. If rendering a returned challenge fails or its kind is unsupported, fail closed, do not show the raw payload, and clean up the pending attempt through the public cancel API when possible.
+6. The current service contract distinguishes the pending flow from authenticated status. Do not claim the account is logged in merely because a challenge was obtained. Do not add response submission, `complete_login`, logout, session-status rendering, order gating, or order-routing changes; those belong to Task 3B-4 or later.
+7. Use fake AuthenticationService implementations and synthetic image data for all tests. Construction, refresh and row selection must not call the auth factory; no real credential vault, broker, network, CAPTCHA endpoint or order is allowed.
+
+### Offline acceptance tests
+
+- No selected account / missing factory: safe feedback and no factory call.
+- With at least two accounts on the same broker, Login calls the fake service with the selected row's exact account ID.
+- The generic public challenge prompt and image are displayed only after a challenge is returned; raw Base64, captcha ID, username/password, token and exception text are not shown.
+- A begin-login exception leaves no challenge visible and produces a generic message.
+- Cancel targets the original pending account even if the selected row changes, clears the visible challenge, and does not alter another account's state.
+- A cancel failure produces generic feedback, does not leak exception content, and does not leave stale challenge content visible.
+- A second login click while a challenge is pending is fail-closed and does not call the service again.
+- No service call occurs during page construction, refresh or account selection; all existing credential save/delete and account-management tests continue to pass.
+
+### Commands and evidence
+
+Run and report exact output:
+```powershell
+py -3 -m pytest -q test_ui2_1_account_management.py
+py -3 -m pytest -q test_ui1_application_foundation.py test_ui2_1_account_management.py
+py -3 -m pytest -q test_block9_phase2_service_composition.py test_block9_task4_authentication_service.py test_block9_task4_agah_auth_adapter.py test_block9_task4_integration.py
+py -3 -m py_compile ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
+git diff --check -- ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
+git diff --name-only
+```
+If `py -3` is unavailable in the agent environment, use equivalent `python3` commands and state that fact.
+
+### Worktree and safety rules
+
+- Do not stage, commit, push, reset, checkout, clean or delete files.
+- Preserve unrelated local changes and all untracked artifacts; never use `git add -A`.
+- Do not make real vault/network/broker calls or submit orders.
+- Report exact changed files, commands and outputs. Stop after Task 3B-3 for Architect review before Task 3B-4.
+
+
 **UI direction:** retain the dark RTL application style; the intended structure is account-creation form, account table with separate active/login indicators, then operations for the selected account. CAPTCHA/challenge UI is shown only when the authentication adapter returns a challenge. The generated visual mockup is not yet available; do not claim an image asset was created.
 
 ### Safety and worktree rules
@@ -186,7 +253,7 @@ If `py -3` is unavailable in the agent environment, use `python3` equivalents an
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B and Phase 2 Tasks 2A–2C are complete within scope. Phase 3 Task 3A is complete and pushed as `fbdc112`; Task 3B-1 (lazy service injection) is complete and pushed as `e4a0796`. AccountsPage still has no credential/login actions. Next is Task 3B-2: explicit credential save/delete UI via the injected CredentialStore. Trading-state, instrument identity and feedback still have name-only/separate-manager paths and remain later work. Keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B and Phase 2 Tasks 2A–2C are complete within scope. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`) and Task 3B-2 (`f8764c0`) are complete and pushed. Credential save/delete UI is connected, but AccountsPage still does not invoke begin/cancel login, complete login, logout or status APIs. Next is Task 3B-3: begin/cancel login and generic challenge display. Trading-state, instrument identity and feedback still have name-only/separate-manager paths and remain later work. Trading-state, instrument identity and feedback still have name-only/separate-manager paths and remain later work. Keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
