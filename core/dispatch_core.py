@@ -291,11 +291,22 @@ class DispatchCore:
                     "plan.execution_order must not be empty"
                 )
 
-            # ---- Pre-resolve every broker referenced by the plan --------
-            # The Planner already chose the exact brokers (Block 1).
-            broker_instances: Dict[str, object] = {}
-            for broker_name in plan.broker_names:
-                broker_instances[broker_name] = self.broker_manager.get(broker_name)
+            # ---- Pre-resolve every account-owned pair in the plan --------
+            # Complete all account/broker/provider resolution before the
+            # first order can enter OrderEngine. The planner's exact binding
+            # remains authoritative; no name-only resolution is permitted.
+            account_resources: Dict[Tuple[str, str], Tuple[object, object]] = {}
+            for sequence in plan.execution_order:
+                _, account_id, broker_name = self._plan_item(plan, sequence)
+                key = (account_id, broker_name)
+                if key not in account_resources:
+                    broker = self.broker_manager.get_for_account(
+                        account_id, broker_name
+                    )
+                    provider = self.broker_manager.get_instrument_provider_for_account(
+                        account_id, broker_name
+                    )
+                    account_resources[key] = (broker, provider)
 
             # ---- Execute each order exactly once, in plan order --------
             for sequence in plan.execution_order:
@@ -325,12 +336,12 @@ class DispatchCore:
                     else None
                 )
 
-                if broker_name not in broker_instances:
+                key = (account_id, broker_name)
+                if key not in account_resources:
                     raise ValueError(
-                        f"Unknown broker for sequence {sequence}: {broker_name}"
+                        f"Unknown account/broker pair for sequence {sequence}: {key}"
                     )
-
-                broker = broker_instances[broker_name]
+                broker, provider = account_resources[key]
 
                 # The exact Account -> Broker target from planning is kept.
                 # Block 1 produces ``plan.accounts`` as account_id strings;
@@ -360,8 +371,6 @@ class DispatchCore:
 
                 # Resolve the instrument through the existing
                 # InstrumentProvider path (Block 2 sequence step b).
-                provider = self.broker_manager.get_instrument_provider(broker_name)
-
                 # Task 8.2 stage 3 — ``instrument_resolution``.
                 instrument = self._measure(
                     collector,

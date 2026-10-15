@@ -122,8 +122,12 @@ def make_broker_manager(broker_names):
     providers = {name: make_mock_provider() for name in broker_names}
 
     manager = Mock()
-    manager.get.side_effect = lambda name, _a=available: _a[name]
-    manager.get_instrument_provider.side_effect = lambda name, _p=providers: _p[name]
+    manager.get_for_account.side_effect = (
+        lambda account_id, name, _a=available: _a[name]
+    )
+    manager.get_instrument_provider_for_account.side_effect = (
+        lambda account_id, name, _p=providers: _p[name]
+    )
     return manager
 
 
@@ -268,7 +272,9 @@ def test_single_order_nsc_resolution_used():
     core.order_engine.execute_by_ins_code = Mock(side_effect=fake_execute)
 
     core.dispatch(plan)
-    manager.get_instrument_provider.assert_called_once_with("\u0622\u06af\u0627\u0647")
+    manager.get_instrument_provider_for_account.assert_called_once_with(
+        "acc-1", "\u0622\u06af\u0627\u0647"
+    )
 # ---------------------------------------------------------------------------
 # Multi-order dispatch (multi-account / multi-broker plan)
 # ---------------------------------------------------------------------------
@@ -443,7 +449,7 @@ def test_dispatch_level_error_fails_closed():
     """A broker-resolution error -> final BLOCKED (never ERROR/FAILED)."""
     core = DispatchCore()
     manager = Mock()
-    manager.get.side_effect = ValueError("Unknown broker")
+    manager.get_for_account.side_effect = ValueError("Unknown account broker")
     core.broker_manager = manager
 
     order = make_order()
