@@ -178,23 +178,68 @@ class FakeAgahAdapter(AuthenticationAdapter):
         return self.authenticated_session
 
 
-def make_service(adapter_outcomes=None):
+class LogoutTrackingAdapter(FakeAgahAdapter):
+    """
+    Offline double that also implements the generic cleanup contract used by
+    ``AuthenticationService.logout``: it records the 401 recovery handler so a
+    test can prove it was detached, and it can be told to FAIL each cleanup
+    step so the "must not claim success" behaviour is exercised.
+
+    ``logout_failures`` selects which step raises:
+        "detach"  -> set_request_recovery_handler(None) raises
+        "clear"   -> clear_authenticated_session() raises
+        "cancel"  -> cancel_login() raises
+    """
+
+    def __init__(self, logout_failures=(), login_outcome="success"):
+        super().__init__(login_outcome=login_outcome)
+        self.logout_failures = set(logout_failures)
+        self.recovery_handler = None
+        self.recovery_handler_sets = []
+        self.clear_count = 0
+        self.detach_count = 0
+
+    def set_request_recovery_handler(self, handler):
+        self.recovery_handler_sets.append(handler)
+        if handler is None and "detach" in self.logout_failures:
+            raise RuntimeError("detach handler failed")
+        self.recovery_handler = handler
+        self.detach_count += 1
+
+    def clear_authenticated_session(self):
+        self.clear_count += 1
+        if "clear" in self.logout_failures:
+            raise RuntimeError("clear authenticated session failed")
+        self.authenticated_session = None
+
+    def cancel_login(self):
+        if "cancel" in self.logout_failures:
+            raise RuntimeError("cancel login failed")
+        super().cancel_login()
+
+
+def make_service(adapter_outcomes=None, adapter_cls=FakeAgahAdapter,
+                 adapter_kwargs=None):
     """
     Builds the service with real stores and a registered fake adapter
     factory for "آگاه". adapter_outcomes maps account_id -> scripted
-    outcome.
+    outcome. adapter_cls / adapter_kwargs let a test inject a double that
+    implements the generic cleanup contract (logout tests).
     """
     accounts, credentials, sessions = make_stores()
     outcomes = dict(adapter_outcomes or {})
+    extra = dict(adapter_kwargs or {})
 
     created = []
     _current_account = [None]
 
     def adapter_factory():
-        adapter = FakeAgahAdapter()
+        adapter = adapter_cls()
         adapter._login_outcome = outcomes.get(
             _current_account[0], "success"
         )
+        for key, value in extra.items():
+            setattr(adapter, key, value)
         created.append(adapter)
         return adapter
 
@@ -996,3 +1041,548 @@ def test_service_does_not_modify_session_manager_contract():
     service.complete_login(ACC_A, "1234")
     assert manager.state(ACC_A) is SessionState.LOGGED_IN
     assert manager.get_token(ACC_A) == ACCESS_TOKEN
+
+
+# ---------------------------------------------------------------------------
+# 10. Public per-account logout (Block 9 — Phase 1, Task 1A)
+# ---------------------------------------------------------------------------
+
+def _logout_service(**kwargs):
+    """Service whose adapters implement + record the generic cleanup contract."""
+    return make_service(adapter_cls=LogoutTrackingAdapter, **kwargs)
+
+
+def _log_in(service, account_id=ACC_A):
+    seed_and_begin(service, account_id=account_id)
+    return service.complete_login(account_id, "1234")
+
+
+# --- success ---------------------------------------------------------------
+
+def test_logout_marks_logged_out_clears_token_and_removes_adapter():
+    service = _logout_service()
+    _log_in(service)
+    assert service.is_logged_in(ACC_A) is True
+
+    service.logout(ACC_A)
+
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.is_logged_in(ACC_A) is False
+    assert service.get_adapter(ACC_A) is None
+
+
+def test_logout_is_repeatable_and_idempotent():
+    service = _logout_service()
+    _log_in(service)
+
+    service.logout(ACC_A)
+    # Logging out an already logged-out account is explicit and repeatable.
+    service.logout(ACC_A)
+    service.logout(ACC_A)
+
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+
+def test_logout_does_not_change_session_manager_contract():
+    service = _logout_service()
+    _log_in(service)
+    manager = service._sessions
+
+    service.logout(ACC_A)
+
+    # SessionManager's own contract is untouched: logging out an already
+    # logged-out account through the manager itself still raises.
+    assert manager.state(ACC_A) is SessionState.LOGGED_OUT
+    with pytest.raises(Exception):
+        manager.logout(ACC_A)
+
+
+def test_logout_allows_a_fresh_login_afterwards():
+    service = _logout_service()
+    _log_in(service)
+    first_adapter = service.created_adapters[-1]
+
+    service.logout(ACC_A)
+
+    # The account is already registered; only a fresh attempt is needed.
+    service.begin_login(ACC_A)
+    session = service.complete_login(ACC_A, "1234")
+    assert session.state is SessionState.LOGGED_IN
+    # A brand new adapter, not the neutralised one.
+    assert service.get_adapter(ACC_A) is not first_adapter
+
+
+# --- per-account isolation -------------------------------------------------
+
+def test_logout_of_one_account_does_not_affect_the_other():
+    service = _logout_service()
+    _log_in(service, ACC_A)
+    _log_in(service, ACC_B)
+
+    adapter_b = service.get_adapter(ACC_B)
+    handler_b = adapter_b.recovery_handler
+
+    service.logout(ACC_A)
+
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+    # Second account is entirely untouched.
+    assert service._sessions.state(ACC_B) is SessionState.LOGGED_IN
+    assert service._sessions.get_token(ACC_B) == ACCESS_TOKEN
+    assert service.get_adapter(ACC_B) is adapter_b
+    assert adapter_b.is_authenticated() is True
+    assert adapter_b.recovery_handler is handler_b
+    assert adapter_b.clear_count == 0
+
+
+def test_logout_without_logged_in_adapter_fails_closed_and_preserves_other_account():
+    service = _logout_service()
+    _log_in(service, ACC_A)
+    _log_in(service, ACC_B)
+    adapter_b = service.get_adapter(ACC_B)
+    token_b = service._sessions.get_token(ACC_B)
+
+    # Simulate inconsistent service state: a logged-in session but no retained
+    # authenticated adapter available to clear and verify.
+    service._adapters.pop(ACC_A)
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+    # The other account's state, token and adapter remain untouched.
+    assert service._sessions.state(ACC_B) is SessionState.LOGGED_IN
+    assert service._sessions.get_token(ACC_B) == token_b
+    assert service.get_adapter(ACC_B) is adapter_b
+    assert adapter_b.is_authenticated() is True
+
+
+def test_logout_without_pending_adapter_fails_closed_and_preserves_other_account():
+    service = _logout_service()
+    _log_in(service, ACC_A)
+    _log_in(service, ACC_B)
+    adapter_b = service.get_adapter(ACC_B)
+    token_b = service._sessions.get_token(ACC_B)
+
+    # Simulate a pending SessionManager state whose temporary adapter was lost.
+    service._sessions.logout(ACC_A)
+    service._adapters.pop(ACC_A)
+    service._sessions.begin_login(ACC_A)
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+    # The other account's state, token and adapter remain untouched.
+    assert service._sessions.state(ACC_B) is SessionState.LOGGED_IN
+    assert service._sessions.get_token(ACC_B) == token_b
+    assert service.get_adapter(ACC_B) is adapter_b
+    assert adapter_b.is_authenticated() is True
+
+
+# --- generic contract cleanup ---------------------------------------------
+
+def test_logout_detaches_recovery_handler_and_clears_authenticated_state():
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    # A recovery handler was installed by the successful login.
+    assert adapter.recovery_handler is not None
+    assert adapter.is_authenticated() is True
+
+    service.logout(ACC_A)
+
+    # The 401 recovery handler is detached.
+    assert adapter.recovery_handler is None
+    assert adapter.recovery_handler_sets[-1] is None
+    # The adapter's retained authenticated state is cleared.
+    assert adapter.clear_count == 1
+    assert adapter.is_authenticated() is False
+    assert adapter.get_authenticated_session() is None
+
+
+def test_logout_cuts_service_access_even_when_session_manager_fails():
+    """
+    Access to the adapter is cut BEFORE the session operation, independently of
+    its outcome — so a failing SessionManager.logout() still cannot leave a
+    reachable authenticated adapter.
+    """
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    def boom(account_id):
+        raise RuntimeError("logout is broken")
+
+    service._sessions.logout = boom
+    # The emergency path still works, so logout() completes successfully.
+    service.logout(ACC_A)
+
+    assert service.get_adapter(ACC_A) is None
+    assert adapter.recovery_handler is None
+    assert adapter.is_authenticated() is False
+
+
+# --- SessionManager.logout failure -> emergency invalidate_session ---------
+
+def test_logout_failure_activates_invalidate_session_emergency_path():
+    service = _logout_service()
+    _log_in(service)
+
+    calls = []
+
+    def boom(account_id):
+        calls.append("logout")
+        raise RuntimeError("logout is broken")
+
+    service._sessions.logout = boom
+    # Wrap the real emergency path so its invocation is observable.
+    real_invalidate = service._sessions.invalidate_session
+
+    def spy_invalidate(account_id):
+        calls.append("invalidate_session")
+        return real_invalidate(account_id)
+
+    service._sessions.invalidate_session = spy_invalidate
+
+    service.logout(ACC_A)
+
+    assert calls == ["logout", "invalidate_session"]
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+
+# --- emergency cleanup failure -> no success claim -------------------------
+
+def test_logout_emergency_failure_does_not_claim_success():
+    service = _logout_service()
+    _log_in(service)
+
+    def boom(account_id):
+        raise RuntimeError("cleanup is broken")
+
+    service._sessions.logout = boom
+    service._sessions.invalidate_session = boom
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+
+    # Local state could not be resolved, so nothing is claimed as logged out.
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_IN
+    assert service._sessions.get_token(ACC_A) == ACCESS_TOKEN
+
+    # ...but the adapter is still unreachable and neutralised.
+    assert service.get_adapter(ACC_A) is None
+
+
+def test_logout_silent_noop_cleanup_is_not_accepted_as_success():
+    """A cleanup that silently does nothing must not be reported as success."""
+    service = _logout_service()
+    _log_in(service)
+
+    service._sessions.logout = lambda account_id: None
+    service._sessions.invalidate_session = lambda account_id: None
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_IN
+
+
+def test_logout_reports_unconfirmed_when_final_state_cannot_be_verified():
+    """Even after a nominal success, the state must be VERIFIED before claiming."""
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    # logout() "succeeds" but leaves the account logged in and the token set.
+    def fake_logout(account_id):
+        return None
+
+    service._sessions.logout = fake_logout
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_IN
+    # Adapter cleanup still happened.
+    assert adapter.recovery_handler is None
+    assert service.get_adapter(ACC_A) is None
+
+
+# --- adapter cleanup failure -> no full success claim ----------------------
+
+def test_logout_adapter_clear_failure_does_not_claim_success():
+    """
+    Requirement: if adapter cleanup fails, a successful LOCAL logout alone must
+    not be reported as a complete successful logout.
+    """
+    service = make_service(adapter_cls=LogoutTrackingAdapter,
+                           adapter_kwargs={"logout_failures": {"clear"}})
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+    assert adapter.is_authenticated() is True
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+
+    # The local session really is logged out...
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    # ...but success is still NOT claimed, because the adapter could not be
+    # confirmed clean.
+    assert service.get_adapter(ACC_A) is None
+
+
+def test_logout_handler_detach_failure_does_not_claim_success():
+    service = make_service(adapter_cls=LogoutTrackingAdapter,
+                           adapter_kwargs={"logout_failures": {"detach"}})
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+    assert adapter.recovery_handler is not None
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service.get_adapter(ACC_A) is None
+
+
+# --- fail-closed inputs ---------------------------------------------------
+
+def test_logout_of_unknown_account_is_rejected_safely():
+    service = _logout_service()
+
+    with pytest.raises(AuthenticationServiceError):
+        service.logout("ACC-UNKNOWN-LOGOUT")
+
+    # No account and no broker was guessed or created.
+    assert service.created_adapters == []
+    assert service._adapters == {}
+    assert service._pending_logins == {}
+
+
+def test_logout_with_inconsistent_session_is_rejected_and_touches_nothing():
+    accounts, credentials, sessions = make_stores()
+    accounts.add(ACC_A, BROKER_AGAH, "حساب")
+    credentials.save_credentials(ACC_A, BROKER_AGAH, USERNAME, PASSWORD)
+    # A session already registered with a DIFFERENT broker.
+    sessions.register(ACC_A, "بروکر دیگر")
+
+    service = AuthenticationService(
+        accounts, credentials, sessions,
+        adapter_factories={BROKER_AGAH: LogoutTrackingAdapter},
+    )
+
+    with pytest.raises(InconsistentSessionError):
+        service.logout(ACC_A)
+
+    # Rejected BEFORE any cleanup: nothing was detached or cleared.
+    assert service._adapters == {}
+    assert service._pending_logins == {}
+
+
+def test_logout_handles_in_progress_login_safely():
+    """An open login attempt is discarded explicitly, not left behind."""
+    service = _logout_service()
+    seed_and_begin(service, account_id=ACC_A)
+
+    pending_adapter = service._pending_logins[ACC_A]
+    assert service._sessions.state(ACC_A) is SessionState.LOGIN_PENDING
+    assert pending_adapter.pending is True
+
+    service.logout(ACC_A)
+
+    # The temporary adapter is gone and its temporary state released.
+    assert ACC_A not in service._pending_logins
+    assert ACC_A not in service._adapters
+    assert pending_adapter.pending is False
+    assert pending_adapter.recovery_handler is None
+    assert service.get_adapter(ACC_A) is None
+
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+
+    # Completing the abandoned attempt afterwards is impossible.
+    with pytest.raises(NoPendingLoginError):
+        service.complete_login(ACC_A, "1234")
+
+
+def test_logout_of_pending_login_does_not_claim_success_if_cancel_raises():
+    service = make_service(adapter_cls=LogoutTrackingAdapter,
+                           adapter_kwargs={"logout_failures": {"cancel"}})
+    seed_and_begin(service, account_id=ACC_A)
+    pending_adapter = service._pending_logins[ACC_A]
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    # The pending adapter is removed and local state is logged out, but failed
+    # cancellation means the service must not report complete logout.
+    assert ACC_A not in service._pending_logins
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service.get_adapter(ACC_A) is None
+    assert pending_adapter.recovery_handler is None
+
+
+@pytest.mark.parametrize("accessor,reported_value", [
+    ("is_authenticated", True),
+    ("get_authenticated_session", object()),
+])
+def test_logout_fails_closed_when_adapter_cleanup_postcondition_is_false(
+    accessor, reported_value
+):
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    # clear_authenticated_session() itself runs, but the public contract says
+    # the adapter's resulting authentication view must be fully empty.
+    setattr(adapter, accessor, lambda: reported_value)
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+    assert service.get_adapter(ACC_A) is None
+
+
+@pytest.mark.parametrize("accessor", [
+    "is_authenticated",
+    "get_authenticated_session",
+])
+def test_logout_fails_closed_when_adapter_cleanup_cannot_be_verified(accessor):
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    # The contract accessor is unavailable after clearing; absence of a
+    # verifiable postcondition must not be treated as a clean logout.
+    setattr(adapter, accessor, None)
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    assert "تأیید نشد" in str(excinfo.value)
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service.get_adapter(ACC_A) is None
+
+
+def test_logout_never_touches_another_accounts_pending_login():
+    service = _logout_service()
+    _log_in(service, ACC_A)
+    seed_and_begin(service, account_id=ACC_B)
+    pending_b = service._pending_logins[ACC_B]
+
+    service.logout(ACC_A)
+
+    assert ACC_B in service._pending_logins
+    assert service._pending_logins[ACC_B] is pending_b
+    assert pending_b.pending is True
+    assert service._sessions.state(ACC_B) is SessionState.LOGIN_PENDING
+
+
+# --- no leakage -----------------------------------------------------------
+
+def test_logout_error_message_repr_and_chain_never_leak_secrets():
+    service = _logout_service()
+    _log_in(service)
+
+    def boom(account_id):
+        raise RuntimeError(
+            f"boom {PASSWORD} {ACCESS_TOKEN} {REFRESH_TOKEN}"
+        )
+
+    service._sessions.logout = boom
+    service._sessions.invalidate_session = boom
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout(ACC_A)
+
+    error = excinfo.value
+    surfaces = [str(error), repr(error)]
+    surfaces.append(str(error.__cause__))
+    surfaces.append(str(error.__context__))
+
+    for secret in (PASSWORD, ACCESS_TOKEN, REFRESH_TOKEN, USERNAME):
+        for surface in surfaces:
+            assert secret not in surface
+
+    # The sanitized error carries no chained exception at all.
+    assert error.__cause__ is None
+    assert error.__context__ is None
+
+
+def test_logout_does_not_leak_credentials_of_other_account():
+    service = _logout_service()
+    _log_in(service, ACC_A)
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.logout("ACC-UNKNOWN-LEAK")
+
+    message = str(excinfo.value)
+    for secret in (PASSWORD, ACCESS_TOKEN, REFRESH_TOKEN):
+        assert secret not in message
+
+
+# --- offline guarantee ---------------------------------------------------
+
+def test_logout_opens_no_socket():
+    class NoNetwork(socket.socket):
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("logout must not open a socket")
+
+    original = socket.socket
+    socket.socket = NoNetwork
+    try:
+        service = _logout_service()
+        _log_in(service, ACC_A)
+        _log_in(service, ACC_B)
+
+        service.logout(ACC_A)
+        service.logout(ACC_A)  # repeatable
+        service.logout(ACC_B)
+    finally:
+        socket.socket = original
+
+
+def test_logout_makes_no_broker_api_request():
+    """
+    No broker-side logout request exists or is guessed: the service only calls
+    the generic contract on the adapter, never a broker API method.
+    """
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.created_adapters[-1]
+
+    forbidden = []
+    for name in ("logout", "revoke", "invalidate_remote", "end_session"):
+        assert not hasattr(adapter, name), name
+
+    service.logout(ACC_A)
+    assert forbidden == []

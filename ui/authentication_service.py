@@ -18,6 +18,7 @@ ui/authentication_service.py — Block 9, Task 4, Stage 2.
         ├── complete_login(account_id, response)  -> Session
         ├── cancel_login(account_id)              -> None
         ├── refresh_session(account_id)           -> Session
+        ├── logout(account_id)                   -> None
         ├── is_logged_in(account_id)              -> bool
         └── get_adapter(account_id)               -> AuthenticationAdapter | None
 
@@ -50,6 +51,11 @@ hard-code نشده است. پیاده‌سازی‌های آداپتر از طر
       نمونه‌ی احرازشده برای استفاده‌ی آتی نگه داشته می‌شود.
     * از همان SessionManager موجود استفاده می‌شود و قرارداد آن تغییر
       نمی‌کند.
+    * ``logout(account_id)`` فقط وضعیت احراز هویت محلی همان حساب را پاک
+      می‌کند و هرگز ادعای ابطال توکن در سمت کارگزاری ندارد؛ هیچ درخواست
+      خروج اختصاصی به API کارگزاری وجود ندارد. موفقیت فقط وقتی اعلام
+      می‌شود که جداسازی آداپتر انجام شده و وضعیت ``LOGGED_OUT`` بدون توکن
+      محلی قابل تأیید باشد.
     * این ماژول هیچ رفتار سفارش‌گذاری، مسیر موازی یا تغییری در
       DispatchCore / OrderEngine ایجاد نمی‌کند.
 
@@ -264,18 +270,79 @@ class AuthenticationService:
         authenticated state usable on the account-owned broker instance. Never
         raises and never touches another account.
         """
+        self._detach_account_authentication_checked(adapter)
+
+    def _detach_account_authentication_checked(self, adapter) -> bool:
+        """
+        Same cleanup as ``_detach_account_authentication``, but REPORTS whether
+        every step of the generic contract actually completed.
+
+        Returns True only when the 401 recovery handler was detached,
+        ``clear_authenticated_session()`` ran without raising, and the public
+        adapter contract confirms ``is_authenticated() is False`` and
+        ``get_authenticated_session() is None``. Missing or failing checks are
+        treated as unconfirmed. Never raises and never touches another account.
+
+        The generic contract declares ``clear_authenticated_session()`` as
+        never-raising, but its postcondition is verified through the public
+        authentication accessors. A False result means cleanup is unconfirmed
+        and the caller must NOT report a confirmed clean logout.
+        """
         if adapter is None:
-            return
+            return True
+
+        complete = True
+
         try:
             adapter.set_request_recovery_handler(None)
         except Exception:
-            pass
+            complete = False
+
         clear = getattr(adapter, "clear_authenticated_session", None)
         if callable(clear):
             try:
                 clear()
             except Exception:
-                pass
+                complete = False
+        else:
+            complete = False
+
+        is_authenticated = getattr(adapter, "is_authenticated", None)
+        get_authenticated_session = getattr(
+            adapter, "get_authenticated_session", None
+        )
+        if not callable(is_authenticated) or not callable(
+            get_authenticated_session
+        ):
+            complete = False
+        else:
+            try:
+                if is_authenticated() is not False:
+                    complete = False
+                if get_authenticated_session() is not None:
+                    complete = False
+            except Exception:
+                complete = False
+
+        return complete
+
+    def _discard_pending_login(self, adapter) -> bool:
+        """
+        Best-effort release of ONE account's in-progress login attempt.
+
+        A login attempt that was still open when the account is logged out must
+        not be abandoned silently: its temporary adapter is removed from the
+        service by the caller and any credentials it still holds are released
+        here through the generic ``cancel_login()`` contract. A cancellation
+        failure is reported to the caller as unsuccessful cleanup. Never raises.
+        """
+        if adapter is None:
+            return True
+        try:
+            adapter.cancel_login()
+        except Exception:
+            return False
+        return True
 
     def _session_is_logged_out(self, account_id):
         """
@@ -718,6 +785,103 @@ class AuthenticationService:
             )
 
         return session
+
+    def logout(self, account_id: str) -> None:
+        """
+        خروج امن و مستقلِ یک حساب.
+
+        این متد **فقط** وضعیت احراز هویت محلی همان حساب را پاک می‌کند و
+        هرگز ادعا نمی‌کند توکن صادرشده در سمت کارگزاری از راه دور باطل شده
+        است: هیچ درخواست خروج اختصاصی به API کارگزاری وجود ندارد و رفتار
+        تأییدنشده‌ای هم حدس زده نمی‌شود.
+
+        ترتیب کار (به‌همین ترتیب اهمیت امنیتی دارد):
+
+            1. رزولوشن حساب و بررسی سازگاری نشست با بروکر حساب
+               (fail-closed). حساب ناشناخته یا نشست ناسازگار **پیش از هر
+               پاک‌سازی** رد می‌شود تا هیچ حساب یا بروکری حدس زده نشود.
+            2. قطع دسترسی سرویس به آداپترهای همین حساب، مستقل از موفقیت یا
+               شکست عملیات خروج در ``SessionManager``.
+            3. مدیریت صریح تلاش ورودِ در حال انجام: آداپتر موقت از سرویس
+               خارج و اعتبارنه‌ی باقیمانده‌اش آزاد می‌شود.
+            4. جدا کردن handler بازیابی 401 و پاک‌سازی وضعیت احراز هویت از
+               طریق قرارداد عمومی ``clear_authenticated_session()``.
+            5. اجرای ``SessionManager.logout()`` و در صورت شکست، تلاش برای
+               ``SessionManager.invalidate_session()`` به‌عنوان مسیر اضطراری.
+            6. **بررسی** وضعیت نهایی: فقط وقتی ``LOGGED_OUT`` بودن و نبود
+               توکن محلی قابل تأیید باشد، خروج موفق اعلام می‌شود.
+
+        اگر پاک‌سازی آداپتر یا قطع handler شکست بخورد، صرفِ موفقیت خروج محلی
+        برای اعلام موفقیت کامل کافی نیست و خطای پاک‌سازی‌شده صادر می‌شود.
+        خروج از حسابی که از قبل خارج شده، تکرارپذیر و بی‌اثر است و خطا نمی‌دهد
+        (قرارداد ``SessionManager`` تغییر نمی‌کند). هیچ حساب دیگری دست نمی‌خورد
+        و متن خطا هرگز رمز عبور یا توکن را افشا نمی‌کند.
+        """
+        _UNCONFIRMED_PREFIX = "وضعیت امن این حساب تأیید نشد؛ "
+
+        # 1. Fail-closed: an unknown account or a session that disagrees with
+        #    the account's broker is rejected BEFORE anything is detached or
+        #    cleared, so no account and no replacement broker is ever guessed.
+        self._resolve_account(account_id)
+
+        # 2. Cut the service's own access to this account's adapters first and
+        #    unconditionally — this must not depend on SessionManager succeeding.
+        current_state = self._sessions.state(account_id)
+        adapter = self._adapters.pop(account_id, None)
+        pending = self._pending_logins.pop(account_id, None)
+
+        # A live session without its matching service-owned adapter cannot be
+        # proven clean. Still attempt local logout below, but never report full
+        # success because no adapter is available to clear and verify.
+        cleanup_complete = not (
+            (current_state is SessionState.LOGGED_IN and adapter is None)
+            or (current_state is SessionState.LOGIN_PENDING and pending is None)
+        )
+
+        # 3. An open login attempt is handled explicitly: it is detached,
+        #    removed from the service and its temporary credentials released,
+        #    so nothing in-progress is left silently behind.
+        if pending is not None:
+            cleanup_complete = (
+                self._detach_account_authentication_checked(pending)
+                and cleanup_complete
+            )
+            cleanup_complete = (
+                self._discard_pending_login(pending)
+                and cleanup_complete
+            )
+
+        # 4. Detach the 401 recovery handler and clear the retained
+        #    authenticated state through the generic contract. A contract
+        #    violation here means "not clean", even if local logout succeeds.
+        if adapter is not None:
+            cleanup_complete = (
+                self._detach_account_authentication_checked(adapter)
+                and cleanup_complete
+            )
+
+        # 5. Resolve the local session to LOGGED_OUT through the existing
+        #    logout path, with the independent emergency fallback.
+        if not self._session_is_logged_out(account_id):
+            try:
+                self._sessions.logout(account_id)
+            except Exception:
+                try:
+                    self._sessions.invalidate_session(account_id)
+                except Exception:
+                    cleanup_complete = False
+
+        # 6. Verify. Success is claimed only when the adapter cleanup completed
+        #    AND the safe local state is provable; otherwise the caller is told
+        #    explicitly that no confirmed logout happened.
+        resolved = self._session_is_logged_out(account_id)
+        if not (cleanup_complete and resolved):
+            _raise_clean(
+                AuthenticationServiceError(
+                    _UNCONFIRMED_PREFIX
+                    + "خروج این حساب کامل نشد؛ ورود مجدد لازم است"
+                )
+            )
 
     def is_logged_in(self, account_id: str) -> bool:
         """آیا این حساب در حال حاضر وارد شده است؟"""
