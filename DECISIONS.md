@@ -1440,7 +1440,19 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. Next is Phase 3 Task 3B: a read-only Accounts-page authentication UX/integration proposal for Product Owner review before implementation.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The Product Owner has accepted the ordered Task 3B-1 through 3B-5 implementation sequence recorded in `AI_HANDOFF.md`; next, the Architect prepares the exact bounded handoff for Task 3B-1.
+
+### Accounts-page integration execution order — accepted by Product Owner (2026-10-15)
+
+**Owner-approved Task 3B implementation order (2026-10-15):** The Product Owner accepted the following sequence. Acceptance applies to the order of work; each implementation task still requires an Architect-defined allowlist, exact acceptance criteria, and review before the next task starts.
+
+1. **Task 3B-1 — Lazy service composition/injection and offline construction tests.** Provide AccountsPage with controlled/lazy access to the already-composed shared services without triggering service, vault, network, or login work during MainWindow/AccountsPage construction. No credential/login UI actions in this task.
+2. **Task 3B-2 — Credential save/delete UI.** Wire explicit user-triggered save/delete via CredentialStore; cover success, missing credential, validation/backend failures, and secret non-disclosure with fake in-memory backends.
+3. **Task 3B-3 — Begin/cancel login and generic challenge display.** Use AuthenticationService and its public LoginChallenge contract; display the challenge only when returned, keep broker-specific CAPTCHA details inside the adapter, and test with fakes.
+4. **Task 3B-4 — Complete login, local logout, and per-account status.** Confirm status from public service APIs; prove state and UI for one account cannot change another account using at least two fake accounts on the same broker.
+5. **Task 3B-5 — Integrated offline UX acceptance.** Verify the entire credential → challenge → response → status flow, offline construction, and regressions. No real vault/network/login/order is allowed.
+
+**Rules for all five tasks:** implement in sequence; Architect reviews each report/diff before the next task starts; each task gets its own exact allowed-file list and focused test commands; never stage broadly or touch unrelated local work; keep account-bound trading-state, instrument identity, order routing, NATS/queue-position, and feedback fixes in the separate later phase. The current approval does not itself authorize implementation outside the individually issued task. Preserve the existing dark RTL direction and do not perform a broad redesign without separate approval.
 
 ### Decision
 
