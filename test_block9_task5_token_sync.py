@@ -47,6 +47,7 @@ Run:
 
 import inspect
 import socket
+import traceback
 
 import pytest
 
@@ -243,10 +244,24 @@ def _iter_exception_chain(error):
 
 
 def _assert_no_secret(error, secrets):
+    """
+    Prove a token never escapes a raised error through any reachable view.
+
+    Scanned surfaces: each exception in the reachable ``__context__`` /
+    ``__cause__`` chain, its ``str`` and ``repr``, and the formatted
+    traceback of the raised error (the same text a logger or crash
+    reporter would emit). The formatted traceback is included because a
+    secret can survive in a traceback even when the message and the chain
+    links were cleaned.
+    """
+    formatted = "".join(
+        traceback.format_exception(type(error), error, error.__traceback__)
+    )
     for secret in secrets:
         for exc in _iter_exception_chain(error):
             assert secret not in str(exc), (secret, str(exc))
             assert secret not in repr(exc), (secret, repr(exc))
+        assert secret not in formatted, (secret, formatted)
 
 
 # ===========================================================================
@@ -960,6 +975,83 @@ def test_service_sync_and_logout_failure_removes_adapter_and_stays_explicit():
         assert token_value not in repr(error)
     assert error.__context__ is None
     assert error.__cause__ is None
+    _assert_no_secret(error, (OLD_ACCESS, OLD_REFRESH, NEW_ACCESS, NEW_REFRESH))
+
+
+def test_service_sync_and_logout_failure_adapter_removal_independent_of_logout():
+    """
+    Focused correction-2 regression: both ``replace_token()`` AND
+    ``logout()`` fail at the same time, each injected fault deliberately
+    embedding a token value. Adapter removal must happen BEFORE (and
+    therefore independently of) any ``logout()`` outcome: even though the
+    cleanup ``logout`` raises, the authenticated adapter must not remain
+    reachable through ``AuthenticationService.get_adapter()`` and the
+    account must not be usable for continued authenticated refresh or
+    order submission. The emergency local invalidation resolves the local
+    session to ``LOGGED_OUT`` with no token. The failure is explicit
+    (re-login required) and no token — old or new — survives the message,
+    ``repr``, the reachable exception chain or the formatted traceback.
+    """
+    from unittest import mock
+
+    system = build_real_system()
+    login_fully(system, ACC_A)
+
+    service = system["service"]
+    sessions = system["sessions"]
+    parts = system["created"][ACC_A]
+
+    # Capture the exact authenticated adapter the service currently exposes.
+    retained_adapter = service.get_adapter(ACC_A)
+    assert retained_adapter is parts["adapter"]
+
+    sync_fault = f"replace_token rejected token {NEW_ACCESS}"
+    logout_fault = f"logout rejected token {OLD_REFRESH}"
+
+    def failing_replace_token(account_id, token):
+        raise SessionValidationError(sync_fault)
+
+    def failing_logout(account_id):
+        raise SessionStateError(logout_fault)
+
+    with mock.patch.object(
+        sessions, "replace_token", side_effect=failing_replace_token
+    ), mock.patch.object(sessions, "logout", side_effect=failing_logout):
+        with pytest.raises(AuthenticationServiceError) as excinfo:
+            service.refresh_session(ACC_A)
+
+    error = excinfo.value
+
+    # The broker + adapter really refreshed before sync failed.
+    assert parts["broker"].access_token == NEW_ACCESS
+    assert parts["broker"].refresh_token == NEW_REFRESH
+
+    # Adapter removal is independent of the failed logout: the adapter is
+    # gone from the service's retained-adapter map and unreachable publicly.
+    assert ACC_A not in service._adapters
+    assert service.get_adapter(ACC_A) is None
+    assert service.get_adapter(ACC_A) is not retained_adapter
+
+    # Emergency local invalidation resolved the local session safely.
+    assert sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert sessions.is_logged_in(ACC_A) is False
+    assert service.is_logged_in(ACC_A) is False
+    assert sessions.get_token(ACC_A) is None
+    assert sessions._tokens[ACC_A] is None
+
+    # The failure is explicit and points at re-login (no fake safe claim).
+    assert "ورود مجدد" in str(error)
+
+    # Continued authenticated refresh is refused without a retained adapter.
+    with pytest.raises(AuthenticationServiceError):
+        service.refresh_session(ACC_A)
+
+    # No token survives message, repr, reachable chain or formatted traceback.
+    assert error.__context__ is None
+    assert error.__cause__ is None
+    assert sync_fault not in str(error)
+    assert sync_fault not in repr(error)
+    assert logout_fault not in str(error)
     _assert_no_secret(error, (OLD_ACCESS, OLD_REFRESH, NEW_ACCESS, NEW_REFRESH))
 
 
