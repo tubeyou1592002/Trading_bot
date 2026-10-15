@@ -34,7 +34,7 @@
 
 **Previous verified Git baseline:**
 
-`d09cc1f — docs: synchronize Block 7 roadmap status`
+`31d7063 — test: cover token sync failure cleanup`
 
 
 
@@ -2593,6 +2593,15 @@ This addendum records one architectural-review correction and its real, offline 
 - **Focused final-failure test:** `python3 -m pytest -q test_block9_task5_token_sync.py -k "sync_logout_and_invalidate_failure" -v` → **1 passed, 54 deselected** (exit 0).
 - **Related authentication regression:** `python -m pytest -q test_block9_task3_session_manager.py test_block9_task4_agah_auth_adapter.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_integration.py test_block9_task5_refresh_token.py test_block9_task5_token_sync.py` → **304 passed** (exit 0; run before the final assertion-only strengthening; the final Task 5 suite was rerun afterward).
 - The tests use fake/offline broker transports and do not perform real broker login, send orders, or enable live trading. No commit/push was performed by the test agent; implementation commit is `3258a351a420a3ea98c57b0f289c9a6145adb33e`.
+
+##### Stage 2B — Final Cleanup and Secret-Leak Regression (follow-up verification, 2026-10-15)
+
+- **Follow-up test commit:** `31d7063` — `test: cover token sync failure cleanup`, pushed to `master`. This commit changes only `test_block9_task5_token_sync.py` (92 insertions); it does not change production code.
+- **Exact owner-run command and result:** `py -3 -m pytest -q test_block9_task5_token_sync.py` → **56 passed in 0.65s** (exit 0).
+- **Adapter removal despite logout failure:** `test_service_sync_and_logout_failure_adapter_removal_independent_of_logout` injects failures into `replace_token()` and `logout()` with token-bearing fault messages. It verifies the account's adapter is removed before the logout attempt, `get_adapter()` no longer exposes it, emergency local invalidation clears that account's token and sets it to `LOGGED_OUT`, and a subsequent refresh is refused.
+- **Secret-leak surfaces:** the regression checks old/new access and refresh token values across the public error message, `str`, `repr`, reachable `__context__` / `__cause__` chain and formatted traceback. The injected fault messages must not appear in the public error.
+- **All-cleanup-paths-fail case:** `test_service_sync_logout_and_invalidate_failure_stays_unresolved_and_explicit` verifies that if emergency invalidation also fails, the service explicitly reports that a safe state was NOT confirmed; it does not falsely claim the session was cleared. The test checks the actual unresolved state and secret non-disclosure.
+- **Review conclusion:** the token-sync failure cleanup and exception-leak regression is verified by this test run. No live broker call, real credential, real token or order was used. This follow-up does not implement HTTP 401 handling/retry or renewal coordination.
 
 **Stage 2C — HTTP 401 Handling and Renewal Coordination**
 - Add bounded refresh handling for confirmed Agah-authenticated request paths, based on Stage 2A/2B APIs.
