@@ -7,6 +7,7 @@
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
 **Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry`.  
+**Latest Phase 2 account-auth adapter commit:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
 **Latest account-integration foundation commit:** `39bd0d6` — `feat: add account-scoped broker registry`.  
 **Previous Phase 1 commit:** `9efb88e` — `feat: add safe per-account logout`.
 
@@ -32,12 +33,12 @@ The account-scoped 401 recovery callback is installed on the broker instance own
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 foundation is complete: Task 1A (public per-account logout, `9efb88e`) and Task 1B (account-scoped broker/provider registry, `39bd0d6`) are reviewed and pushed. Phase 2 service composition and same-instance wiring has not started. The overall Accounts-page layout/feature direction is accepted at concept level and must follow the existing dark RTL theme. Work strictly in the sequence below; review each phase before proceeding.
+**Owner-approved direction:** 2026-10-15. Phase 1 tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Task 2A (`ccdd563`) is complete; Phase 2 is in progress and Task 2B — Lazy Service Composition at MainWindow — is next. Accounts-page direction remains the accepted dark RTL concept. Work strictly in sequence and review each task before proceeding.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
-| **2. Compose and inject services** | Construct and inject account, credential, session, authentication and account-aware broker-management services at the application composition boundary. Auth and dispatch must use the same broker instance per account, with no instance shared across accounts. | **NEXT — not started** |
+| **2. Compose and inject services** | Lazily compose account, credential, session and authentication services at MainWindow using the account-scoped manager; later verify same-instance wiring between account-bound authentication and dispatch. No broker instance may be shared across accounts. | **IN PROGRESS — Task 2A complete; Task 2B next** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | Pending |
 | **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
@@ -61,14 +62,23 @@ The account-scoped 401 recovery callback is installed on the broker instance own
 - **Verification reported by the owner:** `python3 -m pytest -q test_broker_manager.py` → **24 passed, 0 failed**. The full repository suite was not run as part of this bounded task.
 - **Safety / integration boundary:** tests were offline; no real broker login or order was performed. This task changes only the registry and its tests. It does **not** yet wire `AuthenticationService`, `MainWindow`, `DispatchCore`, or order feedback to these account-scoped objects, so production account-aware routing and production 401 recovery must not yet be claimed as active.
 
-**Task discipline:** each agent task must contain exact allowed files, acceptance criteria and test commands. No phase may begin before the prior phase's report has been reviewed. The next bounded implementation task belongs to Phase 2 only: wire the account's authentication adapter to the exact broker instance returned by the account-scoped `BrokerManager`, without creating a second broker for the same account. Do not begin Accounts-page UI wiring until the Phase 2 service composition boundary has been reviewed. The current roadmap is also recorded in `AI_PROJECT_MEMORY.md` and architecturally defined by Decision 031 in `DECISIONS.md`.
+#### Phase 2 — Task 2A: Account-Owned Broker Identity for Authentication Adapters — COMPLETE (2026-10-15)
+
+- **Commit:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`, pushed to `origin/master`.
+- **Commit scope:** `brokers/agaah/auth_adapter.py`, `ui/authentication_service.py`, `test_block9_task4_authentication_service.py`, `test_block9_task4_integration.py`, `test_block9_task5_401_handling.py`, `test_block9_task5_401_instrument_provider.py`, `test_block9_task5_401_nats_transport.py`, `test_block9_task5_401_queue_position.py`, and `test_block9_task5_token_sync.py`.
+- **Contract:** `make_agah_adapter_factory(broker_manager)` creates adapters around the exact account-owned broker resolved by `get_for_account(account_id, "آگاه")`; the generic factory accepts `account_id` and does not hard-code broker behavior into `AuthenticationService`.
+- **Failure safety:** failure to record a session after a successful adapter login triggers account-scoped cleanup and a checked local-safe-state path.
+- **Owner Windows acceptance:** **287 passed in 3.12s** across the nine focused test files. Offline test doubles only; no real login, network request, or order was made.
+- **Boundary:** Task 2A does not construct `AuthenticationService` in `MainWindow`, wire the Accounts page, or change order routing. Current production order dispatch still does not prove it uses the same account-owned broker instance as authentication. Do not claim production account-aware routing or production 401 recovery is active.
+
+**Task discipline:** each agent task must contain exact allowed files, acceptance criteria and test commands. No phase may begin before the prior phase's report has been reviewed. The next bounded implementation task is **Task 2B — Lazy Service Composition at MainWindow**. Do not begin Accounts-page UI wiring or order-routing changes until this composition boundary is reviewed. The roadmap is recorded in `AI_PROJECT_MEMORY.md` and governed by Decision 031 in `DECISIONS.md`.
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed the architectural direction recorded in `DECISIONS.md` — Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary, and the Accounts page is the login/logout/status entry point. Phase 1 Tasks 1A and 1B are complete (`9efb88e`, `39bd0d6`). Next: wire the authentication adapter to the account-owned manager instance as Phase 2 work. Production account-aware order routing and production 401 recovery remain unimplemented until auth, dispatch, provider, and feedback paths are verified to use the same account runtime. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed Decision 031: each `(account_id, broker_name)` has its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B are complete (`9efb88e`, `39bd0d6`); Phase 2 Task 2A is complete (`ccdd563`); next is Task 2B (lazy MainWindow service composition). Production account-aware order routing and active production 401 recovery remain unimplemented until authentication, dispatch, provider and feedback are verified to use the same account runtime. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal

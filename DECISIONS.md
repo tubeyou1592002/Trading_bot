@@ -1440,7 +1440,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Implementation is in progress. Phase 1 foundation tasks 1A (public per-account logout, commit `9efb88e`) and 1B (account-scoped `BrokerManager`/provider registry, commit `39bd0d6`) are complete and pushed. Phase 2 service composition/same-instance wiring and end-to-end account-aware production routing remain unimplemented; the acceptance criteria below are not yet satisfied end-to-end.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 foundation Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Task 2A — account-owned authentication adapter identity (`ccdd563`) is complete and pushed. Task 2B — lazy service composition at `MainWindow` — is next. Same-instance authentication/dispatch wiring and end-to-end account-aware production routing remain unimplemented; the acceptance criteria below are not yet satisfied end-to-end.
 
 ### Decision
 

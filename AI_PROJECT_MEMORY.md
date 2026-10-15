@@ -2334,20 +2334,20 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Tasks 1–4 are complete within their documented scopes; Task 5 Stages 2A, 2B and 2C are complete and reviewed within their documented scopes. Account integration Phase 1 (contracts and local logout lifecycle) is complete: Task 1A (public per-account logout, `9efb88e`) and Task 1B (account-scoped broker/provider registry, `39bd0d6`) are reviewed and pushed. Phase 2 service composition and same-instance wiring is next; production account-aware routing is not yet complete. The approved execution sequence is tracked below.
+**Status:** IN PROGRESS — Block 9 Tasks 1–4 are complete within their documented scopes; Task 5 Stages 2A, 2B and 2C are complete and reviewed. Account integration Phase 1 is complete (Task 1A `9efb88e`, Task 1B `39bd0d6`). Phase 2 Task 2A (account-owned authentication adapter identity, `ccdd563`) is complete and pushed. **Next: Task 2B — Lazy Service Composition at MainWindow.** The app still does not compose `AuthenticationService` in `MainWindow`, and production account-aware order routing / same-instance auth-to-dispatch wiring remains incomplete. The approved execution sequence is tracked below.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
 #### Current Execution Roadmap — Per-Account Runtime and Accounts-Page Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 foundation is complete: Task 1A (public per-account logout, `9efb88e`) and Task 1B (account-scoped broker/provider registry, `39bd0d6`) are reviewed and pushed. Phase 2 service composition and same-instance wiring has not started. The Accounts-page layout/feature direction is accepted at the concept level and must follow the existing dark, right-to-left application theme; any material departure from this direction needs review before implementation.
+**Owner-approved direction:** 2026-10-15. Phase 1 foundation is complete: Task 1A (`9efb88e`) and Task 1B (`39bd0d6`) are reviewed and pushed. Phase 2 has started: Task 2A (`ccdd563`) is complete; Task 2B — Lazy Service Composition at MainWindow — is next. Accounts-page layout/feature direction remains accepted at concept level and must follow the existing dark RTL theme; material design departures need review before implementation.
 
 Work through these phases in order. Each phase must be split into small tasks with exact allowed files and acceptance tests. Review evidence before beginning the next phase.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize the account-aware broker/provider manager contract and per-account runtime identity; add a public, fail-closed per-account logout operation to `AuthenticationService`; cover normal logout, cleanup failures and account isolation. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
-| **2. Compose and inject services** | Wire `AccountStore`, OS-vault `CredentialStore`, `SessionManager`, `AuthenticationService` and the account-aware broker manager once at the `MainWindow`/application boundary. Authentication and dispatch must resolve the same broker instance for each account; no broker object may be shared across accounts. | **NEXT — not started** |
+| **2. Compose and inject services** | Lazily compose `AccountStore`, OS-vault `CredentialStore`, `SessionManager`, `AuthenticationService` and the account-aware broker manager at `MainWindow`; later verify that account-bound authentication and dispatch resolve the same account-owned broker instance. Never share a broker between accounts. | **IN PROGRESS — Task 2A complete; Task 2B next** |
 | **3. Connect the Accounts page** | Implement account add/edit/delete/sort/select and display name; connect credential save/removal, independent row-level login/logout/status and CAPTCHA only when the adapter requires it. The page calls services; it does not implement broker authentication or manage tokens. | Pending |
 | **4. Route all account-bound activity** | Gate order-page/order preparation on one active account with a usable logged-in session; resolve instrument provider, trading-state query, order routing, NATS/queue-position tracking and feedback through that account's runtime; preserve `DispatchCore → OrderEngine → M6-A…M6-E` and fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Test at least two accounts on the same broker, proving independent broker/session/provider/token/recovery state and account-correct feedback; run focused and broad regression; preserve M6 gates and keep live trading disabled. Never automatically replay `POST /order` after 401. | Pending |
@@ -2371,7 +2371,16 @@ Work through these phases in order. Each phase must be split into small tasks wi
 - **Verification reported by the owner:** `python3 -m pytest -q test_broker_manager.py` → **24 passed, 0 failed**. The full repository suite was not run as part of this bounded task.
 - **Safety / integration boundary:** tests were offline; no real broker login or order was performed. This task changes only the registry and its tests. It does **not** yet wire `AuthenticationService`, `MainWindow`, `DispatchCore`, or order feedback to these account-scoped objects, so production account-aware routing and production 401 recovery must not yet be claimed as active.
 
-**Execution rule:** Do not skip phases, combine them into one large agent task, or start the next phase before review. Every task report must include exact changed files, commands, test results and pre-existing failures. The next bounded task belongs to Phase 2 only: wire the account's authentication adapter to the exact broker instance returned by the account-scoped `BrokerManager`, without creating a second broker for the same account. Do not begin Accounts-page UI wiring until the Phase 2 service composition boundary has been reviewed.
+#### Phase 2 — Task 2A: Account-Owned Broker Identity for Authentication Adapters — COMPLETE (2026-10-15)
+
+- **Commit:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`, pushed to `origin/master`.
+- **Scope:** `brokers/agaah/auth_adapter.py`, `ui/authentication_service.py`, and the seven listed Task 4 / Task 5 regression files in the commit. No `MainWindow`, Accounts-page UI, or order-routing implementation was included.
+- **Verified design:** `make_agah_adapter_factory(broker_manager)` returns a factory accepting `account_id`; it resolves the broker only through `broker_manager.get_for_account(account_id, "آگاه")` and injects that exact instance into `AgahAuthenticationAdapter`. The generic authentication factory contract accepts the account ID and remains broker-independent.
+- **Failure cleanup:** if session registration fails after adapter login succeeds, the service removes retained/pending adapter references, attempts account-scoped authentication cleanup, and verifies the locally logged-out/token-cleared state before treating cleanup as confirmed.
+- **Owner's Windows verification:** nine focused authentication, integration, 401-recovery and broker-manager test files → **287 passed in 3.12s**. No live broker login, network request, or real order was performed.
+- **Not complete:** `MainWindow` still does not compose or expose `AuthenticationService`. Existing production dispatch still uses its current name-based broker path; therefore same-account auth-to-order broker identity and production account-aware order routing are **not** established by this task.
+
+**Execution rule:** Do not skip phases, combine them into one large agent task, or start the next phase before review. The next bounded task is **Task 2B — Lazy Service Composition at MainWindow**: create and cache the account-authentication service graph only on first demand, reusing the existing `AccountStore` and shared `BrokerManager`, with focused offline tests. Do not wire Accounts-page UI or change order routing in Task 2B. Every report must list exact changed files, commands, results and pre-existing failures.
 
 #### Overview
 
