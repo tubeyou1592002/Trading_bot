@@ -33,7 +33,7 @@ The account-scoped 401 recovery callback is installed on the broker instance own
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- The next architectural work is the separate Block 9 Task 9 account-aware routing/wiring plan. Review and settle its architecture before assigning implementation work.
+- Product Owner confirmed the architectural direction recorded in `DECISIONS.md` — Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary, and the Accounts page is the login/logout/status entry point. `DECISIONS.md` records requirements and acceptance criteria; **implementation has not started**. Next: split this into exact, bounded tasks, while preserving the Accounts-page visual/UX approval gate and keeping account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
