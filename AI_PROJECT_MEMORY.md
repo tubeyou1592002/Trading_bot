@@ -2440,7 +2440,7 @@ Task 2 — Secure Credential Store: **COMPLETED and independently verified.** Co
 
 Task 3 — Account Session Manager: **COMPLETED and independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history. Independent verification evidence: `test_block9_task3_session_manager.py` — **56 passed**, exit code successful. `ui/session_manager.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), tracks per-account login state independently, and rejects overlapping login flows and invalid state transitions fail-closed. Tokens are held in memory only and never written to a `Session` snapshot, a model, a file or an error message. No real credential, broker or network was used.
 
-Next: **Task 5 — Token / Session Lifecycle** — Stage 1 (Read-Only Audit), Stage 2A (Agah Refresh Primitive), and Stage 2B (Per-Account Session and Token Replacement) COMPLETED and reviewed; Stage 2C (HTTP 401 Handling and Renewal Coordination) is next. Automatic 401 handling/retry and renewal coordination remain NOT STARTED.
+Next: **Task 5 — Token / Session Lifecycle** — Stage 1, Stage 2A, Stage 2B, Stage 2C.1, and Stage 2C.2 are completed and reviewed within their stated scopes. Remaining Stage 2C work is the uncovered Agah NATS/queue-position request paths; the next permitted step is a read-only audit of those paths, not implementation. Account-aware order routing remains a separate Block 9 Task 9 concern.
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
@@ -2526,7 +2526,7 @@ This addendum records one architectural-review correction and its real, offline 
 
 #### Task 5 — Token / Session Lifecycle — Execution Plan
 
-**Status:** Stage 1 (Read-Only Token Lifecycle Audit) **COMPLETED**; Stage 2A (Agah Refresh Primitive and Independent Tests) and Stage 2B (Per-Account Session and Token Replacement) **COMPLETED and reviewed**. Stage 2C is next. HTTP 401 handling/retry and renewal coordination have NOT started.
+**Status:** Stage 1, Stage 2A (Agah Refresh Primitive), and Stage 2B (Per-Account Session and Token Replacement) are **COMPLETED and reviewed**. Stage 2C.1 (bounded recovery for four broker read-only GETs) and Stage 2C.2 (instrument search) are also **COMPLETED and reviewed**. Stage 2C as a whole remains **IN PROGRESS** because Agah NATS/queue-position request paths still require a separately scoped review and implementation. Account-aware order routing remains separate under Task 9.
 
 ##### Stage 1 — Discovery Findings (Verified vs. Unverified)
 
@@ -2620,12 +2620,24 @@ This addendum records one architectural-review correction and its real, offline 
 - **Remaining production integration gap, explicitly unresolved:** `AuthenticationService` installs the recovery handler on the account-owned broker created by that account's authentication adapter. The current `DispatchCore` order path still resolves a broker from `BrokerManager`, a different instance. Stage 2C.1 does NOT prove that the production order path uses the account-owned broker, does NOT implement account-aware routing, and does NOT authorize sharing a mutable authenticated broker across accounts. Account-aware routing remains a separate roadmap task.
 - **Review conclusion:** Stage 2C.1 is completed and reviewed within its stated scope. This does NOT mark the whole Task 5 Stage 2C complete.
 
+#### Stage 2C.2 — Bounded HTTP 401 Recovery for Agah Instrument Search — COMPLETED and reviewed
+
+- **Implementation commit:** `55189733e3d0515cff427bca231b5ff9281a38c3` — `fix: recover Agah instrument search from expired token`; pushed to `origin/master`.
+- **Exactly four changed files:** `brokers/agaah/instrument_provider.py`, `test_instrument_provider.py`, `test_engine_provider_integration.py`, and new `test_block9_task5_401_instrument_provider.py`.
+- **Production behavior:** `AgaahInstrumentProvider._search_candidates()` delegates the search to the existing `AgaahBroker._authed_get_with_recovery()` helper. The helper owns the only retry (at most once); the provider adds no direct refresh and no `session.get()` fallback. The endpoint, query/count parameters, timeout-equivalent behavior, exact `tse_id == ins_code` mapping, provider cache behavior, and `InstrumentLookupError` failure contract remain covered.
+- **Test fakes:** the two existing fake brokers received only minimal helper-interface shims; their existing test logic was not redesigned.
+- **Security/offline tests:** the new suite contains 8 tests using a fake HTTP session and the real authentication service/adapter wiring. Tests cover real 401 recovery, refreshed-token/header and parameter preservation, second-401 stop, no-handler fail-closed, non-401 behavior, no secret leakage (including the saved password) across error text/repr/exception chain/traceback, cache behavior after failed recovery, exact mapping, and no real socket use.
+- **Verification reported after the final password-leak assertion:** `python3 -m pytest -q test_block9_task5_401_instrument_provider.py` → **8 passed**; Stage 2C.1 regression → **139 passed**; Task 3/4 authentication regression → **193 passed**; all Block 9 suites → **489 passed, 7 skipped**.
+- **Broader-suite caveat:** the prior broader run reported **1722 passed, 20 skipped, 13 failed** with the same known pre-existing failures: Block 8 `broker_received_at` contract failures, environment-related `nats` import failures, and existing `AccountStore.add(..., display_name)` contract failures in UI tests. The full broader suite was not rerun after the final test-only password assertion; all Block 9 tests were rerun successfully.
+- **Production integration boundary remains unresolved:** the recovery handler is installed by `AuthenticationService` on an account-owned broker instance. A `BrokerManager`/`DispatchCore` consumer may still hold a different broker instance. Stage 2C.2 therefore does not prove that the production instrument-provider/order path always uses the account-owned broker with that handler. Do not share one mutable authenticated broker across accounts; full account-aware routing remains a separate Block 9 Task 9 item.
+- **Review conclusion:** Stage 2C.2 is accepted within its narrow scope. It does not complete Task 5 or all of Stage 2C. Live trading remains disabled; no real credentials, broker calls, network calls, or orders were used.
+
 **Stage 2C — Remaining HTTP 401 Handling and Renewal Coordination (NOT COMPLETE)**
-- Stage 2C.1 above is completed for four read-only GET methods directly implemented in `brokers/agaah/broker.py` only. Remaining Stage 2C work must be separately scoped after auditing the additional instrument-provider and NATS/queue-position request paths; do not mark those paths as covered by Stage 2C.1.
+- Stage 2C.1 covers four read-only GET methods in `brokers/agaah/broker.py`; Stage 2C.2 additionally covers only `AgaahInstrumentProvider._search_candidates()`. Remaining uncovered paths include `brokers/agaah/nats_transport.py` (`_fetch_connection_info()` and `_fetch_message_types()`) and `AgahQueuePositionService.get_queue_position()` / `brokers/agaah/queue_position.py`. Do not treat these as covered by either completed substage.
 - A successful refresh may trigger at most one retry for an eligible non-order request. Prevent retry loops and coordinate concurrent requests so a single account does not launch multiple overlapping refresh operations.
 - A refresh failure or invalid/incomplete refresh response must invalidate only that account's authenticated state and require login again; do not silently keep a stale token.
 - Do NOT automatically replay a live `POST /order` after `401`. Surface a clear authentication failure for explicit user recovery; no duplicate-order risk may be introduced by automatic replay.
-- Audit the broker, instrument provider, and NATS/queue-position paths individually. Do not assume all request paths can share the same synchronous retry mechanism.
+- **Next permitted step: read-only architecture audit only** of the NATS/queue-position paths above. Record each request, current error handling, sync/async and thread boundaries, broker-instance ownership, relevant tests, and whether the existing helper can be safely reused. Do not modify code during the audit, do not guess API behavior, and do not force a synchronous helper into an async path without analysis. After review, define a small separately scoped implementation task.
 
 **Stage 3 — Offline Integration and Regression**
 - Use fake HTTP transport; no live broker calls, real credentials, real tokens, CAPTCHA, or orders.
@@ -2634,7 +2646,7 @@ This addendum records one architectural-review correction and its real, offline 
 - Run the new tests plus the relevant Task 2/3/4 authentication, broker, and order-path regression tests. Report exact commands, results, and pre-existing failures separately.
 - Preserve `DispatchCore → OrderEngine → M6`, the live-trading safety lock, and the existing broker-independent authentication boundary.
 
-**Execution control:** Each substage must be reviewed before the next starts. Stages 2A and 2B are completed and reviewed. Stage 2C is the next permitted implementation scope; Stage 3 must not begin until Stage 2C is completed and reviewed.
+**Execution control:** Each substage must be reviewed before the next starts. Stages 2A, 2B, 2C.1 and 2C.2 are completed and reviewed within their stated scopes. The next permitted step is a read-only audit of the remaining NATS/queue-position paths; no implementation on those paths is approved yet. Stage 3 must not begin until all remaining Stage 2C work is completed and reviewed.
 
 #### Block Boundaries
 
