@@ -2359,7 +2359,7 @@ Work through these phases in order. Each phase must be split into small tasks wi
 - **Public behavior:** `AuthenticationService.logout(account_id)` performs local, account-scoped logout. It removes service references before cleanup, tries to cancel a pending login where applicable, detaches that account's recovery handler, clears the account-owned broker authentication view, calls the SessionManager logout/invalidation path, and verifies the final state before reporting cleanup success.
 - **Fail-closed checks:** cleanup/cancel failures, an unverified authenticated-session clear, or an inconsistent state (logged in without an adapter / login pending without a pending adapter) must not be reported as successful logout. Error reporting is sanitized. The operation does not claim to revoke broker-side tokens.
 - **Verification reported:** `python3 -m pytest -q test_block9_task4_authentication_service.py` → **75 passed in 1.00s**. Tests cover logout cleanup, failure paths, per-account isolation, and retention of another account's session.
-- **Review boundary:** Task 1A is complete; **Phase 1 is not complete yet**. The account-aware `BrokerManager`/provider contract and per-account runtime identity still need to be finalized before service composition or UI work starts.
+- **Review boundary (at the Task 1A checkpoint):** Task 1A was complete, while Phase 1 remained open pending the account-aware `BrokerManager`/provider contract. That gap was closed by Task 1B, commit `39bd0d6`; Phase 1 is now complete. Phase 2 service composition and same-instance authentication/dispatch wiring remain pending.
 
 #### Phase 1 — Task 1B: Account-Scoped BrokerManager Registry — COMPLETE (2026-10-15)
 
