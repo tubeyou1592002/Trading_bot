@@ -355,24 +355,50 @@ def test_extra_page_add_and_active_flow(store, qapp):
     page = AccountsPage(store)
 
     page.account_id_input.setText("ACC-001")
+    page.display_name_input.setText("Primary account")
     page.add_button.click()
     page.account_id_input.setText("ACC-002")
+    page.display_name_input.setText("Secondary account")
     page.add_button.click()
 
     assert [r.account_id for r in store.all_accounts()] == ["ACC-001", "ACC-002"]
     assert page.accounts_table.rowCount() == 2
+    assert [r.display_name for r in store.all_accounts()] == [
+        "Primary account", "Secondary account"
+    ]
+    assert page.accounts_table.item(0, 1).text() == "Primary account"
+    assert page.accounts_table.item(1, 1).text() == "Secondary account"
+    assert page.accounts_table.item(0, 0).text() == "ACC-001"
+    assert page.accounts_table.item(0, 2).text() == BROKER
+    assert page.display_name_input.text() == ""
+    assert page.account_id_input.text() == ""
 
     page.accounts_table.selectRow(0)
     page.set_active_button.click()
     assert store.active_account_id() == "ACC-001"
-    assert page.accounts_table.item(0, 2).text() == "Yes"
-    assert page.accounts_table.item(1, 2).text() == ""
+    assert page.accounts_table.item(0, 3).text() == "Yes"
+    assert page.accounts_table.item(1, 3).text() == ""
 
     page.accounts_table.selectRow(1)
     page.set_active_button.click()
     assert store.active_account_id() == "ACC-002"
-    assert page.accounts_table.item(0, 2).text() == ""
-    assert page.accounts_table.item(1, 2).text() == "Yes"
+    assert page.accounts_table.item(0, 3).text() == ""
+    assert page.accounts_table.item(1, 3).text() == "Yes"
+
+
+@pytest.mark.parametrize("display_name", ["", "   "])
+def test_page_rejects_empty_display_name_without_adding_account(
+    store, qapp, display_name
+):
+    page = AccountsPage(store)
+    page.account_id_input.setText("ACC-001")
+    page.display_name_input.setText(display_name)
+
+    page._on_add_clicked()
+
+    assert store.all_accounts() == ()
+    assert page.accounts_table.rowCount() == 0
+    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_ACCOUNT
 
 
 # ============================================================

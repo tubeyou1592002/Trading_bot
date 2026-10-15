@@ -136,6 +136,7 @@ __all__ = [
     "GROUP_ADD_ACCOUNT",
     "GROUP_ACCOUNTS",
     "LABEL_ACCOUNT_ID",
+    "LABEL_DISPLAY_NAME",
     "LABEL_BROKER",
     "BUTTON_ADD",
     "BUTTON_SET_ACTIVE",
@@ -468,6 +469,7 @@ GROUP_ADD_ACCOUNT = "افزودن حساب"
 GROUP_ACCOUNTS = "حساب‌ها"
 
 LABEL_ACCOUNT_ID = "شناسه حساب:"
+LABEL_DISPLAY_NAME = "نام نمایشی:"
 LABEL_BROKER = "کارگزار:"
 
 BUTTON_ADD = "افزودن"
@@ -476,6 +478,7 @@ BUTTON_SET_ACTIVE = "فعال‌سازی"
 PLACEHOLDER_ACCOUNT_ID = "مثلاً ACC-001 - شناسهٔ صریح حساب"
 
 TABLE_HEADER_ACCOUNT_ID = "شناسه حساب"
+TABLE_HEADER_DISPLAY_NAME = "نام نمایشی"
 TABLE_HEADER_BROKER = "کارگزار"
 TABLE_HEADER_ACTIVE = "فعال"
 

@@ -45,8 +45,9 @@ from ui import strings as STRINGS
 AVAILABLE_BROKERS = ("آگاه",)
 
 _ACCOUNT_ID_COLUMN = 0
-_BROKER_COLUMN = 1
-_ACTIVE_COLUMN = 2
+_DISPLAY_NAME_COLUMN = 1
+_BROKER_COLUMN = 2
+_ACTIVE_COLUMN = 3
 
 
 class AccountsPage(QWidget):
@@ -79,15 +80,19 @@ class AccountsPage(QWidget):
         )
         add_form.addWidget(self.account_id_input, 0, 1)
 
-        add_form.addWidget(QLabel(STRINGS.LABEL_BROKER, add_group), 1, 0)
+        add_form.addWidget(QLabel(STRINGS.LABEL_DISPLAY_NAME, add_group), 1, 0)
+        self.display_name_input = QLineEdit(add_group)
+        add_form.addWidget(self.display_name_input, 1, 1)
+
+        add_form.addWidget(QLabel(STRINGS.LABEL_BROKER, add_group), 2, 0)
         self.broker_selector = QComboBox(add_group)
         for broker_name in AVAILABLE_BROKERS:
             self.broker_selector.addItem(broker_name)
-        add_form.addWidget(self.broker_selector, 1, 1)
+        add_form.addWidget(self.broker_selector, 2, 1)
 
         self.add_button = QPushButton(STRINGS.BUTTON_ADD, add_group)
         self.add_button.clicked.connect(self._on_add_clicked)
-        add_form.addWidget(self.add_button, 2, 0, 1, 2)
+        add_form.addWidget(self.add_button, 3, 0, 1, 2)
 
         # UI-9.4: the inline validation message of this form, directly
         # under it. It replaces the former blocking QMessageBox, so an
@@ -100,21 +105,22 @@ class AccountsPage(QWidget):
         self.validation_error_label.setProperty("role", "danger")
         self.validation_error_label.setWordWrap(True)
         self.validation_error_label.setVisible(False)
-        add_form.addWidget(self.validation_error_label, 3, 0, 1, 2)
+        add_form.addWidget(self.validation_error_label, 4, 0, 1, 2)
 
         root_layout.addWidget(add_group)
 
         # ---------------------------------------------
-        # Account list (Account ID | Broker | Active)
+        # Account list (Account ID | Display name | Broker | Active)
         # ---------------------------------------------
 
         list_group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
         list_layout = QVBoxLayout(list_group)
 
-        self.accounts_table = QTableWidget(0, 3, list_group)
+        self.accounts_table = QTableWidget(0, 4, list_group)
         self.accounts_table.setHorizontalHeaderLabels(
             [
                 STRINGS.TABLE_HEADER_ACCOUNT_ID,
+                STRINGS.TABLE_HEADER_DISPLAY_NAME,
                 STRINGS.TABLE_HEADER_BROKER,
                 STRINGS.TABLE_HEADER_ACTIVE,
             ]
@@ -146,16 +152,20 @@ class AccountsPage(QWidget):
     def _on_add_clicked(self):
         """Add an account from the form; invalid input is reported, never guessed."""
         account_id = self.account_id_input.text()
+        display_name = self.display_name_input.text()
         broker_name = self.broker_selector.currentText()
 
         try:
-            self.store.add(account_id, broker_name)
+            if not display_name.strip():
+                raise AccountStoreError(STRINGS.DIALOG_INVALID_ACCOUNT)
+            self.store.add(account_id, broker_name, display_name)
         except (AccountStoreError, AccountValidationError):
             self._show_validation_error(STRINGS.DIALOG_INVALID_ACCOUNT)
             return
 
         self._clear_validation_error()
         self.account_id_input.clear()
+        self.display_name_input.clear()
         self._refresh_list()
 
     def _on_set_active_clicked(self):
@@ -218,10 +228,12 @@ class AccountsPage(QWidget):
         self.accounts_table.setRowCount(len(records))
         for row, record in enumerate(records):
             account_id_item = QTableWidgetItem(str(record.account_id))
+            display_name_item = QTableWidgetItem(record.display_name)
             broker_item = QTableWidgetItem(record.broker_name)
             active_item = QTableWidgetItem(
                 "Yes" if record.account_id == active_id else ""
             )
             self.accounts_table.setItem(row, _ACCOUNT_ID_COLUMN, account_id_item)
+            self.accounts_table.setItem(row, _DISPLAY_NAME_COLUMN, display_name_item)
             self.accounts_table.setItem(row, _BROKER_COLUMN, broker_item)
             self.accounts_table.setItem(row, _ACTIVE_COLUMN, active_item)
