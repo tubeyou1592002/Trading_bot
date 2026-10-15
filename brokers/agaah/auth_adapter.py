@@ -421,6 +421,39 @@ class AgahAuthenticationAdapter(AuthenticationAdapter):
         """نشست احرازشده‌ی این حساب، یا None اگر وارد نشده است."""
         return self._authenticated
 
+    def set_request_recovery_handler(self, handler) -> None:
+        # Forward to underlying broker if it supports setting recovery handler
+        try:
+            set_handler = getattr(self._broker, "set_unauthorized_recovery", None)
+            if callable(set_handler):
+                set_handler(handler)
+        except Exception:
+            pass
+
+    def clear_authenticated_session(self) -> None:
+        """
+        Drop this account's retained authenticated state after a failed 401
+        recovery. Best-effort and fail-safe: never raises, never touches
+        another account.
+
+        Clears the adapter's ``AuthenticatedSession``, detaches the 401
+        recovery handler from the underlying account-owned broker and clears
+        that broker's access/refresh token and user identifier, so neither the
+        adapter nor the broker can serve a stale authenticated view after the
+        account's local session has been invalidated.
+        """
+        self._authenticated = None
+        try:
+            self._broker.set_unauthorized_recovery(None)
+        except Exception:
+            pass
+        try:
+            self._broker.access_token = None
+            self._broker.refresh_token = None
+            self._broker.user_identifier = None
+        except Exception:
+            pass
+
     def refresh_authenticated_session(self) -> AuthenticatedSession:
         """
         نوسازی توکن‌های آگاه برای همین حسابِ احرازشده.

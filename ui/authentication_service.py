@@ -221,6 +221,229 @@ class AuthenticationService:
             )
         return factory()
 
+    def _install_recovery(self, account_id):
+        """
+        Install the account-scoped 401 recovery callback on this account's
+        retained adapter through the generic authentication contract.
+
+        The callback is a bound service method, so recovery flows through the
+        existing adapter + AuthenticationService, never a direct broker token
+        refresh. If the adapter does not support the hook, nothing is
+        installed and a 401 fails closed (no unsynchronized refresh).
+
+        Integration boundary (Stage 2C.1): the handler is installed on the
+        account-owned broker reached through this account's adapter. That is
+        the only broker instance on which Stage 2C.1 recovery is provided. It
+        does NOT prove that the ``DispatchCore`` order path uses this same
+        account-owned instance — the order path obtains its broker from
+        ``BrokerManager`` (a separate instance). Account-aware routing is a
+        separate task; no single mutable authenticated broker is shared across
+        accounts to work around this.
+        """
+        adapter = self._adapters.get(account_id)
+        if adapter is None:
+            return
+
+        def recovery_handler():
+            self._recover_401(account_id)
+
+        try:
+            adapter.set_request_recovery_handler(recovery_handler)
+        except Exception:
+            # A failed installation must never crash a successful login/refresh;
+            # the account simply falls back to fail-closed 401 handling.
+            pass
+
+    def _detach_account_authentication(self, adapter):
+        """
+        Best-effort, fail-safe removal of ONE account's retained authenticated
+        state through the generic authentication contract.
+
+        Detaches the 401 recovery handler and clears the adapter/broker's
+        retained authenticated view so a failed recovery cannot leave a stale
+        authenticated state usable on the account-owned broker instance. Never
+        raises and never touches another account.
+        """
+        if adapter is None:
+            return
+        try:
+            adapter.set_request_recovery_handler(None)
+        except Exception:
+            pass
+        clear = getattr(adapter, "clear_authenticated_session", None)
+        if callable(clear):
+            try:
+                clear()
+            except Exception:
+                pass
+
+    def _session_is_logged_out(self, account_id):
+        """
+        True only when the account's LOCAL session is provably resolved to
+        LOGGED_OUT with no SessionManager token. Never raises.
+        """
+        try:
+            return (
+                self._sessions.state(account_id) is SessionState.LOGGED_OUT
+                and self._sessions.get_token(account_id) is None
+            )
+        except Exception:
+            return False
+
+    def _isolate_account(self, account_id, adapter):
+        """
+        Isolate exactly ONE account after a failed 401 recovery.
+
+        Steps (each independent and fail-safe):
+
+            1. Detach the recovery handler and clear the retained
+               authenticated state on the account-owned adapter/broker.
+            2. Remove the adapter from the service so it is unreachable.
+            3. Resolve the local session to LOGGED_OUT via the existing
+               ``logout`` path, falling back to the independent emergency
+               ``invalidate_session``.
+            4. VERIFY the resulting state is LOGGED_OUT with no token.
+
+        Returns True ONLY when the safe local state is confirmed; False when it
+        could not be confirmed, in which case the caller must NOT claim the
+        session was invalidated. No other account is touched.
+        """
+        self._detach_account_authentication(adapter)
+        self._adapters.pop(account_id, None)
+
+        if self._session_is_logged_out(account_id):
+            return True
+
+        try:
+            self._sessions.logout(account_id)
+        except Exception:
+            try:
+                self._sessions.invalidate_session(account_id)
+            except Exception:
+                return False
+
+        return self._session_is_logged_out(account_id)
+
+    def _recover_401(self, account_id):
+        """
+        Account-scoped HTTP 401 recovery.
+
+        Refresh the authenticated session through the retained adapter (so the
+        broker, the adapter and the SessionManager stay consistent) and replace
+        only this account's token. On any failure the affected account is
+        isolated: its recovery handler is detached, its retained authenticated
+        state is cleared, its adapter becomes unreachable, and its local
+        session is resolved to LOGGED_OUT before any claim of successful
+        invalidation is made. When that safe state cannot be CONFIRMED, a
+        sanitized error states explicitly that the safe state is unconfirmed.
+        No other account is touched and no token is exposed through the error.
+
+        Integration boundary (Stage 2C.1, documented, not solved here)
+        --------------------------------------------------------------
+        This recovery runs against the account-owned broker instance that has
+        this account's handler installed. It does not, by itself, prove that
+        the current ``DispatchCore`` order path is wired to that account-owned
+        instance (the order path obtains its broker from ``BrokerManager``,
+        a different instance). Full account-aware routing is a separate task.
+        """
+        _UNCONFIRMED_PREFIX = (
+            "وضعیت امن این حساب تأیید نشد؛ "
+        )
+
+        adapter = self._adapters.get(account_id)
+        if adapter is None or not adapter.is_authenticated():
+            resolved = self._isolate_account(account_id, adapter)
+            if not resolved:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        _UNCONFIRMED_PREFIX
+                        + "نوسازی نشست ممکن نبود و ابطال ایمن نشست محلی "
+                        "هم تأیید نشد؛ ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "نوسازی نشست ممکن نبود؛ نشست این حساب باطل شد و ورود "
+                    "مجدد لازم است"
+                )
+            )
+
+        try:
+            refreshed = adapter.refresh_authenticated_session()
+        except Exception:
+            resolved = self._isolate_account(account_id, adapter)
+            if not resolved:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        _UNCONFIRMED_PREFIX
+                        + "نوسازی توکن ناموفق بود و ابطال ایمن نشست محلی "
+                        "هم تأیید نشد؛ ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "نوسازی توکن ناموفق بود؛ نشست این حساب باطل شد و ورود "
+                    "مجدد لازم است"
+                )
+            )
+
+        token = getattr(refreshed, "access_token", None)
+        if not isinstance(token, str) or not token.strip():
+            resolved = self._isolate_account(account_id, adapter)
+            if not resolved:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        _UNCONFIRMED_PREFIX
+                        + "توکن نوسازی‌شده معتبر نبود و ابطال ایمن نشست "
+                        "محلی هم تأیید نشد؛ ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "توکن نوسازی‌شده معتبر نبود؛ نشست این حساب باطل شد و "
+                    "ورود مجدد لازم است"
+                )
+            )
+
+        current = adapter.get_authenticated_session()
+        current_token = getattr(current, "access_token", None)
+        if not isinstance(current_token, str) or current_token != token:
+            resolved = self._isolate_account(account_id, adapter)
+            if not resolved:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        _UNCONFIRMED_PREFIX
+                        + "نمای نشست آداپتر پس از نوسازی سازگار نبود و "
+                        "ابطال ایمن نشست محلی هم تأیید نشد؛ ورود مجدد "
+                        "لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "نمای نشست آداپتر پس از نوسازی سازگار نبود؛ نشست این "
+                    "حساب باطل شد و ورود مجدد لازم است"
+                )
+            )
+
+        try:
+            self._sessions.replace_token(account_id, token)
+        except Exception:
+            resolved = self._isolate_account(account_id, adapter)
+            if not resolved:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        _UNCONFIRMED_PREFIX
+                        + "همگام‌سازی توکن نشست کامل نشد و ابطال ایمن نشست "
+                        "محلی هم تأیید نشد؛ ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "همگام‌سازی توکن نشست کامل نشد؛ نشست این حساب باطل شد "
+                    "و ورود مجدد لازم است"
+                )
+            )
+
     def _clear_pending(self, account_id):
         """
         حذف آداپتر یک تلاش ناموفق/لغوشده و برگرداندن نشست همان حساب به
@@ -337,6 +560,7 @@ class AuthenticationService:
         # استفاده‌ی آتی نگه داشته می‌شود.
         self._pending_logins.pop(account_id, None)
         self._adapters[account_id] = adapter
+        self._install_recovery(account_id)
         return session
 
     def cancel_login(self, account_id: str) -> None:
@@ -441,6 +665,10 @@ class AuthenticationService:
         # 5. جایگزینی فقط توکن دسترسی همین حساب در SessionManager.
         try:
             session = self._sessions.replace_token(account_id, token)
+            try:
+                self._install_recovery(account_id)
+            except Exception:
+                pass
         except Exception:
             # بروکر و آداپتر همین حساب تازه شده‌اند، اما SessionManager نتوانست
             # توکن را جایگزین کند. نگه‌داشتن حساب در وضعیت «واردشده» با سه

@@ -322,3 +322,30 @@ class AuthenticationAdapter(ABC):
                 "این آداپتر از نوسازی نشست احرازشده پشتیبانی نمی‌کند"
             )
         )
+
+    def set_request_recovery_handler(self, handler) -> None:
+        """
+        Attach a generic recovery handler invoked when an already-authenticated
+        request is rejected with HTTP 401. The handler is account-scoped and
+        must synchronize the refreshed session (broker + adapter + SessionManager)
+        before returning, or raise to signal recovery failure.
+
+        Passing ``None`` detaches any previously installed handler.
+        """
+        # Default: no-op. Adapters that support 401 recovery override this.
+        pass
+
+    def clear_authenticated_session(self) -> None:
+        """
+        Drop every retained authenticated artifact of THIS account after a
+        failed 401 recovery, so no stale authenticated state stays usable.
+
+        Implementations clear their ``AuthenticatedSession`` and any tokens or
+        recovery handler retained in the underlying broker. This is a
+        best-effort, fail-safe operation: it must never raise, and it never
+        affects another account. The default is a no-op for adapters that hold
+        no retained authenticated state; such an adapter is still removed from
+        the service by the caller.
+        """
+        # Default: no-op. Adapters that retain authenticated state override.
+        pass

@@ -1,5 +1,6 @@
 import base64
 import logging
+import threading
 from typing import TYPE_CHECKING, Optional
 
 import requests
@@ -62,6 +63,10 @@ class AgaahBroker(Broker):
         self.refresh_token = None
         self.user_identifier = None
         self.username = None
+
+        # 401 recovery support (Stage 2C.1)
+        self._unauthorized_recovery = None
+        self._token_lock = threading.Lock()
 
         # ---------------------------------------------
         # Safety
@@ -214,8 +219,104 @@ class AgaahBroker(Broker):
     def _url(self, path: str) -> str:
         return f"{BASE_URL}/{path.lstrip('/')}"
 
+    def set_unauthorized_recovery(self, handler):
+        """
+        Install (or, with ``None``, detach) the generic account-scoped HTTP 401
+        recovery callback for THIS broker instance.
+
+        Integration boundary (Stage 2C.1, documented, not solved here)
+        --------------------------------------------------------------
+        Stage 2C.1 guarantees recovery only on the broker instance that has
+        this account-specific handler installed — the account-owned broker
+        created by the account's authentication adapter. It does NOT, by
+        itself, prove that the current order path (``DispatchCore``) is wired
+        to that account-owned instance: the order path currently obtains its
+        broker from ``BrokerManager``, which is a different broker instance.
+        Sharing one mutable authenticated broker across accounts is explicitly
+        NOT the solution, and changing the order path is out of scope for this
+        task. Full account-aware routing — making the order path use the same
+        account-owned broker on which the 401 handler lives — remains a
+        separate task.
+        """
+        self._unauthorized_recovery = handler
+
+    def _authed_get_with_recovery(self, path, params=None):
+        """
+        Perform an authenticated read-only GET with bounded HTTP 401 recovery.
+
+        - The actual HTTP status code is inspected BEFORE ``raise_for_status()``
+          so only a real 401 triggers recovery.
+        - The exact access token represented by the Authorization header of the
+          original request is captured BEFORE the request is sent. Reading it
+          again after the response would be racy: a concurrent request may
+          already have refreshed the token while this request was in flight.
+        - Recovery is delegated to the installed account-scoped callback (which
+          synchronizes broker + adapter + SessionManager); this helper never
+          calls ``refresh_tokens()`` directly.
+        - The original GET is retried at most once with the refreshed token.
+          A second 401 fails closed with no further retry or refresh.
+        - With no recovery callback installed the HTTP failure is surfaced
+          unchanged (fail closed; no unsynchronized refresh).
+        - The per-instance lock deduplicates concurrent refreshes: a request
+          refreshes only if the broker still holds the SAME token that this
+          request was authorized with. If a concurrent request already replaced
+          it, this request reuses the replaced token instead of refreshing
+          again (exactly one refresh for overlapping 401s on one account).
+        """
+        # Capture the token that will actually authorize this request, then
+        # build the header from THAT captured value, so the value compared
+        # under the lock is provably the one the 401 applies to.
+        failed_token = self.access_token
+        headers = self._auth_headers_for(failed_token)
+        response = self.session.get(
+            self._url(path),
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+
+        if getattr(response, "status_code", None) != 401:
+            response.raise_for_status()
+            return response
+
+        # A real HTTP 401 was received.
+        handler = self._unauthorized_recovery
+
+        if handler is None:
+            # Fail closed: surface the HTTP failure without an unsynchronized
+            # token refresh.
+            response.raise_for_status()
+            raise RuntimeError("درخواست ناموفق بود.")
+
+        with self._token_lock:
+            if self.access_token == failed_token:
+                # This request performs the single, account-scoped refresh for
+                # the token it was actually authorized with.
+                handler()
+            # Otherwise another in-flight request already replaced the token;
+            # reuse it instead of refreshing again.
+
+        headers = self._auth_headers()
+        response = self.session.get(
+            self._url(path),
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+
+        if getattr(response, "status_code", None) == 401:
+            # The retry was rejected as well: no loop, no extra refresh.
+            response.raise_for_status()
+            raise RuntimeError("درخواست ناموفق بود.")
+
+        response.raise_for_status()
+        return response
+
     def _auth_headers(self):
-        if not self.access_token:
+        return self._auth_headers_for(self.access_token)
+
+    def _auth_headers_for(self, access_token):
+        if not access_token:
             raise RuntimeError(
                 "کاربر به آگاه وارد نشده است."
             )
@@ -226,7 +327,7 @@ class AgaahBroker(Broker):
             )
 
         return {
-            "Authorization": f"Bearer {self.access_token}",
+            "Authorization": f"Bearer {access_token}",
             "UserIdentifier": self.user_identifier,
         }
 
@@ -605,19 +706,15 @@ class AgaahBroker(Broker):
                 "nsc_id نمی‌تواند خالی باشد."
             )
 
-        response = self.session.get(
-            self._url("trades/calculatedquantity"),
+        response = self._authed_get_with_recovery(
+            "trades/calculatedquantity",
             params={
                 "nscId": nsc_id,
                 "sideCode": side_code,
                 "fund": fund,
                 "price": price,
             },
-            headers=self._auth_headers(),
-            timeout=10,
         )
-
-        response.raise_for_status()
 
         data = response.json()
 
@@ -689,19 +786,15 @@ class AgaahBroker(Broker):
                 "nsc_id نمی‌تواند خالی باشد."
             )
 
-        response = self.session.get(
-            self._url("portfolio"),
+        response = self._authed_get_with_recovery(
+            "portfolio",
             params={
                 "nscId": nsc_id,
                 "sideCode": side_code,
                 "fund": fund,
                 "price": price,
             },
-            headers=self._auth_headers(),
-            timeout=10,
         )
-
-        response.raise_for_status()
 
         data = response.json()
 
@@ -759,15 +852,9 @@ class AgaahBroker(Broker):
         دریافت موجودی حساب آگاه.
         """
 
-        response = self.session.get(
-            self._url(
-                "financialaccounts/balances"
-            ),
-            headers=self._auth_headers(),
-            timeout=10,
+        response = self._authed_get_with_recovery(
+            "financialaccounts/balances",
         )
-
-        response.raise_for_status()
 
         data = response.json()
 
@@ -849,16 +936,12 @@ class AgaahBroker(Broker):
                 "nsc_id نمی‌تواند خالی باشد."
             )
 
-        response = self.session.get(
-            self._url("instruments"),
+        response = self._authed_get_with_recovery(
+            "instruments",
             params={
                 "nscIds": nsc_id
             },
-            headers=self._auth_headers(),
-            timeout=10,
         )
-
-        response.raise_for_status()
 
         data = response.json()
 
