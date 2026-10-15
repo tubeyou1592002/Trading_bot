@@ -233,10 +233,10 @@ def make_service(adapter_outcomes=None, adapter_cls=FakeAgahAdapter,
     created = []
     _current_account = [None]
 
-    def adapter_factory():
+    def adapter_factory(account_id):
         adapter = adapter_cls()
         adapter._login_outcome = outcomes.get(
-            _current_account[0], "success"
+            account_id, "success"
         )
         for key, value in extra.items():
             setattr(adapter, key, value)
@@ -267,13 +267,17 @@ def make_service_with_real_agah_factories():
     that never hold real credentials. Proves the production wiring seam
     (AGAH_ADAPTER_FACTORIES) works end-to-end offline.
     """
-    from brokers.agaah.auth_adapter import AGAH_ADAPTER_FACTORIES
+    from brokers.agaah.auth_adapter import make_agah_adapter_factory
+    from brokers.manager import BrokerManager
 
     accounts, credentials, sessions = make_stores()
-    return AuthenticationService(
+    manager = BrokerManager()
+    service = AuthenticationService(
         accounts, credentials, sessions,
-        adapter_factories=AGAH_ADAPTER_FACTORIES,
+        adapter_factories={BROKER_AGAH: make_agah_adapter_factory(manager)},
     )
+    service.broker_manager = manager
+    return service
 
 
 def seed_and_begin(service, account_id=ACC_A, outcome=None):
@@ -340,6 +344,46 @@ def test_complete_login_marks_session_logged_in_with_token():
     assert session.state is SessionState.LOGGED_IN
     assert service._sessions.get_token(ACC_A) == ACCESS_TOKEN
     assert service.is_logged_in(ACC_A) is True
+
+
+def test_session_registration_failure_clears_authenticated_adapter_and_token():
+    service = make_service(adapter_cls=LogoutTrackingAdapter)
+    seed_account(service._accounts, service._credentials, account_id=ACC_A)
+    seed_account(service._accounts, service._credentials, account_id=ACC_B)
+    service.begin_login(ACC_A)
+    service.begin_login(ACC_B)
+    adapter_a, adapter_b = service.created_adapters
+
+    original_mark_logged_in = service._sessions.mark_logged_in
+
+    def fail_after_session_transition(account_id, token=None):
+        if account_id == ACC_A:
+            original_mark_logged_in(account_id, token)
+            raise RuntimeError(f"failure with {PASSWORD} {ACCESS_TOKEN}")
+        return original_mark_logged_in(account_id, token)
+
+    service._sessions.mark_logged_in = fail_after_session_transition
+
+    with pytest.raises(AuthenticationServiceError) as excinfo:
+        service.complete_login(ACC_A, "1234")
+
+    error = excinfo.value
+    assert PASSWORD not in str(error)
+    assert ACCESS_TOKEN not in str(error)
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert ACC_A not in service._pending_logins
+    assert ACC_A not in service._adapters
+    assert adapter_a.is_authenticated() is False
+    assert adapter_a.get_authenticated_session() is None
+    assert adapter_a.recovery_handler is None
+    assert service._sessions.state(ACC_A) is SessionState.LOGGED_OUT
+    assert service._sessions.get_token(ACC_A) is None
+
+    assert service._sessions.state(ACC_B) is SessionState.LOGIN_PENDING
+    assert service._sessions.get_token(ACC_B) is None
+    assert service._pending_logins[ACC_B] is adapter_b
+    assert adapter_b.is_authenticated() is False
 
 
 def test_complete_login_retains_authenticated_adapter():
@@ -671,29 +715,39 @@ def test_service_rejects_account_with_unregistered_broker():
 
 def test_agah_factory_builds_independent_adapters():
     from brokers.agaah import AgaahBroker
-    from brokers.agaah.auth_adapter import (
-        AGAH_ADAPTER_FACTORIES,
-        AgahAuthenticationAdapter,
-    )
+    from brokers.agaah.auth_adapter import AgahAuthenticationAdapter, make_agah_adapter_factory
+    from brokers.manager import BrokerManager
 
-    factory = AGAH_ADAPTER_FACTORIES[BROKER_AGAH]
+    manager = BrokerManager()
+    factory = make_agah_adapter_factory(manager)
 
-    adapter_a = factory()
-    adapter_b = factory()
+    adapter_a = factory(ACC_A)
+    adapter_a_again = factory(ACC_A)
+    adapter_b = factory(ACC_B)
 
     assert isinstance(adapter_a, AgahAuthenticationAdapter)
+    assert adapter_a is not adapter_a_again
+    assert adapter_a.broker is adapter_a_again.broker
     assert adapter_a is not adapter_b
-    # Each adapter owns its own broker instance and HTTP session.
+    # Each adapter wraps the manager-owned account broker and session.
+    assert adapter_a.broker is manager.get_for_account(ACC_A, BROKER_AGAH)
+    assert adapter_b.broker is manager.get_for_account(ACC_B, BROKER_AGAH)
     assert adapter_a.broker is not adapter_b.broker
     assert isinstance(adapter_a.broker, AgaahBroker)
     assert adapter_a.broker.session is not adapter_b.broker.session
     assert adapter_a.broker_name == BROKER_AGAH
 
 
-def test_agah_factories_map_only_contains_agah():
-    from brokers.agaah.auth_adapter import AGAH_ADAPTER_FACTORIES
+def test_agah_factory_fails_closed_when_account_broker_resolution_fails():
+    from brokers.agaah.auth_adapter import make_agah_adapter_factory
 
-    assert set(AGAH_ADAPTER_FACTORIES) == {BROKER_AGAH}
+    class FailingManager:
+        def get_for_account(self, account_id, broker_name):
+            raise RuntimeError("resolution unavailable")
+
+    factory = make_agah_adapter_factory(FailingManager())
+    with pytest.raises(RuntimeError):
+        factory(ACC_A)
 
 
 def test_real_agah_factory_wiring_is_offline_and_fail_closed():
@@ -707,7 +761,7 @@ def test_real_agah_factory_wiring_is_offline_and_fail_closed():
 
     # Building the adapter via the registered factory performs no network
     # I/O and yields a fresh, unauthenticated adapter.
-    adapter = service._adapter_factories[BROKER_AGAH]()
+    adapter = service._adapter_factories[BROKER_AGAH](ACC_A)
     assert adapter.is_authenticated() is False
 
     # An unregistered broker name is rejected fail-closed BEFORE any
@@ -767,7 +821,7 @@ def test_challenge_failure_keeps_session_logged_out():
         raise challenge_error
 
     # Patch the factory to hand out an adapter whose challenge fails.
-    def adapter_factory():
+    def adapter_factory(account_id):
         adapter = FakeAgahAdapter()
         adapter.begin_login = failing_begin_login
         return adapter
@@ -893,7 +947,7 @@ def test_adapter_build_failure_resets_session_to_logged_out():
 
     factory_calls = []
 
-    def failing_factory():
+    def failing_factory(account_id):
         factory_calls.append(1)
         raise UnknownBrokerError("آداپتر ساخته نشد")
 
@@ -950,7 +1004,7 @@ def test_challenge_failure_resets_session_and_re_retry_after_fix():
     def failing_begin_login(username, password):
         raise challenge_error
 
-    def adapter_factory():
+    def adapter_factory(account_id):
         adapter = FakeAgahAdapter()
         if outcome[0] == "fail":
             adapter.begin_login = failing_begin_login

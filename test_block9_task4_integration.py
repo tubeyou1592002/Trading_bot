@@ -50,6 +50,8 @@ import socket
 import pytest
 
 from brokers.agaah import AgaahBroker
+from brokers.manager import BrokerManager
+from brokers.agaah.auth_adapter import make_agah_adapter_factory
 from brokers.agaah.auth_adapter import AgahAuthenticationAdapter
 from brokers.authentication import (
     CHALLENGE_CAPTCHA_IMAGE,
@@ -260,20 +262,19 @@ def build_system(accounts_spec=DEFAULT_ACCOUNTS, outcomes=None):
     outcome_map = dict(outcomes or {})
 
     created = {}
-    current = {"account_id": None}
+    manager = BrokerManager()
 
-    def adapter_factory():
-        account_id = current["account_id"]
-        broker = AgaahBroker()
-        broker.session = FakeAgahSession(
+    agah_factory = make_agah_adapter_factory(manager)
+    def managed_adapter_factory(account_id):
+        adapter = agah_factory(account_id)
+        adapter.broker.session = FakeAgahSession(
             account_id, outcome_map.get(account_id, "success")
         )
-        broker.device_info_provider = _StaticDeviceInfo()
-        adapter = AgahAuthenticationAdapter(broker=broker)
+        adapter.broker.device_info_provider = _StaticDeviceInfo()
         created[account_id] = {
             "adapter": adapter,
-            "broker": broker,
-            "session": broker.session,
+            "broker": adapter.broker,
+            "session": adapter.broker.session,
         }
         return adapter
 
@@ -281,18 +282,8 @@ def build_system(accounts_spec=DEFAULT_ACCOUNTS, outcomes=None):
         accounts,
         credentials,
         sessions,
-        adapter_factories={BROKER_AGAH: adapter_factory},
+        adapter_factories={BROKER_AGAH: managed_adapter_factory},
     )
-
-    # The factory is called inside the service with no arguments, so route
-    # the account currently being logged in to it.
-    original_begin = service.begin_login
-
-    def begin_login(account_id):
-        current["account_id"] = account_id
-        return original_begin(account_id)
-
-    service.begin_login = begin_login
 
     for account_id, username, password in accounts_spec:
         accounts.add(account_id, BROKER_AGAH, f"حساب {account_id}")
@@ -590,7 +581,7 @@ def test_unknown_broker_fails_closed():
 
     service = AuthenticationService(
         accounts, credentials, sessions,
-        adapter_factories={BROKER_AGAH: lambda: AgahAuthenticationAdapter()},
+        adapter_factories={BROKER_AGAH: lambda account_id: AgahAuthenticationAdapter()},
     )
 
     with pytest.raises(UnknownBrokerError):

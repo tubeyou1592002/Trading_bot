@@ -258,8 +258,7 @@ def build_qp_system():
     created = {}
     current = {"account_id": None}
 
-    def adapter_factory():
-        acc = current["account_id"]
+    def adapter_factory(acc):
         broker = AgaahBroker()
         broker.session = FakeQpSession()
         broker.device_info_provider = _StaticDeviceInfo()
@@ -277,13 +276,6 @@ def build_qp_system():
         sessions,
         adapter_factories={BROKER_AGAH: adapter_factory},
     )
-    original_begin = service.begin_login
-
-    def begin_login(acc):
-        current["account_id"] = acc
-        return original_begin(acc)
-
-    service.begin_login = begin_login
 
     accounts.add(ACC_A, BROKER_AGAH, f"حساب {ACC_A}")
     credentials.save_credentials(ACC_A, BROKER_AGAH, USERNAME, PASSWORD)

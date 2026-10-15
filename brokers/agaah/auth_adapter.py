@@ -545,25 +545,22 @@ class AgahAuthenticationAdapter(AuthenticationAdapter):
 # Factory آماده برای لایه‌های بالاتر
 # ---------------------------------------------------------------------------
 
-def make_agah_adapter_factory():
+def make_agah_adapter_factory(broker_manager):
     """
-    ساخت یک factory که هر بار یک آداپتر آگاهِ کاملاً مستقل می‌سازد.
+    ساخت factory آگاه متصل به مدیر بروکر تزریق‌شده.
 
-    هر فراخوانی یک نمونه‌ی جدید ``AgaahBroker`` (با نشست HTTP مستقل
-    خودش) و یک ``AgahAuthenticationAdapter`` تازه می‌سازد، تا دو حساب
-    روی آگاه هرگز نمونه‌ی بروکر، نشست HTTP، وضعیت ورود یا توکنی را
-    به اشتراک نگذارند.
+    factory شناسه‌ی حساب را دریافت می‌کند و broker را فقط از مسیر
+    ``get_for_account(account_id, "آگاه")`` resolve می‌کند. هر آداپتر
+    تازه همان broker حساب‌محور را می‌پیچد؛ ساخت broker و جداسازی حساب‌ها
+    تحت مالکیت BrokerManager باقی می‌ماند.
 
     این تابع مسیر ثبت آگاه در ``AuthenticationService`` است: لایه‌ی
-    فراخوان این factory را به سرویس تزریق می‌کند و سرویس به هیچ کد
-    بروکری وابسته نمی‌شود.
+    فراخوان manager را به این factory تزریق می‌کند؛ سرویس فقط factory
+    عمومی و account_id را می‌شناسد.
     """
 
-    def factory() -> AgahAuthenticationAdapter:
-        return AgahAuthenticationAdapter(AgaahBroker())
+    def factory(account_id: str) -> AgahAuthenticationAdapter:
+        broker = broker_manager.get_for_account(account_id, "آگاه")
+        return AgahAuthenticationAdapter(broker)
 
     return factory
-
-
-#: نگاشت آماده‌ی نام بروکر آگاه → factory آداپتر مستقل.
-AGAH_ADAPTER_FACTORIES = {"آگاه": make_agah_adapter_factory()}

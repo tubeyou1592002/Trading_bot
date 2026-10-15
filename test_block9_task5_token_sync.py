@@ -662,10 +662,7 @@ def build_real_system(accounts_spec=((ACC_A, USERNAME, PASSWORD),)):
     sessions = SessionManager()
 
     created = {}
-    current = {"account_id": None}
-
-    def adapter_factory():
-        account_id = current["account_id"]
+    def adapter_factory(account_id):
         broker = make_broker()
         adapter = AgahAuthenticationAdapter(broker=broker)
         created[account_id] = {
@@ -681,14 +678,6 @@ def build_real_system(accounts_spec=((ACC_A, USERNAME, PASSWORD),)):
         sessions,
         adapter_factories={BROKER_AGAH: adapter_factory},
     )
-    original_begin = service.begin_login
-
-    def begin_login(account_id):
-        current["account_id"] = account_id
-        return original_begin(account_id)
-
-    service.begin_login = begin_login
-
     for account_id, username, password in accounts_spec:
         accounts.add(account_id, BROKER_AGAH, f"حساب {account_id}")
         credentials.save_credentials(
@@ -1204,7 +1193,7 @@ def build_scripted_system(adapter):
     sessions = SessionManager()
     service = AuthenticationService(
         accounts, credentials, sessions,
-        adapter_factories={BROKER_AGAH: lambda: adapter},
+        adapter_factories={BROKER_AGAH: lambda account_id: adapter},
     )
     accounts.add(ACC_A, BROKER_AGAH, "حساب A")
     credentials.save_credentials(ACC_A, BROKER_AGAH, USERNAME, PASSWORD)

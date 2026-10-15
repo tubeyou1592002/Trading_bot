@@ -142,7 +142,7 @@ class AuthenticationService:
         account_store: AccountStore,
         credential_store: CredentialStore,
         session_manager: SessionManager,
-        adapter_factories: Optional[Dict[str, Callable[[], "AuthenticationAdapter"]]] = None,
+        adapter_factories: Optional[Dict[str, Callable[[str], "AuthenticationAdapter"]]] = None,
     ):
         """
         account_store:    منبع هویت حساب و نام بروکر.
@@ -212,7 +212,7 @@ class AuthenticationService:
         except CredentialNotFoundError as exc:
             raise AuthenticationServiceError(str(exc)) from None
 
-    def _build_adapter(self, broker_name):
+    def _build_adapter(self, account_id, broker_name):
         """
         ساخت یک آداپترِ مستقل و تازه برای این حساب.
 
@@ -225,7 +225,7 @@ class AuthenticationService:
             raise UnknownBrokerError(
                 f"هیچ آداپتری برای نام بروکر ثبت نشده است: {broker_name!r}"
             )
-        return factory()
+        return factory(account_id)
 
     def _install_recovery(self, account_id):
         """
@@ -572,7 +572,7 @@ class AuthenticationService:
 
         # ساخت آداپتر مستقل، خواندن اعتبارانه و شروع ورود بروکری.
         try:
-            adapter = self._build_adapter(record.broker_name)
+            adapter = self._build_adapter(account_id, record.broker_name)
             credentials = self._load_credentials(
                 account_id, record.broker_name
             )
@@ -619,9 +619,37 @@ class AuthenticationService:
                 account_id, token=authenticated.access_token
             )
         except Exception:
-            # نشست نتوانست وارد شود؛ آداپترِ تلاش دور انداخته می‌شود.
-            self._clear_pending(account_id)
-            raise
+            # Login در آداپتر موفق بوده اما ثبت نشست شکست خورده است؛
+            # آداپتر و بروکر را پاک‌سازی کرده و فقط همان حساب را isolate کن.
+            self._pending_logins.pop(account_id, None)
+            cleanup_complete = self._detach_account_authentication_checked(
+                adapter
+            )
+            self._adapters.pop(account_id, None)
+
+            if not self._session_is_logged_out(account_id):
+                try:
+                    self._sessions.logout(account_id)
+                except Exception:
+                    try:
+                        self._sessions.invalidate_session(account_id)
+                    except Exception:
+                        cleanup_complete = False
+
+            safe_state_confirmed = self._session_is_logged_out(account_id)
+            if not cleanup_complete or not safe_state_confirmed:
+                _raise_clean(
+                    AuthenticationServiceError(
+                        "ثبت نشست ورود ناموفق بود و پاک‌سازی کامل وضعیت امن "
+                        "این حساب تأیید نشد؛ ورود مجدد لازم است"
+                    )
+                )
+            _raise_clean(
+                AuthenticationServiceError(
+                    "ثبت نشست ورود ناموفق بود؛ وضعیت احراز این حساب پاک شد "
+                    "و ورود مجدد لازم است"
+                )
+            )
 
         # ورود موفق: تلاش از حالت pending خارج و آداپتر احرازشده برای
         # استفاده‌ی آتی نگه داشته می‌شود.
