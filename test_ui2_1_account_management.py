@@ -38,7 +38,7 @@ import sys
 
 import pytest
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLineEdit
 
 from models.account import Account, AccountValidationError
 
@@ -46,6 +46,11 @@ from ui.account_store import AccountStore, AccountStoreError, AccountRecord
 from ui.accounts_page import AccountsPage, AVAILABLE_BROKERS
 from ui.main_window import MainWindow
 from ui import strings as STRINGS
+from ui.credential_store import (
+    CredentialBackendError,
+    CredentialNotFoundError,
+    CredentialValidationError,
+)
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -462,3 +467,140 @@ def test_no_secret_on_account_or_record(store):
 def test_display_name_is_required(store):
     with pytest.raises(TypeError):
         store.add("ACC-001", BROKER)
+
+
+class FakeCredentialStore:
+    def __init__(self, failure=None):
+        self.failure = failure
+        self.saved = []
+        self.deleted = []
+
+    def save_credentials(self, account_id, broker_name, username, password):
+        if self.failure:
+            raise self.failure
+        self.saved.append((account_id, broker_name, username, password))
+
+    def delete_credentials(self, account_id, broker_name):
+        if self.failure:
+            raise self.failure
+        self.deleted.append((account_id, broker_name))
+
+
+def _credentials_page(store, qapp, backend, factory_calls=None):
+    factory_calls = factory_calls if factory_calls is not None else []
+
+    def factory():
+        factory_calls.append(True)
+        return backend
+
+    page = AccountsPage(store, credential_store_factory=factory)
+    return page, factory_calls
+
+
+def test_credential_actions_require_selected_account(store, qapp):
+    backend = FakeCredentialStore()
+    page, factory_calls = _credentials_page(store, qapp, backend)
+    page.username_input.setText("username")
+    page.password_input.setText("secret-password")
+
+    page.save_credentials_button.click()
+    assert factory_calls == []
+    assert backend.saved == []
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_SELECT_ACCOUNT
+    assert page.password_input.text() == ""
+
+    page.delete_credentials_button.click()
+    assert factory_calls == []
+    assert backend.deleted == []
+
+
+def test_credentials_use_selected_account_identity_not_display_or_active(
+    store, qapp
+):
+    store.add("REAL-ID-A", BROKER, "Display A")
+    store.add("REAL-ID-B", BROKER, "Display B")
+    store.set_active("REAL-ID-A")
+    backend = FakeCredentialStore()
+    page, factory_calls = _credentials_page(store, qapp, backend)
+    page.accounts_table.setCurrentCell(1, 0)
+    page.username_input.setText("  user-B  ")
+    page.password_input.setText(" pass-B ")
+
+    page.save_credentials_button.click()
+
+    assert backend.saved == [("REAL-ID-B", BROKER, "  user-B  ", " pass-B ")]
+    assert len(factory_calls) == 1
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_SAVED
+    assert page.password_input.text() == ""
+
+    page.accounts_table.setCurrentCell(0, 0)
+    page.delete_credentials_button.click()
+    assert backend.deleted == [("REAL-ID-A", BROKER)]
+    assert len(factory_calls) == 2
+    page.close()
+
+
+@pytest.mark.parametrize("username,password", [("", "p"), ("  ", "p"), ("u", ""), ("u", "  ")])
+def test_invalid_credentials_do_not_resolve_factory(store, qapp, username, password):
+    store.add("ACC-001", BROKER, "Display")
+    backend = FakeCredentialStore()
+    page, factory_calls = _credentials_page(store, qapp, backend)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.username_input.setText(username)
+    page.password_input.setText(password)
+
+    page.save_credentials_button.click()
+
+    assert factory_calls == []
+    assert backend.saved == []
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_INVALID
+    assert page.password_input.text() == ""
+    page.close()
+
+
+def test_credential_delete_not_found_differs_from_backend_error(store, qapp):
+    store.add("ACC-001", BROKER, "Display")
+    not_found = FakeCredentialStore(CredentialNotFoundError("raw sensitive detail"))
+    page, _ = _credentials_page(store, qapp, not_found)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.delete_credentials_button.click()
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_NOT_FOUND
+    page.close()
+
+    backend_error = FakeCredentialStore(CredentialBackendError("raw sensitive detail"))
+    page, _ = _credentials_page(store, qapp, backend_error)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.delete_credentials_button.click()
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_OPERATION_FAILED
+    assert "raw sensitive detail" not in page.credentials_message_label.text()
+    page.close()
+
+
+def test_credential_save_failure_is_generic_and_clears_secrets(store, qapp):
+    store.add("ACC-001", BROKER, "Display")
+    secret = "TOP-SECRET-PASSWORD"
+    backend = FakeCredentialStore(CredentialValidationError(secret))
+    page, _ = _credentials_page(store, qapp, backend)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.username_input.setText("username")
+    page.password_input.setText(secret)
+    assert page.password_input.echoMode() == QLineEdit.Password
+
+    page.save_credentials_button.click()
+
+    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_OPERATION_FAILED
+    assert secret not in page.credentials_message_label.text()
+    assert page.username_input.text() == ""
+    assert page.password_input.text() == ""
+    page.close()
+
+
+def test_page_refresh_and_selection_do_not_resolve_credential_factory(store, qapp):
+    store.add("ACC-001", BROKER, "Display")
+    calls = []
+    page, _ = _credentials_page(store, qapp, FakeCredentialStore(), calls)
+    page.refresh()
+    page.accounts_table.setCurrentCell(0, 0)
+    page.accounts_table.setCurrentCell(-1, -1)
+    assert calls == []
+    page.close()

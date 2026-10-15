@@ -38,6 +38,10 @@ from PySide6.QtWidgets import (
 
 from models.account import AccountValidationError
 from ui.account_store import AccountStoreError
+from ui.credential_store import (
+    CredentialNotFoundError,
+    CredentialStoreError,
+)
 from ui import strings as STRINGS
 
 # The only broker implemented in the repository today (UI-2.1).
@@ -154,6 +158,42 @@ class AccountsPage(QWidget):
 
         root_layout.addWidget(list_group, stretch=1)
 
+        credentials_group = QGroupBox(STRINGS.GROUP_CREDENTIALS, self)
+        credentials_layout = QGridLayout(credentials_group)
+        credentials_layout.addWidget(
+            QLabel(STRINGS.LABEL_USERNAME, credentials_group), 0, 0
+        )
+        self.username_input = QLineEdit(credentials_group)
+        credentials_layout.addWidget(self.username_input, 0, 1, 1, 2)
+        credentials_layout.addWidget(
+            QLabel(STRINGS.LABEL_PASSWORD, credentials_group), 1, 0
+        )
+        self.password_input = QLineEdit(credentials_group)
+        self.password_input.setEchoMode(QLineEdit.Password)
+        credentials_layout.addWidget(self.password_input, 1, 1, 1, 2)
+
+        self.save_credentials_button = QPushButton(
+            STRINGS.BUTTON_SAVE_CREDENTIALS, credentials_group
+        )
+        self.save_credentials_button.clicked.connect(
+            self._on_save_credentials_clicked
+        )
+        credentials_layout.addWidget(self.save_credentials_button, 2, 1)
+        self.delete_credentials_button = QPushButton(
+            STRINGS.BUTTON_DELETE_CREDENTIALS, credentials_group
+        )
+        self.delete_credentials_button.clicked.connect(
+            self._on_delete_credentials_clicked
+        )
+        credentials_layout.addWidget(self.delete_credentials_button, 2, 2)
+
+        self.credentials_message_label = QLabel("", credentials_group)
+        self.credentials_message_label.setProperty("role", "danger")
+        self.credentials_message_label.setWordWrap(True)
+        self.credentials_message_label.setVisible(False)
+        credentials_layout.addWidget(self.credentials_message_label, 3, 0, 1, 3)
+        root_layout.addWidget(credentials_group)
+
         self._refresh_list()
 
     # ---------------------------------------------------------
@@ -198,6 +238,104 @@ class AccountsPage(QWidget):
 
         self._clear_validation_error()
         self._refresh_list()
+
+    def _selected_account_record(self):
+        row = self.accounts_table.currentRow()
+        if row < 0:
+            return None
+        account_item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
+        if account_item is None:
+            return None
+        account_id = account_item.text()
+        return next(
+            (record for record in self.store.all_accounts()
+             if record.account_id == account_id),
+            None,
+        )
+
+    def _on_save_credentials_clicked(self):
+        username = self.username_input.text()
+        password = self.password_input.text()
+        try:
+            if not username.strip() or not password.strip():
+                self._show_credentials_message(
+                    STRINGS.CREDENTIALS_INVALID, error=True
+                )
+                return
+            record = self._selected_account_record()
+            if record is None:
+                self._show_credentials_message(
+                    STRINGS.CREDENTIALS_SELECT_ACCOUNT, error=True
+                )
+                return
+            if self._credential_store_factory is None:
+                self._show_credentials_message(
+                    STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+                )
+                return
+            credential_store = self._credential_store_factory()
+            credential_store.save_credentials(
+                record.account_id, record.broker_name, username, password
+            )
+        except CredentialStoreError:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+            )
+        except Exception:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+            )
+        else:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_SAVED, error=False
+            )
+        finally:
+            self.username_input.clear()
+            self.password_input.clear()
+
+    def _on_delete_credentials_clicked(self):
+        try:
+            record = self._selected_account_record()
+            if record is None:
+                self._show_credentials_message(
+                    STRINGS.CREDENTIALS_SELECT_ACCOUNT, error=True
+                )
+                return
+            if self._credential_store_factory is None:
+                self._show_credentials_message(
+                    STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+                )
+                return
+            credential_store = self._credential_store_factory()
+            credential_store.delete_credentials(
+                record.account_id, record.broker_name
+            )
+        except CredentialNotFoundError:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_NOT_FOUND, error=True
+            )
+        except CredentialStoreError:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+            )
+        except Exception:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
+            )
+        else:
+            self._show_credentials_message(
+                STRINGS.CREDENTIALS_DELETED, error=False
+            )
+        finally:
+            self.username_input.clear()
+            self.password_input.clear()
+
+    def _show_credentials_message(self, message, *, error):
+        self.credentials_message_label.setText(message)
+        self.credentials_message_label.setProperty(
+            "role", "danger" if error else "success"
+        )
+        self.credentials_message_label.setVisible(bool(message))
 
     # ---------------------------------------------------------
     # Inline validation message (UI-9.4)

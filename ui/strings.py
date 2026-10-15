@@ -143,6 +143,17 @@ __all__ = [
     "DIALOG_INVALID_ACCOUNT",
     "DIALOG_NO_SELECTION",
     "DIALOG_SELECT_ACCOUNT_FIRST",
+    "GROUP_CREDENTIALS",
+    "LABEL_USERNAME",
+    "LABEL_PASSWORD",
+    "BUTTON_SAVE_CREDENTIALS",
+    "BUTTON_DELETE_CREDENTIALS",
+    "CREDENTIALS_SELECT_ACCOUNT",
+    "CREDENTIALS_INVALID",
+    "CREDENTIALS_SAVED",
+    "CREDENTIALS_DELETED",
+    "CREDENTIALS_NOT_FOUND",
+    "CREDENTIALS_OPERATION_FAILED",
     # --- order validation dialogs (removed from the path in UI-9.4; titles
     #     centralized here so UI-9.4 has one place to change) ---
     "DIALOG_INVALID_SIDE",
@@ -486,6 +497,18 @@ DIALOG_INVALID_ACCOUNT = "حساب نامعتبر"
 DIALOG_NO_SELECTION = "بدون انتخاب"
 DIALOG_SELECT_ACCOUNT_FIRST = "ابتدا یک حساب را از فهرست انتخاب کنید."
 
+GROUP_CREDENTIALS = "اعتبارنامهٔ حساب انتخاب‌شده"
+LABEL_USERNAME = "نام کاربری:"
+LABEL_PASSWORD = "گذرواژه:"
+BUTTON_SAVE_CREDENTIALS = "ذخیره اعتبارنامه"
+BUTTON_DELETE_CREDENTIALS = "حذف اعتبارنامه"
+CREDENTIALS_SELECT_ACCOUNT = "ابتدا یک حساب را از فهرست انتخاب کنید."
+CREDENTIALS_INVALID = "نام کاربری و گذرواژه را کامل کنید."
+CREDENTIALS_SAVED = "اعتبارنامه ذخیره شد."
+CREDENTIALS_DELETED = "اعتبارنامه حذف شد."
+CREDENTIALS_NOT_FOUND = "برای این حساب اعتبارنامه‌ای ذخیره نشده است."
+CREDENTIALS_OPERATION_FAILED = "عملیات اعتبارنامه انجام نشد؛ وضعیت مخزن را بررسی کنید."
+
 
 # ============================================================
 # Order validation dialog titles
@@ -543,4 +566,3 @@ TOOLTIP_DIAGNOSTIC_MODE = (
     "جابه‌جایی بین حالت عادی و حالت عیب‌یابی: در حالت عیب‌یابی "
     "ممکن است جزئیات فنی اجرای سفارش نمایش داده شود."
 )
-
