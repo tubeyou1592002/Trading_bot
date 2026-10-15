@@ -125,7 +125,59 @@ The read-only proposal and source/API review have been reported and reviewed by 
 
 **Rules for all five tasks:** implement in sequence; Architect reviews each report/diff before the next task starts; each task gets its own exact allowed-file list and focused test commands; never stage broadly or touch unrelated local work; keep account-bound trading-state, instrument identity, order routing, NATS/queue-position, and feedback fixes in the separate later phase. The current approval does not itself authorize implementation outside the individually issued task. Preserve the existing dark RTL direction and do not perform a broad redesign without separate approval.
 
-**Next action:** prepare the exact bounded implementation handoff for Task 3B-1. Do not start Task 3B-2 or any later task before Task 3B-1 is reviewed and accepted.
+**Task 3B-1 completion record:** Commit `e4a0796` — `feat: inject lazy account services` — is pushed to `origin/master`. It changes only `ui/main_window.py`, `ui/accounts_page.py`, and `test_block9_phase2_service_composition.py`. The owner approved the staged diff. Reported verification: composition **4 passed**, account-management **24 passed**, UI foundation + account-management **37 passed**, focused authentication/adapter/integration **145 passed**, and compilation/diff checks succeeded (using `python3` because the agent environment lacked `py -3`). The implementation preserves laziness and injects callbacks without executing them during construction.
+
+## Next bounded implementation task — Block 9 Phase 3 Task 3B-2: Credential save/delete UI
+
+**Task type:** Small implementation + offline tests. Task 3B-1 has been reviewed, accepted, committed and pushed.
+
+**Goal:** Let the user explicitly save or delete credentials for the currently selected account, exclusively through the existing `CredentialStore`. Do not implement login, CAPTCHA, logout, or session status in this task.
+
+**Allowed files only:**
+- `ui/accounts_page.py`
+- `ui/strings.py`
+- `test_ui2_1_account_management.py`
+
+Do not modify `ui/main_window.py`, `ui/credential_store.py`, `ui/authentication_service.py`, `ui/session_manager.py`, broker files, order/routing code, or project documentation.
+
+### Required behavior
+1. Add a compact credential-management section consistent with the accepted dark RTL direction. It contains a username field, a masked password field, a save button, a delete button, and a dedicated inline status/error label. All newly introduced user-facing strings must live in `ui/strings.py`.
+2. Operations apply only to the selected table row. Resolve its exact account ID and broker through the existing account store; do not use the display name, active-account flag, or a default account as identity.
+3. Invoke the injected `credential_store_factory` only after an explicit save/delete click and only after validating selection/input. If the factory was not supplied, fail closed with a generic inline message; do not construct a CredentialStore inside AccountsPage.
+4. Save via `save_credentials(account_id, broker_name, username, password)`. Preserve valid entered values verbatim; reject empty/whitespace-only username/password without calling the store. Never include credentials or raw backend exception text in the UI, logs, or test failure messages.
+5. Delete via `delete_credentials(account_id, broker_name)`. Handle `CredentialNotFoundError` as a distinct user-facing “no saved credential” result and handle other `CredentialStoreError` failures with a generic safe message. Do not read credentials back or prefill/reveal a previously saved password.
+6. Clear sensitive input fields after save/delete attempts, including failure paths; never place a password in the accounts table or persistent UI state. Show success only after the corresponding store method succeeds.
+7. CredentialStore’s default backend is the OS vault. All tests must inject a deterministic fake/in-memory store and must prove that page/window construction does not call the factory or touch a vault.
+
+### Offline acceptance tests
+- No selected account: show an inline message and never call the factory/store.
+- Two accounts on the same broker: save/delete targets exactly the selected row’s account ID and broker.
+- Valid save passes exact field values to the fake store; success feedback appears and fields are cleared.
+- Empty/whitespace username/password are rejected before the factory/backend is called.
+- Missing saved credential is reported distinctly; backend/validation failures produce safe generic messages without exposing username, password, exception text, or tokens.
+- Password input uses masked echo mode; password is never displayed in table/status text.
+- Construction and page refresh never invoke the credential-store factory.
+- Existing account creation, display-name, active-account selection, and lazy-composition tests continue to pass.
+
+### Commands and evidence
+Run and report exact output:
+```powershell
+py -3 -m pytest -q test_ui2_1_account_management.py
+py -3 -m pytest -q test_ui1_application_foundation.py test_ui2_1_account_management.py
+py -3 -m pytest -q test_block9_phase2_service_composition.py test_block9_task2a_credential_store.py
+py -3 -m py_compile ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
+git diff --check -- ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
+git diff --name-only
+```
+If `py -3` is unavailable in the agent environment, use `python3` equivalents and state that fact.
+
+### Worktree and safety rules
+- Do not stage, commit, push, reset, checkout, clean, or delete files.
+- Preserve existing unrelated local changes and all untracked artifacts; never use `git add -A`.
+- Do not make a real OS-vault call, network request, broker login, or order submission.
+- Keep Task 3B-3 login/challenge handling and Task 3B-4 session/logout/status separate.
+- Report exact files changed, commands run, outputs, and any pre-existing failures. Stop for Architect review before continuing to Task 3B-3.
+
 
 **UI direction:** retain the dark RTL application style; the intended structure is account-creation form, account table with separate active/login indicators, then operations for the selected account. CAPTCHA/challenge UI is shown only when the authentication adapter returns a challenge. The generated visual mockup is not yet available; do not claim an image asset was created.
 
