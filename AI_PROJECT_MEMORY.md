@@ -34,7 +34,7 @@
 
 **Previous verified Git baseline:**
 
-`31d7063 — test: cover token sync failure cleanup`
+`4c185ab — feat: add bounded Agah 401 token recovery`
 
 
 
@@ -2603,8 +2603,25 @@ This addendum records one architectural-review correction and its real, offline 
 - **All-cleanup-paths-fail case:** `test_service_sync_logout_and_invalidate_failure_stays_unresolved_and_explicit` verifies that if emergency invalidation also fails, the service explicitly reports that a safe state was NOT confirmed; it does not falsely claim the session was cleared. The test checks the actual unresolved state and secret non-disclosure.
 - **Review conclusion:** the token-sync failure cleanup and exception-leak regression is verified by this test run. No live broker call, real credential, real token or order was used. This follow-up does not implement HTTP 401 handling/retry or renewal coordination.
 
-**Stage 2C — HTTP 401 Handling and Renewal Coordination**
-- Add bounded refresh handling for confirmed Agah-authenticated request paths, based on Stage 2A/2B APIs.
+#### Stage 2C.1 — Bounded HTTP 401 Recovery for Four Agah Read-Only GET Paths — COMPLETED and reviewed
+
+- **Implementation commit:** `4c185ab23f6717af79b69ac026c1a7b988b722a6` — `feat: add bounded Agah 401 token recovery`, pushed to `master` after rebasing onto the documentation update commit `ac8cb67`.
+- **Changed files in the implementation commit:** `brokers/authentication.py`, `brokers/agaah/auth_adapter.py`, `brokers/agaah/broker.py`, `ui/authentication_service.py`, and new `test_block9_task5_401_handling.py`. The unrelated working-tree change to `ui/test_runner.py` was not included.
+- **Scope:** bounded 401 recovery only for `AgaahBroker.get_buy_capacity()`, `get_sell_capacity()`, `get_account()`, and `get_instrument()`. A genuine HTTP status 401 is checked before `raise_for_status()`. Recovery is called through the installed account-scoped callback / adapter / `AuthenticationService`, not by calling the broker refresh primitive directly from the GET helper. The original GET is retried at most once; a second 401 does not cause another refresh or retry. Without a handler, the request fails closed.
+- **Concurrency correction:** the exact access token used to build the original Authorization header is captured before sending the request. Under the per-broker token lock, recovery only runs if that same token is still current; otherwise the request reuses the token already installed by the overlapping refresh. A deterministic event-coordinated regression test proves a pre-fix behavior would trigger a second refresh.
+- **Failure cleanup:** the service detaches recovery, clears the account-owned adapter/broker authentication view where supported, removes the adapter, attempts logout and then emergency local invalidation, and verifies `LOGGED_OUT` plus an empty `SessionManager` token before claiming successful cleanup. If that state cannot be confirmed, the public error explicitly says the safe state is unconfirmed. Per-account isolation and token non-disclosure are tested.
+- **New test file:** `test_block9_task5_401_handling.py` — **26 tests** after the five review-correction tests were added.
+- **Exact focused verification reported by the owner/agent** (the prescribed `py -3` executable was unavailable in the Linux test environment, so equivalent `python3` commands were run with Python 3.14.4):
+  - `python3 -m pytest -q test_block9_task5_401_handling.py test_block9_task5_token_sync.py test_block9_task5_refresh_token.py` → **139 passed**.
+  - `python3 -m pytest -q test_block9_task3_session_manager.py test_block9_task4_agah_auth_adapter.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_integration.py` → **193 passed**.
+  - All Block 9 suites → **481 passed, 7 skipped**.
+  - Broader run excluding `test_main_order_workflow.py` and `test_ui5_task4_stage2_queue_position.py` → **1714 passed, 20 skipped, 13 failed**. The report attributes the 13 failures to two existing `broker_received_at` contract failures and 11 environment failures caused by missing `nats`; those failures are recorded, not silently treated as passing.
+- **Safety / honesty boundary:** tests use fake/offline HTTP sessions and report no real socket use. `POST /order` is never automatically replayed. No UI, order-dispatch, `BrokerManager`, `SessionManager`, instrument-provider, NATS/queue-position, or live-trading permission code was changed.
+- **Remaining production integration gap, explicitly unresolved:** `AuthenticationService` installs the recovery handler on the account-owned broker created by that account's authentication adapter. The current `DispatchCore` order path still resolves a broker from `BrokerManager`, a different instance. Stage 2C.1 does NOT prove that the production order path uses the account-owned broker, does NOT implement account-aware routing, and does NOT authorize sharing a mutable authenticated broker across accounts. Account-aware routing remains a separate roadmap task.
+- **Review conclusion:** Stage 2C.1 is completed and reviewed within its stated scope. This does NOT mark the whole Task 5 Stage 2C complete.
+
+**Stage 2C — Remaining HTTP 401 Handling and Renewal Coordination (NOT COMPLETE)**
+- Stage 2C.1 above is completed for four read-only GET methods directly implemented in `brokers/agaah/broker.py` only. Remaining Stage 2C work must be separately scoped after auditing the additional instrument-provider and NATS/queue-position request paths; do not mark those paths as covered by Stage 2C.1.
 - A successful refresh may trigger at most one retry for an eligible non-order request. Prevent retry loops and coordinate concurrent requests so a single account does not launch multiple overlapping refresh operations.
 - A refresh failure or invalid/incomplete refresh response must invalidate only that account's authenticated state and require login again; do not silently keep a stale token.
 - Do NOT automatically replay a live `POST /order` after `401`. Surface a clear authentication failure for explicit user recovery; no duplicate-order risk may be introduced by automatic replay.
