@@ -1434,3 +1434,52 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 **Out of scope, untouched:** dispatch behaviour and `PeriodicScheduleDispatcher`, `_parse_interval` (`0` stays illegal), `core/*`, `ui/test_runner.py` (still only its pre-existing 23+/10− uncommitted change), `ui/schedule_dispatcher.py`, every other page/row/colour.
 
 **COMMIT / PUSH NOT DONE** — awaiting Architect review.
+
+
+---
+
+## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
+
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Implementation has NOT started.
+
+### Decision
+
+Each local application account must have a fully independent authenticated broker runtime, even when many accounts use the same broker. The Accounts page is the user's entry point for account login/logout and per-account status.
+
+The authoritative runtime identity is the pair `(account_id, broker_name)`. `AccountStore` currently requires `account_id` to be unique in the local application; retaining the pair as the runtime key also makes broker association explicit and prevents accidental cross-account reuse.
+
+### Required ownership and wiring
+
+1. The existing `BrokerManager` / provider registry is to be extended to resolve account-owned instances, rather than introducing a parallel order-dispatch path. Its account-aware contract must provide a broker and its matching instrument provider by `(account_id, broker_name)`. Each pair receives its own broker object, HTTP session, in-memory access/refresh token state, authentication adapter/recovery handler, and provider/cache. These objects must never be shared between two account IDs, even if both use `آگاه`.
+2. The `AuthenticationService` adapter factory must use the same account-owned broker instance managed by that registry. Authentication/recovery and order dispatch may not create separate instances for the same account, nor may a name-only broker lookup be used as a fallback for account-bound work.
+3. The application composition layer (the existing `MainWindow` / application wiring boundary) creates the account, credential, session, authentication and broker-management services once and injects them into consumers. The `AccountsPage` calls those services and renders status; it does not instantiate brokers, manage tokens itself, or implement broker-specific authentication.
+4. `AccountsPage` is the integration point for adding/selecting accounts and for per-account login/logout/status. Credentials continue to be stored only through `CredentialStore` in the OS secure vault. CAPTCHA/login behavior remains behind the broker's existing authentication adapter. The current authenticated-session contract needs a public, fail-closed per-account logout operation before the UI can wire logout.
+5. The active account determines which account a new UI order belongs to; changing the active selection must not log out, overwrite or otherwise change other accounts. Before order preparation/execution, the application must require the selected account to be logged in with a usable account-owned runtime.
+6. The existing order execution chain remains authoritative: account binding from the plan is preserved and resolved to the matching account-owned broker/provider, then execution continues through `DispatchCore → OrderEngine → M6-A…M6-E`. No duplicate dispatch path, core-side broker-specific authentication logic, account re-selection, or live-trading enablement is permitted.
+7. Any instrument resolution, trading-state query, queue-position/NATS transport and order-feedback listener used for an account must be bound to that same account-owned broker/provider. Feedback from one account must not be attributed to another account's order.
+
+### Fail-closed rules
+
+- An unknown account, broker mismatch, missing login/session, missing account-owned broker, or inconsistent runtime must stop that operation. No default account, broker-only fallback, or shared authenticated broker may be substituted.
+- HTTP 401 recovery remains bounded and account-scoped. It must update the token/session view belonging to that same account; `POST /order` must never be automatically replayed after 401.
+- Credentials remain in the OS vault. Access/refresh tokens and authenticated HTTP state stay in memory for their own account only.
+- Live trading stays disabled during these tasks. Use fake/offline HTTP sessions and deterministic tests only.
+
+### Required acceptance evidence
+
+Tests must use at least two distinct accounts on the same broker and prove:
+- each account gets a distinct broker object, HTTP session, provider instance/cache, token state and recovery handler;
+- login, refresh, logout, recovery failure and account switching for one account do not mutate another;
+- an order's explicit `account_id` resolves to that account's exact broker/provider through the existing dispatch chain;
+- stale/missing account runtime fails closed;
+- instrument lookup and order-feedback/queue-position events remain account-correct;
+- the existing M6-A…M6-E gates remain active and no `POST /order` retry occurs;
+- all network-sensitive tests are fake/offline and no real order is sent.
+
+### Scope boundary and execution order
+
+This decision records the architecture only; no implementation or UI redesign is authorized by this record itself. Before implementation, the Accounts-page visual/UX proposal must follow the existing roadmap approval gate. Then split the work into small stages: (1) lock the account-aware manager/service contracts and public logout lifecycle, (2) compose and inject the services, (3) connect account-row login/logout/status/CAPTCHA behavior, (4) route identity, trading-state, instrument provider, dispatch and feedback by account, and (5) run focused then broad regression. Each stage must identify exact allowed files and acceptance tests before an agent starts.
+
+**Roadmap naming note:** this is subtask 9, “Account-Aware Order Routing,” under Block 9 — Account & Session Management. It is distinct from the separate simulation/stress roadmap whose existing tests are named `test_block9_task9_1.py` through `test_block9_task9_7.py`; do not merge their scopes.
+
+---
