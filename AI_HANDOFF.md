@@ -2,15 +2,24 @@
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-15.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Block 9, Task 5
+## Current Status — Block 9 Account Integration, Phase 2 / Task 2C
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
-**Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry`.  
-**Latest Phase 2 MainWindow composition commit:** `23802a7` — `feat: compose account authentication service lazily`.  
-**Previous Phase 2 account-auth adapter commit:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
-**Latest account-integration foundation commit:** `39bd0d6` — `feat: add account-scoped broker registry`.  
-**Previous Phase 1 commit:** `9efb88e` — `feat: add safe per-account logout`.
+**Latest repository commit:** `56a317b` — `feat: resolve dispatch brokers by account`.  
+**Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry` (Task 5 checkpoint; not the current repository HEAD).  
+**Phase 2 MainWindow composition:** `23802a7` — `feat: compose account authentication service lazily`.  
+**Phase 2 account-auth adapter:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
+**Account-integration foundation:** `39bd0d6` — `feat: add account-scoped broker registry`.  
+**Phase 1 logout:** `9efb88e` — `feat: add safe per-account logout`.
+
+### Account-integration Phase 2 — Task 2C — COMPLETE within scope
+
+- Commit `56a317b59a577590dd46af21f9745df25f671bea` updates `DispatchCore` to pre-resolve account-owned broker/provider pairs using `(account_id, broker_name)` before any order enters `OrderEngine`.
+- Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
+- Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
+- Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
+- Remaining: production authentication and dispatch have not yet been verified to obtain the identical account-owned broker from the same manager; the active-account/login/session gate and account-bound trading-state/feedback paths remain open. The next architect step is a read-only integration-wiring audit before further code changes.
 
 ### Stage 2C — implementation and verification status
 
@@ -30,16 +39,16 @@
 
 ### Critical unresolved production integration boundary — Block 9 Task 9
 
-The account-scoped 401 recovery callback is installed on the broker instance owned by the account's authentication adapter. The production `BrokerManager`/`DispatchCore` path uses a separate broker instance today, and production code does not currently construct `AuthenticationService`. Therefore the actual app's broker instances do **not** yet have the account-scoped recovery handler installed; a live 401 on these paths currently fails closed. **Do not claim production 401 recovery is active.** Resolve account-aware broker routing/wiring under the separately scoped Block 9 Task 9 architecture and implementation; do not share one mutable authenticated broker across accounts.
+The `MainWindow.authentication_service` lazy composition seam is now present (Task 2B), and `DispatchCore` now calls account-scoped broker/provider lookups (Task 2C). However, current evidence does not prove that the production login flow and order/dispatch path obtain the exact same account-owned broker instance through the same `BrokerManager`, or that order entry is gated on the selected account's usable logged-in session. Therefore **do not claim production account-scoped 401 recovery or active-session gating is operational end-to-end** yet. The next step is a read-only trace of the concrete composition and order path; retain fail-closed behavior and never share a mutable authenticated broker across accounts. Never automatically replay `POST /order` after a 401.
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`) and 2B (`23802a7`) are complete within their scopes. Phase 2 remains in progress because `DispatchCore` still resolves brokers and providers by broker name rather than by the explicit `(account_id, broker_name)` runtime key. Task 2C — account-scoped broker/provider resolution in `DispatchCore` — is next. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. `DispatchCore` now resolves broker/provider resources by the explicit `(account_id, broker_name)` runtime key before execution and does not use name-only fallback. Phase 2 remains in progress because the same account-owned broker instance has not yet been verified end-to-end between production authentication and dispatch; the active-session gate and feedback/trading-state routes also remain unverified. Next architect action: read-only integration-wiring audit. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
-| **2. Compose and inject services** | Compose account/session/auth services and wire the existing DispatchCore broker/provider resolution to the exact account-owned broker/provider. No sharing across accounts and no name-only fallback for account-bound work. | **IN PROGRESS — Tasks 2A and 2B complete; Task 2C next** |
+| **2. Compose and inject services** | Compose account/session/auth services and route dispatch through the account-scoped broker/provider registry. Same-instance production authentication/dispatch wiring and active-session gating must still be verified. | **IN PROGRESS — Tasks 2A–2C complete; read-only wiring audit next** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | Pending |
 | **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
@@ -84,14 +93,23 @@ The account-scoped 401 recovery callback is installed on the broker instance own
   - `py_compile` succeeded. The owner confirmed the staged `git diff --check` was clean.
 - **Boundary:** no Accounts-page UI, dispatch, provider, feedback or order-routing code was changed. Task 2B does not make production authentication and dispatch use the same account-owned broker yet.
 
-**Task discipline:** the next bounded task is **Task 2C — account-scoped broker/provider resolution in `DispatchCore`**. Resolve the existing per-order binding by `(account_id, broker_name)` and use the account-scoped broker and provider methods only; no name-only fallback. Keep M6 and the existing dispatch chain unchanged. Do not wire Accounts-page UI or feedback/NATS/trading-state paths in Task 2C. The roadmap is recorded in `AI_PROJECT_MEMORY.md` and governed by Decision 031 in `DECISIONS.md`.
+### Phase 2 — Task 2C: Account-Scoped Dispatch Resolution — COMPLETE (2026-10-15)
+
+- **Implementation commit:** `56a317b` — `feat: resolve dispatch brokers by account`, pushed to `origin/master`.
+- **Changed files:** `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
+- **Implementation:** pre-resolves brokers and instrument providers using `(account_id, broker_name)` before any order enters `OrderEngine`; no name-only fallback; account/provider lookup errors block dispatch before execution. The `DispatchCore → OrderEngine → M6-A…M6-E` chain remains unchanged.
+- **Verification:** `python3 -m pytest -q test_block9_phase2_dispatch_account_identity.py` → **4 passed**; `python3 -m pytest -q test_dispatch_core.py test_execution_planner.py test_broker_manager.py` → **67 passed**; `git diff --cached --check` → passed. The agent environment lacked the Windows `py` launcher, so tests were run with equivalent `python3` commands.
+- **Safety:** offline/mocked tests only; no real credentials, network request, broker login or order. Live trading remains disabled.
+- **Boundary:** this commit does not prove that production authentication and dispatch use the exact same account-owned broker instance, nor does it complete active-session gating, trading-state routing or account-correct feedback/NATS/queue-position integration.
+
+**Task discipline:** the next architect action is a read-only trace of application composition and the production order path to verify shared `BrokerManager`/broker identity between authentication and dispatch, and to locate the active-account/login/session gate. Do not start implementation until that audit yields exact scope and acceptance tests. The roadmap is recorded in `AI_PROJECT_MEMORY.md` and governed by Decision 031 in `DECISIONS.md`.
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed Decision 031: each `(account_id, broker_name)` has its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B are complete (`9efb88e`, `39bd0d6`); Phase 2 Tasks 2A/2B are complete (`ccdd563`, `23802a7`). Next is Task 2C: make `DispatchCore` resolve its broker and instrument provider by the explicit account/broker pair, with no name-only fallback. Production account-aware routing and active production 401 recovery remain unverified until authentication, dispatch, provider and feedback use the same account runtime. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B (`9efb88e`, `39bd0d6`) and Phase 2 Tasks 2A–2C (`ccdd563`, `23802a7`, `56a317b`) are complete within scope. `DispatchCore` now uses account-scoped lookup with no name-only fallback; same-instance auth/dispatch wiring, active-session gating and account-bound feedback/trading-state routing remain unverified. Next architect step is a read-only wiring audit. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
