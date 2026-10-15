@@ -132,6 +132,22 @@ class FakeAgahLikeBroker(Broker):
     def _auth_headers(self):
         return {"Authorization": "Bearer test"}
 
+    def _authed_get_with_recovery(self, path, params=None):
+        """
+        Compatibility shim: AgaahInstrumentProvider performs its
+        authenticated search through this broker helper. This fake has
+        no recovery handler, so it issues the request exactly once and
+        raises on HTTP errors, preserving the previous behavior.
+        """
+        response = self.session.get(
+            self._url(path),
+            params=params,
+            headers=self._auth_headers(),
+            timeout=AgaahInstrumentProvider.SEARCH_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response
+
     def login(self, username, password, **kwargs):
         return {"userName": username}
 

@@ -104,6 +104,24 @@ class FakeBroker:
     def _auth_headers(self):
         return {"Authorization": "Bearer test"}
 
+    def _authed_get_with_recovery(self, path, params=None):
+        """
+        Compatibility shim: the production provider now performs its
+        authenticated search through this broker helper so a real 401
+        can be recovered once. The FakeBroker has no recovery handler;
+        it preserves the previous request shape and raises on HTTP
+        errors exactly as before, so the existing assertions on
+        ``session.search.calls`` and error wrapping are unchanged.
+        """
+        response = self.session.get(
+            self._url(path),
+            params=params,
+            headers=self._auth_headers(),
+            timeout=AgaahInstrumentProvider.SEARCH_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response
+
     def get_instrument(self, nsc_id):
         self.get_instrument_calls.append(nsc_id)
         if self._instrument_lookup_error is not None:

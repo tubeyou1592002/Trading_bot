@@ -1,7 +1,5 @@
 from typing import Dict, Optional, Tuple
 
-import requests
-
 from brokers.agaah.broker import AgaahBroker
 from brokers.base import InstrumentLookupError, InstrumentProvider
 from market.tsetmc import TSETMC
@@ -124,18 +122,27 @@ class AgaahInstrumentProvider(InstrumentProvider):
         self,
         symbol: str,
     ) -> list:
+        """
+        جست‌وجوی کاندیداها از Agah.
+
+        این فراخوانی از مسیر احراز‌شده‌ی بروکر
+        (``_authed_get_with_recovery``) عبور می‌کند تا یک HTTP 401 واقعی
+        بتواند از طریق بازیابی حساب‌محور نصب‌شده یک‌بار تازه‌سازی و
+        تکرار شود. هیچ مسیر جایگزینی مبتنی بر ``session.get`` مستقیم
+        اینجا وجود ندارد و هیچ لایه‌ی retry دومی اعمال نمی‌شود؛
+        helper بروکر مالک حداکثر یک تکرار است و در نبود handler
+        به‌صورت fail-closed شکست می‌خورد. مهلت ثابت helper (۱۰ ثانیه)
+        با ``SEARCH_TIMEOUT`` این provider هم‌ارز است.
+        """
         try:
-            response = self._broker.session.get(
-                self._broker._url(self.SEARCH_PATH),
+            response = self._broker._authed_get_with_recovery(
+                self.SEARCH_PATH,
                 params={
                     "query": symbol,
                     "count": self.SEARCH_COUNT,
                 },
-                headers=self._broker._auth_headers(),
-                timeout=self.SEARCH_TIMEOUT,
             )
-            response.raise_for_status()
-        except requests.RequestException as exc:
+        except Exception as exc:
             raise InstrumentLookupError(
                 f"Agah search برای symbol={symbol} شکست خورد: "
                 f"{type(exc).__name__}: {exc}"
