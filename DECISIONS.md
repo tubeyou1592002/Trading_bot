@@ -1440,7 +1440,16 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The Product Owner has accepted the ordered Task 3B-1 through 3B-5 implementation sequence recorded in `AI_HANDOFF.md`; next, the Architect prepares the exact bounded handoff for Task 3B-1.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The Product Owner has accepted the ordered Task 3B-1 through 3B-5 implementation sequence recorded in `AI_HANDOFF.md`; Task 3B-1 is complete and pushed as `e4a0796`; next, the Architect issues the bounded Task 3B-2 credential save/delete UI task.
+
+## Completion Record — Block 9 Phase 3 Task 3B-1: Lazy service composition/injection — COMPLETE (2026-10-15)
+
+- **Commit pushed:** `e4a0796` — `feat: inject lazy account services`.
+- **Changed and committed files:** `ui/main_window.py`, `ui/accounts_page.py`, `test_block9_phase2_service_composition.py`.
+- **Design:** MainWindow lazily caches one CredentialStore and one SessionManager; AuthenticationService uses those exact shared instances. AccountsPage accepts optional keyword-only service callbacks; MainWindow injects lazy lambdas without executing them during page/window construction. Construction failure does not cache an incomplete AuthenticationService.
+- **Owner/agent-reported offline verification:** `python3 -m pytest -q test_block9_phase2_service_composition.py` → **4 passed**; account-management tests → **24 passed**; UI foundation + account-management tests → **37 passed**; focused AuthenticationService/Agah adapter/integration suite → **145 passed**. `py_compile` and targeted `git diff --check` succeeded. The agent environment did not have the Windows `py` launcher, so equivalent `python3` commands were used.
+- **Final owner review:** only the three allowed Task 3B-1 files were staged and committed; cached diff check passed. The unrelated local `test_ui2_1_account_management.py` worktree marker had no content diff; `ui/test_runner.py` and other unrelated artifacts remained unstaged.
+- **Scope boundary:** no credential/login UI action, real vault access, network request, broker login, or order was added/performed.
 
 ### Accounts-page integration execution order — accepted by Product Owner (2026-10-15)
 
