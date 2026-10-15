@@ -7,7 +7,8 @@
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
 **Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry`.  
-**Latest account-integration implementation commit:** `9efb88e` — `feat: add safe per-account logout`.
+**Latest account-integration foundation commit:** `39bd0d6` — `feat: add account-scoped broker registry`.  
+**Previous Phase 1 commit:** `9efb88e` — `feat: add safe per-account logout`.
 
 ### Stage 2C — implementation and verification status
 
@@ -31,12 +32,12 @@ The account-scoped 401 recovery callback is installed on the broker instance own
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Account-aware integration implementation has started only with Phase 1 Task 1A (public per-account logout), completed and pushed in `9efb88e`. Phase 1 remains in progress because the account-aware `BrokerManager`/provider contract and per-account runtime identity are not yet finalized. The overall Accounts-page layout/feature direction is accepted at concept level and must follow the existing dark RTL theme. Work strictly in the sequence below; review each phase before proceeding.
+**Owner-approved direction:** 2026-10-15. Phase 1 foundation is complete: Task 1A (public per-account logout, `9efb88e`) and Task 1B (account-scoped broker/provider registry, `39bd0d6`) are reviewed and pushed. Phase 2 service composition and same-instance wiring has not started. The overall Accounts-page layout/feature direction is accepted at concept level and must follow the existing dark RTL theme. Work strictly in the sequence below; review each phase before proceeding.
 
 | Phase | Scope | Status |
 |---|---|---|
-| **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **IN PROGRESS — Task 1A complete; runtime/manager contract remains** |
-| **2. Compose and inject services** | Construct and inject account, credential, session, authentication and account-aware broker-management services at the application composition boundary. Auth and dispatch must use the same broker instance per account, with no instance shared across accounts. | Pending |
+| **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
+| **2. Compose and inject services** | Construct and inject account, credential, session, authentication and account-aware broker-management services at the application composition boundary. Auth and dispatch must use the same broker instance per account, with no instance shared across accounts. | **NEXT — not started** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | Pending |
 | **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
@@ -50,14 +51,24 @@ The account-scoped 401 recovery callback is installed on the broker instance own
 - **Verification reported:** `python3 -m pytest -q test_block9_task4_authentication_service.py` → **75 passed in 1.00s**. Tests cover logout cleanup, failure paths, per-account isolation, and retention of another account's session.
 - **Review boundary:** Task 1A is complete; **Phase 1 is not complete yet**. The account-aware `BrokerManager`/provider contract and per-account runtime identity still need to be finalized before service composition or UI work starts.
 
-**Task discipline:** each agent task must contain exact allowed files, acceptance criteria and test commands. No phase may begin before the prior phase's report has been reviewed. The next task must remain within Phase 1 and focus on finalizing the account-aware `BrokerManager`/provider contract and per-account runtime identity; do not start service composition or UI work. The current roadmap is also recorded in `AI_PROJECT_MEMORY.md` and architecturally defined by Decision 031 in `DECISIONS.md`.
+#### Phase 1 — Task 1B: Account-Scoped BrokerManager Registry — COMPLETE (2026-10-15)
+
+- **Implementation commit:** `39bd0d6` — `feat: add account-scoped broker registry`, pushed to `origin/master`.
+- **Only changed files:** `brokers/manager.py` and `test_broker_manager.py`.
+- **Account-scoped API:** added `get_for_account(account_id, broker_name)` and `get_instrument_provider_for_account(account_id, broker_name)`, keyed by the exact pair `(account_id, broker_name)`. Each account gets its own broker and provider/cache; provider resolution validates that `provider._broker` is the exact same object as that account's broker.
+- **Safety and concurrency:** invalid account IDs, unknown brokers, missing/non-callable factories, invalid or reused broker/provider instances fail closed. Failed factory/provider construction is not cached, allowing retry. A shared `RLock` makes account-scoped creation thread-safe for repeated/concurrent access to the same key.
+- **Backward compatibility:** existing name-based `get(name)`, `get_instrument_provider(name)` and `register(...)` remain available. No fallback from an account-bound lookup to a name-only broker/provider is allowed.
+- **Verification reported by the owner:** `python3 -m pytest -q test_broker_manager.py` → **24 passed, 0 failed**. The full repository suite was not run as part of this bounded task.
+- **Safety / integration boundary:** tests were offline; no real broker login or order was performed. This task changes only the registry and its tests. It does **not** yet wire `AuthenticationService`, `MainWindow`, `DispatchCore`, or order feedback to these account-scoped objects, so production account-aware routing and production 401 recovery must not yet be claimed as active.
+
+**Task discipline:** each agent task must contain exact allowed files, acceptance criteria and test commands. No phase may begin before the prior phase's report has been reviewed. The next bounded implementation task belongs to Phase 2 only: wire the account's authentication adapter to the exact broker instance returned by the account-scoped `BrokerManager`, without creating a second broker for the same account. Do not begin Accounts-page UI wiring until the Phase 2 service composition boundary has been reviewed. The current roadmap is also recorded in `AI_PROJECT_MEMORY.md` and architecturally defined by Decision 031 in `DECISIONS.md`.
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed the architectural direction recorded in `DECISIONS.md` — Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary, and the Accounts page is the login/logout/status entry point. Implementation has begun only for Phase 1 Task 1A (`9efb88e`); the remaining Phase 1 contract work is still open. Next: finalize the exact account-aware manager/provider/runtime contract in a bounded task, while preserving the Accounts-page visual/UX approval gate and keeping account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed the architectural direction recorded in `DECISIONS.md` — Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary, and the Accounts page is the login/logout/status entry point. Phase 1 Tasks 1A and 1B are complete (`9efb88e`, `39bd0d6`). Next: wire the authentication adapter to the account-owned manager instance as Phase 2 work. Production account-aware order routing and production 401 recovery remain unimplemented until auth, dispatch, provider, and feedback paths are verified to use the same account runtime. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
