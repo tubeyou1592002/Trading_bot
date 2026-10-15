@@ -15,10 +15,12 @@ import threading
 from typing import List, Tuple
 
 import pytest
+import requests
 
 from brokers.agaah import AgaahBroker
 from brokers.agaah.auth_adapter import AgahAuthenticationAdapter
 from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+from models.order import BUY, Order
 from ui.account_store import AccountStore
 from ui.authentication_service import AuthenticationService
 from ui.credential_store import CredentialStore
@@ -119,6 +121,8 @@ class FakeAgahSession:
         self.force_401_on_paths = set()
         self.force_non401_on_first = set()
         self.force_second_401 = set()
+        # Test-only: force a 401 on POST /order (the live order-submission path).
+        self.force_401_on_order = False
         self.concurrent_refresh_block = False
         self._refresh_in_progress = threading.Event()
         self._refresh_complete = threading.Event()
@@ -172,6 +176,11 @@ class FakeAgahSession:
         self.calls.append(("post", url, kwargs))
         if "refresh-token" in url:
             return self._refresh_response()
+        # Test-only: simulate a 401 specifically for the live order endpoint.
+        if self._path_from_url(url) == "order":
+            if self.force_401_on_order:
+                return FakeResponse(payload=None, status_code=401)
+            return FakeResponse(payload={"isSuccess": True, "data": {}})
         # authenticate
         payload = kwargs.get("json", {})
         return FakeResponse(
@@ -861,3 +870,69 @@ def test_inconsistent_refreshed_token_view_isolates_account():
     assert system["service"].is_logged_in(ACC_B) is True
     assert sessions.get_token(ACC_B) == old_b_token
     assert len(parts_b["session"].calls) == b_calls_before
+
+
+# ---------------------------------------------------------------------------
+# Stage 2C Security Guard: POST /order is NEVER auto-retried on 401,
+# and never triggers a token refresh.
+# ---------------------------------------------------------------------------
+
+def test_post_order_401_is_not_retried_and_does_not_refresh():
+    """
+    Direct regression test for the live order-submission path.
+
+    ``AgaahBroker.place_order`` is a write (POST /order) and must stay OUTSIDE
+    the bounded 401 recovery helper: a 401 from POST /order must surface as an
+    HTTP error, must NOT be retried, and must NOT trigger any token refresh —
+    even though the account-scoped recovery handler IS installed on this broker.
+    """
+    system = build_system(ACC_A)
+    login_fully(system, ACC_A)
+    parts = system["created"][ACC_A]
+    broker = parts["broker"]
+    sess = parts["session"]
+
+    # The genuine account-scoped handler is installed by login, so the recovery
+    # machinery is live — yet the write path must ignore it.
+    assert broker._unauthorized_recovery is not None
+
+    # The injected fake session is the only HTTP transport.
+    sess.force_401_on_order = True
+
+    access_before = broker.access_token
+    refresh_before = broker.refresh_token
+    assert access_before == OLD_ACCESS_A
+    assert refresh_before == OLD_REFRESH_A
+
+    # Enable live submission ONLY on this in-memory test broker. No real
+    # account, network or broker request is involved.
+    broker.live_trading_enabled = True
+
+    order = Order(
+        nsc_id="123",
+        side=BUY,
+        price=1000,
+        quantity=1,
+        bank_account_id=0,
+    )
+
+    with pytest.raises(requests.HTTPError) as excinfo:
+        broker.place_order(order, live=True)
+
+    # The HTTP error propagates (fail-closed), never a silent recovery.
+    assert "401" in str(excinfo.value)
+
+    # Exactly one POST /order was sent — never retried.
+    order_posts = [
+        c
+        for c in sess.calls
+        if c[0] == "post" and sess._path_from_url(c[1]) == "order"
+    ]
+    assert len(order_posts) == 1
+
+    # No refresh-token POST was triggered by the failed order request.
+    assert len(sess.refresh_calls()) == 0
+
+    # Tokens are unchanged: no refresh happened as a consequence.
+    assert broker.access_token == access_before
+    assert broker.refresh_token == refresh_before
