@@ -19,7 +19,7 @@
 - Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
 - Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
 - Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
-- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A is complete and pushed as `fbdc112`; next is Phase 3 Task 3B, a read-only Accounts-page authentication UX/integration proposal for Product Owner approval; those other consumers remain later work.
+- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A is complete and pushed as `fbdc112`; the Product Owner has accepted the ordered Task 3B-1 through 3B-5 implementation sequence. Next, prepare the exact bounded handoff for Task 3B-1; other account-bound consumers remain later work.
 
 ### Stage 2C — implementation and verification status
 
@@ -111,25 +111,23 @@ The read-only audit confirms that `MainWindow.authentication_service` and `TestR
 - **Git synchronization:** the first push was rejected because remote documentation commits were ahead. `git pull --rebase --autostash origin master` succeeded; the subsequent push succeeded (`88b68e3..fbdc112)). The unrelated local `ui/test_runner.py` modification and untracked artifacts were retained and remain out of scope.
 - **Boundary:** no authentication service, credential vault, login/logout, CAPTCHA, BrokerManager, trading-state, instrument-identity, feedback or order-routing behavior was changed. This completes only the display-name contract, not account authentication integration.
 
-## Next bounded task — Block 9 Phase 3 Task 3B: Accounts-page authentication UX/integration proposal (READ-ONLY; OWNER APPROVAL GATE)
+## Block 9 Phase 3 Task 3B — Accounts-page authentication UI: OWNER-APPROVED EXECUTION ORDER
 
-**Purpose:** Prepare a source-grounded proposal for the next Accounts-page work: secure credential entry/storage, per-account login/logout/status and adapter-provided CAPTCHA. This task ends with a report for Architect review and Product Owner approval. It does **not** authorize implementation or a visual redesign.
+The read-only proposal and source/API review have been reported and reviewed by the Architect. On 2026-10-15, the Product Owner accepted the five-step execution order below. This records approval of the sequence only; it does not grant blanket implementation permission. The Architect must issue each task with its own exact file allowlist, acceptance criteria and test commands. Review the result before proceeding to the next task.
 
-**Read-only source files to inspect:**
-- `ui/accounts_page.py`, `ui/strings.py`, and `test_ui2_1_account_management.py`
-- `ui/main_window.py`, `ui/credential_store.py`, `ui/authentication_service.py`, `ui/session_manager.py`
-- `brokers/agaah/auth_adapter.py`, `brokers/base.py`, and relevant offline authentication/account tests
-- `AI_PROJECT_MEMORY.md`, `AI_HANDOFF.md`, and `DECISIONS.md` for accepted architecture and scope
+**Owner-approved Task 3B implementation order (2026-10-15):** The Product Owner accepted the following sequence. Acceptance applies to the order of work; each implementation task still requires an Architect-defined allowlist, exact acceptance criteria, and review before the next task starts.
 
-**Questions the report must answer:**
-1. Map the current AccountsPage/MainWindow/service wiring and identify the exact missing injection/interaction points.
-2. Document the existing public service contracts used for credential save/read/delete, `begin_login(account_id)`, `complete_login(account_id, response)`, per-account `logout(account_id)`, the `LoginChallenge` fields, and session-state observation. Do not invent methods or change service contracts in this task.
-3. Propose one simple Persian RTL layout for account creation, selecting/activating an account, credential management, per-account session status and actions, and the adapter-provided CAPTCHA challenge. Include a compact text wireframe and describe each interaction/state transition.
-4. State how the page remains broker-independent, does not handle tokens, uses only the OS vault through CredentialStore, and stays offline during construction. Login/network/vault work occurs only after an explicit user action.
-5. List a possible sequence of future small implementation tasks with exact likely file boundaries and focused offline acceptance tests. Keep account-bound trading-state, instrument identity, feedback/NATS/queue-position and order-routing fixes in the separate later phase; do not mix them in.
-6. Explicitly identify decisions requiring Product Owner approval. Keep the already accepted dark RTL visual direction; do not broaden the redesign.
+1. **Task 3B-1 — Lazy service composition/injection and offline construction tests.** Provide AccountsPage with controlled/lazy access to the already-composed shared services without triggering service, vault, network, or login work during MainWindow/AccountsPage construction. No credential/login UI actions in this task.
+2. **Task 3B-2 — Credential save/delete UI.** Wire explicit user-triggered save/delete via CredentialStore; cover success, missing credential, validation/backend failures, and secret non-disclosure with fake in-memory backends.
+3. **Task 3B-3 — Begin/cancel login and generic challenge display.** Use AuthenticationService and its public LoginChallenge contract; display the challenge only when returned, keep broker-specific CAPTCHA details inside the adapter, and test with fakes.
+4. **Task 3B-4 — Complete login, local logout, and per-account status.** Confirm status from public service APIs; prove state and UI for one account cannot change another account using at least two fake accounts on the same broker.
+5. **Task 3B-5 — Integrated offline UX acceptance.** Verify the entire credential → challenge → response → status flow, offline construction, and regressions. No real vault/network/login/order is allowed.
 
-**Strict constraints:** no file edits of any kind (including docs, screenshots, generated mockups, or tests); no Stage/Commit/Push; no real credentials, OS vault calls, network requests, broker login or order submission. Do not run commands that mutate the worktree. Report source paths/method names and evidence, clearly distinguishing verified contracts from assumptions. Wait for approval before implementation.
+**Rules for all five tasks:** implement in sequence; Architect reviews each report/diff before the next task starts; each task gets its own exact allowed-file list and focused test commands; never stage broadly or touch unrelated local work; keep account-bound trading-state, instrument identity, order routing, NATS/queue-position, and feedback fixes in the separate later phase. The current approval does not itself authorize implementation outside the individually issued task. Preserve the existing dark RTL direction and do not perform a broad redesign without separate approval.
+
+**Next action:** prepare the exact bounded implementation handoff for Task 3B-1. Do not start Task 3B-2 or any later task before Task 3B-1 is reviewed and accepted.
+
+**UI direction:** retain the dark RTL application style; the intended structure is account-creation form, account table with separate active/login indicators, then operations for the selected account. CAPTCHA/challenge UI is shown only when the authentication adapter returns a challenge. The generated visual mockup is not yet available; do not claim an image asset was created.
 
 ### Safety and worktree rules
 
