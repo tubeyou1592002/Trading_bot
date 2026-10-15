@@ -133,6 +133,7 @@ class MainWindow(QMainWindow):
         # DispatchCore -> broker_manager.get("آگاه")).
         self._broker_manager_cache = None
         self._feedback_service = None
+        self._authentication_service = None
 
         # ---------------------------------------------
         # Window identity / initial logical size
@@ -400,6 +401,32 @@ class MainWindow(QMainWindow):
 
             self._broker_manager_cache = BrokerManager()
         return self._broker_manager_cache
+
+    @property
+    def authentication_service(self):
+        """Lazily compose the account-scoped authentication service graph."""
+        if self._authentication_service is None:
+            from importlib import import_module
+            from ui.authentication_service import AuthenticationService
+            from ui.credential_store import CredentialStore
+            from ui.session_manager import SessionManager
+
+            manager = self._shared_broker_manager()
+            make_agah_adapter_factory = import_module(
+                "brokers.agaah.auth_adapter"
+            ).make_agah_adapter_factory
+            credentials = CredentialStore()
+            sessions = SessionManager()
+            service = AuthenticationService(
+                self.account_store,
+                credentials,
+                sessions,
+                adapter_factories={
+                    "آگاه": make_agah_adapter_factory(manager),
+                },
+            )
+            self._authentication_service = service
+        return self._authentication_service
 
     def _real_feedback_broker_factory(self):
         """
