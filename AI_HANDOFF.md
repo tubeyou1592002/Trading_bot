@@ -6,46 +6,50 @@
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
-**Latest pushed implementation commit:** `8f57b01` — `fix: recover Agah NATS bootstrap from expired token`.
+**Latest pushed implementation commit:** `0e4b321` — `fix: recover Agah queue position from expired token`.
 
 ### Completed and reviewed
 
 - Block 9 Tasks 1–4: complete within their documented scopes.
 - Task 5 Stage 1 (read-only token lifecycle audit), Stage 2A (Agah refresh primitive), and Stage 2B (per-account token/session synchronization): complete and reviewed.
-- Task 5 Stage 2C.1: bounded HTTP 401 recovery for four read-only GET methods implemented directly in `brokers/agaah/broker.py`; retry is at most once, concurrent refresh is coordinated per broker instance, failure cleanup is account-scoped, and `POST /order` is never automatically replayed.
-- Task 5 Stage 2C.2: instrument search in `AgaahInstrumentProvider._search_candidates()` routes through `AgaahBroker._authed_get_with_recovery()`, with no direct-session fallback or provider-owned refresh/retry layer.
-- Task 5 Stage 2C.3a: both read-only NATS bootstrap requests now route through `_authed_get_with_recovery()` in `asyncio.to_thread`: `pusher/nats` and `Pusher/message-types`. No second retry layer or direct-session fallback was added. Response parsing/schema extraction and the existing NATS startup error path are preserved.
-- Stage 2C.3a changed exactly three files: `brokers/agaah/nats_transport.py`, `test_ui5_task4_stage2_queue_position.py` (minimal FakeBroker shim), and `test_block9_task5_401_nats_transport.py` (new focused tests).
+- Task 5 Stage 2C.1: bounded HTTP 401 recovery for four read-only GET methods implemented in `brokers/agaah/broker.py`; retry is at most once, concurrent refresh is coordinated per broker instance, failure cleanup is account-scoped, and `POST /order` is never automatically replayed.
+- Task 5 Stage 2C.2: instrument search in `AgaahInstrumentProvider._search_candidates()` routes through `AgaahBroker._authed_get_with_recovery()`, without direct-session fallback or provider-owned retry/refresh.
+- Task 5 Stage 2C.3a: the NATS bootstrap requests `pusher/nats` and `Pusher/message-types` use the helper through `asyncio.to_thread`. No second retry layer or direct-session fallback was introduced; response parsing/schema extraction and startup error behavior are preserved. Commit: `8f57b01`.
+- Task 5 Stage 2C.3b: `AgahQueuePositionService.get_queue_position()` routes `GET order/getorderposition` through `_authed_get_with_recovery("order/getorderposition", params=params)`. The three query parameters, conversion/validation behavior, synchronous service boundary, and catch-and-return-`None` contract are preserved. No change was made to `brokers/agaah/queue_position.py`. Commit: `0e4b321`.
+- Stage 2C.3b changed exactly two files: `brokers/agaah/nats_transport.py` and the new `test_block9_task5_401_queue_position.py`.
 
 ### Verification evidence
 
-- `test_block9_task5_401_nats_transport.py test_ui5_task4_stage2_queue_position.py` on the owner's Windows/Python 3.13 environment: **53 passed in 1.83s**.
-- The focused NATS recovery tests cover first-401 recovery/retry, refreshed Authorization header, second-401 fail-closed behavior, missing handler, non-401 errors, recovery-failure secret-leak checks, `asyncio.to_thread`, and successful response parsing.
-- `git diff --cached --check` was clean before commit.
-- Stage 2C.3a commit `8f57b01` was pushed successfully; local `master` and `origin/master` were aligned at that point.
-- Some agent-environment runs lacked `nats`/`nkeys`; those results were treated as environment limitations, not green test results. The owner's Windows run above collected both specified files and passed all 53 tests.
-- Stage 2C.3a has architect approval within its bounded scope.
+- Stage 2C.3a owner-side Windows run: `test_block9_task5_401_nats_transport.py test_ui5_task4_stage2_queue_position.py` → **53 passed**.
+- Stage 2C.3b owner-side Windows run: `test_block9_task5_401_queue_position.py test_ui5_task4_stage2_queue_position.py` → **52 passed in 0.97s**.
+- Task 5 regression set: five authentication/recovery suites including the NATS focused suite → **161 passed in 0.82s**.
+- All Block 9 files were collected explicitly with PowerShell `Get-ChildItem -File -Filter 'test_block9_task*.py'` (19 files) and run with pytest → **523 passed in 2.46s**, exit 0.
+- The new queue-position test covers 401 recovery/retry, refreshed Authorization header, unchanged URL/parameters, second-401 fail-closed behavior, no handler, non-401 error, secret-leak checks, return-value contract, and absence of order POSTs. The queue-position and NATS tests use fake HTTP sessions; no real broker/network/order was used.
+- `git diff --cached --check` was clean before each implementation commit. Commits `8f57b01` and `0e4b321` were both pushed successfully; after the last push local `master` and `origin/master` aligned at `0e4b321`.
+- The agent Linux environment lacked `nats`/`nkeys`, so NATS-related collection errors in that environment were reported as environment limits, not success. The owner's Windows run successfully collected and ran the relevant suites.
 
-### Next action — Stage 2C.3b: queue-position HTTP 401 recovery
+### Next action — READ-ONLY Stage 2C Final Coverage / Architecture Audit
 
-Implement bounded recovery for `GET order/getorderposition` inside `AgahQueuePositionService.get_queue_position()` in `brokers/agaah/nats_transport.py`, routing through the existing `AgaahBroker._authed_get_with_recovery("order/getorderposition", params=params)` helper. Preserve the three existing query parameters, return type and catch-and-return-`None` behavior. The caller already uses `asyncio.to_thread`; do not change `brokers/agaah/queue_position.py`.
+All request paths identified in the earlier read-only audit have now been routed through the existing bounded recovery helper. Before declaring Stage 2C complete, perform a **read-only audit only** (no code/test/doc edits) covering:
 
-Allowed files for this bounded implementation:
-1. `brokers/agaah/nats_transport.py`
-2. New `test_block9_task5_401_queue_position.py`
+1. The four direct authenticated GET methods in `brokers/agaah/broker.py` already protected by Stage 2C.1.
+2. Instrument search in `brokers/agaah/instrument_provider.py` (Stage 2C.2).
+3. NATS bootstrap in `brokers/agaah/nats_transport.py` (Stage 2C.3a).
+4. Queue-position GET in `AgahQueuePositionService.get_queue_position()` (Stage 2C.3b).
+5. Tests, bounded retry semantics, error/secret exposure, request parameter/header preservation, and absence of automatic retry for `POST /order`.
 
-Do not re-edit Stage 2C.3a tests or expand into authentication-service/session/broker routing, UI, or account-aware routing. Do not install dependencies, commit, or push during agent execution. The architect must review the report and exact local diffs before authorizing commit/push.
+Confirm whether there are any additional in-scope authenticated read-only GET call paths still bypassing the helper. Do not guess API behavior. Record exact source paths/functions and the test evidence that supports each result. If the audit finds a real gap, stop and propose a separately scoped repair task; do not implement it in the audit. The architect decides whether Stage 2C can close after reviewing the report.
 
 ### Critical unresolved integration boundary
 
-The account-scoped 401 recovery callback is installed on the broker instance owned by the account's authentication adapter. The production `BrokerManager`/`DispatchCore` path may use a different broker instance. Stage 2C.1–2C.3a only establish the helper call paths and their offline/owner-environment tests; they do **not** prove that production NATS/order-feedback paths use the account-owned broker with the callback installed. Full account-aware routing remains a separate Block 9 Task 9 concern. Do not share one mutable authenticated broker instance across accounts.
+The account-scoped 401 recovery callback is installed on the broker instance owned by the account's authentication adapter. The production `BrokerManager`/`DispatchCore` path may use a different broker instance. Stage 2C.1–2C.3b establish helper call paths and offline/owner-environment tests; they do **not** prove that production order-feedback/NATS or dispatch paths use the account-owned broker with the callback installed. Full account-aware routing remains a separate Block 9 Task 9 concern. Do not share one mutable authenticated broker instance across accounts, and do not claim production recovery is active until this wiring is confirmed.
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
-- Live trading remains disabled. Stage 2C.1–2C.3a recovery tests use fake HTTP sessions; no real order or broker request was made.
-- The owner's local worktree contains unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Stage 2C as a whole is **NOT COMPLETE**. Finish the approved read-only request paths, then conduct separately scoped integration/regression review. Runtime recovery must not be claimed until the account-owned broker/callback wiring is confirmed.
+- Live trading remains disabled. All Stage 2C focused tests use fake HTTP sessions; no real order or broker request was made.
+- The owner's local worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
+- Stage 2C is **awaiting the final read-only coverage audit and architect decision**. Account-aware production routing is explicitly deferred to Block 9 Task 9.
 
 ---
 
