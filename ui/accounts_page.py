@@ -59,10 +59,21 @@ class AccountsPage(QWidget):
     mirrors that state in the list.
     """
 
-    def __init__(self, account_store, parent=None):
+    def __init__(
+        self,
+        account_store,
+        parent=None,
+        *,
+        authentication_service_factory=None,
+        credential_store_factory=None,
+        session_manager_factory=None,
+    ):
         super().__init__(parent)
 
         self.store = account_store
+        self._authentication_service_factory = authentication_service_factory
+        self._credential_store_factory = credential_store_factory
+        self._session_manager_factory = session_manager_factory
 
         root_layout = QVBoxLayout(self)
 

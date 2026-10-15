@@ -31,6 +31,11 @@ def test_main_window_construction_does_not_compose_auth_services(qapp, monkeypat
     window = MainWindow()
     assert window._broker_manager_cache is None
     assert window._authentication_service is None
+    assert window._credential_store is None
+    assert window._session_manager is None
+    assert window.accounts_page._authentication_service_factory is not None
+    assert window.accounts_page._credential_store_factory is not None
+    assert window.accounts_page._session_manager_factory is not None
     assert constructions == []
     window.close()
 
@@ -104,6 +109,15 @@ def test_authentication_service_composition_is_cached_and_manager_bound(qapp, mo
     assert service.account_store is account_store
     assert isinstance(service.credentials, FakeCredentialStore)
     assert isinstance(service.sessions, FakeSessionManager)
+    assert window.credential_store is service.credentials
+    assert window.session_manager is service.sessions
+    assert window.accounts_page._credential_store_factory() is service.credentials
+    assert window.accounts_page._session_manager_factory() is service.sessions
+    assert window.accounts_page._authentication_service_factory() is service
+    assert window.credential_store is window.credential_store
+    assert window.session_manager is window.session_manager
+    assert len([call for call in calls if call[0] == "credentials"]) == 1
+    assert len([call for call in calls if call[0] == "sessions"]) == 1
     assert factory_managers == [manager]
     assert window._shared_broker_manager() is manager
     assert [call[0] for call in calls] == ["credentials", "sessions", "service"]
@@ -137,8 +151,10 @@ def test_failed_authentication_service_construction_can_retry(qapp, monkeypatch)
         def __init__(self):
             pass
 
-    monkeypatch.setattr(credential_module, "CredentialStore", Dependency)
-    monkeypatch.setattr(session_module, "SessionManager", Dependency)
+    credentials = Dependency()
+    sessions = Dependency()
+    monkeypatch.setattr(credential_module, "CredentialStore", lambda: credentials)
+    monkeypatch.setattr(session_module, "SessionManager", lambda: sessions)
     attempts = []
 
     class FlakyService:
@@ -159,4 +175,22 @@ def test_failed_authentication_service_construction_can_retry(qapp, monkeypatch)
     assert window.authentication_service is service
     assert len(attempts) == 2
     assert service.args[0] is window.account_store
+    assert service.args[1] is credentials
+    assert service.args[2] is sessions
     window.close()
+
+
+def test_accounts_page_injected_factories_are_not_called_on_construction(qapp):
+    from ui.account_store import AccountStore
+    from ui.accounts_page import AccountsPage
+
+    calls = []
+    page = AccountsPage(
+        AccountStore(),
+        authentication_service_factory=lambda: calls.append("auth"),
+        credential_store_factory=lambda: calls.append("credentials"),
+        session_manager_factory=lambda: calls.append("sessions"),
+    )
+
+    assert calls == []
+    page.close()

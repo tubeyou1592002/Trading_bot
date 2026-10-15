@@ -134,6 +134,8 @@ class MainWindow(QMainWindow):
         self._broker_manager_cache = None
         self._feedback_service = None
         self._authentication_service = None
+        self._credential_store = None
+        self._session_manager = None
 
         # ---------------------------------------------
         # Window identity / initial logical size
@@ -229,7 +231,13 @@ class MainWindow(QMainWindow):
             self.placeholder_pages[name] = page
             self.content_area.addWidget(page)
 
-        self.accounts_page = AccountsPage(self.account_store, self.content_area)
+        self.accounts_page = AccountsPage(
+            self.account_store,
+            self.content_area,
+            authentication_service_factory=lambda: self.authentication_service,
+            credential_store_factory=lambda: self.credential_store,
+            session_manager_factory=lambda: self.session_manager,
+        )
         self.pages["Accounts"] = self.accounts_page
         self.content_area.addWidget(self.accounts_page)
 
@@ -408,25 +416,39 @@ class MainWindow(QMainWindow):
         if self._authentication_service is None:
             from importlib import import_module
             from ui.authentication_service import AuthenticationService
-            from ui.credential_store import CredentialStore
-            from ui.session_manager import SessionManager
 
             manager = self._shared_broker_manager()
             make_agah_adapter_factory = import_module(
                 "brokers.agaah.auth_adapter"
             ).make_agah_adapter_factory
-            credentials = CredentialStore()
-            sessions = SessionManager()
             service = AuthenticationService(
                 self.account_store,
-                credentials,
-                sessions,
+                self.credential_store,
+                self.session_manager,
                 adapter_factories={
                     "آگاه": make_agah_adapter_factory(manager),
                 },
             )
             self._authentication_service = service
         return self._authentication_service
+
+    @property
+    def credential_store(self):
+        """Lazily create the one CredentialStore shared by this window."""
+        if self._credential_store is None:
+            from ui.credential_store import CredentialStore
+
+            self._credential_store = CredentialStore()
+        return self._credential_store
+
+    @property
+    def session_manager(self):
+        """Lazily create the one SessionManager shared by this window."""
+        if self._session_manager is None:
+            from ui.session_manager import SessionManager
+
+            self._session_manager = SessionManager()
+        return self._session_manager
 
     def _real_feedback_broker_factory(self):
         """
