@@ -19,7 +19,7 @@
 - Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
 - Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
 - Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
-- Remaining: production authentication and dispatch have not yet been verified to obtain the identical account-owned broker from the same manager; the active-account/login/session gate and account-bound trading-state/feedback paths remain open. The next architect step is a read-only integration-wiring audit before further code changes.
+- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The account page itself does not call `AuthenticationService`, so login/logout UI remains unwired. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Next is Phase 3 Task 3A for the display-name UI contract; those other consumers remain later work.
 
 ### Stage 2C — implementation and verification status
 
@@ -39,16 +39,16 @@
 
 ### Critical unresolved production integration boundary — Block 9 Task 9
 
-The `MainWindow.authentication_service` lazy composition seam is now present (Task 2B), and `DispatchCore` now calls account-scoped broker/provider lookups (Task 2C). However, current evidence does not prove that the production login flow and order/dispatch path obtain the exact same account-owned broker instance through the same `BrokerManager`, or that order entry is gated on the selected account's usable logged-in session. Therefore **do not claim production account-scoped 401 recovery or active-session gating is operational end-to-end** yet. The next step is a read-only trace of the concrete composition and order path; retain fail-closed behavior and never share a mutable authenticated broker across accounts. Never automatically replay `POST /order` after a 401.
+The read-only audit confirms that `MainWindow.authentication_service` and `TestRunner` are built using the same cached `BrokerManager`, and both the adapter factory and `DispatchCore` resolve the same account-owned broker for a matching `(account_id, broker_name)` pair. But `AccountsPage` does not invoke `AuthenticationService`, so no user-facing account login/logout flow is connected yet; active-session gating cannot be claimed as operational. In addition, `MainWindow._real_trading_state_query()` and `_real_feedback_broker_factory()` use name-only broker/provider access, and `ui/order_configuration_page.py::_default_order_identity_resolver()` creates a separate manager. Track these as later account-bound routing work. Preserve fail-closed behavior, independent per-account runtimes, and never automatically replay `POST /order` after a 401.
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. `DispatchCore` now resolves broker/provider resources by the explicit `(account_id, broker_name)` runtime key before execution and does not use name-only fallback. Phase 2 remains in progress because the same account-owned broker instance has not yet been verified end-to-end between production authentication and dispatch; the active-session gate and feedback/trading-state routes also remain unverified. Next architect action: read-only integration-wiring audit. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. The source audit confirms that MainWindow passes its same cached `BrokerManager` to authentication-adapter composition and the `TestRunner`/`DispatchCore` path. User-facing account login/logout is still unwired because `AccountsPage` does not call `AuthenticationService`; name-only/separate-manager paths remain in trading-state, instrument identity resolution and feedback. Next bounded implementation is Phase 3 Task 3A, limited to the display-name/account-store UI contract. The Accounts-page concept remains the accepted dark RTL direction. Work strictly in sequence and review each task before proceeding.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
-| **2. Compose and inject services** | Compose account/session/auth services and route dispatch through the account-scoped broker/provider registry. Same-instance production authentication/dispatch wiring and active-session gating must still be verified. | **IN PROGRESS — Tasks 2A–2C complete; read-only wiring audit next** |
+| **2. Compose and inject services** | Compose and inject account/session/authentication services; route the TestRunner/DispatchCore path through MainWindow's shared manager and account-scoped broker/provider registry. User-facing login/logout and active-session gating belong to Phase 3. | **COMPLETE within defined scope — Tasks 2A–2C reviewed/pushed** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | Pending |
 | **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | Pending |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
@@ -102,14 +102,43 @@ The `MainWindow.authentication_service` lazy composition seam is now present (Ta
 - **Safety:** offline/mocked tests only; no real credentials, network request, broker login or order. Live trading remains disabled.
 - **Boundary:** this commit does not prove that production authentication and dispatch use the exact same account-owned broker instance, nor does it complete active-session gating, trading-state routing or account-correct feedback/NATS/queue-position integration.
 
-**Task discipline:** the next architect action is a read-only trace of application composition and the production order path to verify shared `BrokerManager`/broker identity between authentication and dispatch, and to locate the active-account/login/session gate. Do not start implementation until that audit yields exact scope and acceptance tests. The roadmap is recorded in `AI_PROJECT_MEMORY.md` and governed by Decision 031 in `DECISIONS.md`.
+## Next bounded implementation task — Block 9 Phase 3 Task 3A: Accounts-page display-name contract
+
+**Allowed files only:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+
+### Goal
+Fix the Accounts page so account creation satisfies the already-required `AccountStore.add(account_id, broker_name, display_name)` contract and the user's chosen display name is shown in the account table. This is a small UI/data-contract fix, not authentication integration.
+
+### Required changes
+1. Add a Persian-labeled display-name input using strings from `ui/strings.py`; do not hard-code new user-facing text in `accounts_page.py`.
+2. Pass all three explicit values to `self.store.add(account_id, broker_name, display_name)`. Do not change `AccountStore` or weaken its validation.
+3. Show `record.display_name` in its own table column while preserving the visible account ID, broker name, active-account indicator, and selection by the exact account ID. Update column constants/tests as needed.
+4. Empty/whitespace display names must fail through the existing inline validation mechanism without creating an account or raising an uncaught `TypeError`. On success, clear the form and refresh the table.
+5. Preserve current visual/theme conventions and RTL layout; no broader redesign in this task.
+
+### Explicitly out of scope
+No `AuthenticationService`, credential vault, username/password, login/logout, CAPTCHA, `BrokerManager`, network, trading-state, feedback, order or dispatch changes. Keep `AccountsPage` construction offline and preserve unrelated files.
+
+### Verification
+Run and report actual results:
+```powershell
+py -3 -m pytest -q test_ui2_1_account_management.py
+py -3 -m pytest -q test_ui1_application_foundation.py test_ui2_1_account_management.py
+git diff --check -- ui/accounts_page.py ui/strings.py test_ui2_1_account_management.py
+```
+
+No Stage, Commit, or Push. Do not stage broadly. Preserve the unrelated `ui/test_runner.py` modification and all untracked local artifacts. Report exact changed files and outputs.
+
+**Architectural note for later phases:** `MainWindow._real_trading_state_query()` and `_real_feedback_broker_factory()` still use name-only resolution, and `ui/order_configuration_page.py::_default_order_identity_resolver()` constructs a separate `BrokerManager`. Do not attempt to fix those in Task 3A; route them separately by account in the later account-bound activity phase.
+
+
 
 ### Safety and worktree rules
 
 - Never automatically replay `POST /order` after HTTP 401; duplicate-order risk is unacceptable.
 - Live trading remains disabled. Stage 2C verification used fake HTTP sessions; no real order or broker request was made.
 - The owner's worktree contains the unrelated `ui/test_runner.py` modification and untracked local artifacts. Do not stage broadly, use `git add -A`, overwrite, or delete those files.
-- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B (`9efb88e`, `39bd0d6`) and Phase 2 Tasks 2A–2C (`ccdd563`, `23802a7`, `56a317b`) are complete within scope. `DispatchCore` now uses account-scoped lookup with no name-only fallback; same-instance auth/dispatch wiring, active-session gating and account-bound feedback/trading-state routing remain unverified. Next architect step is a read-only wiring audit. Preserve the Accounts-page visual/UX approval gate and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+- Product Owner confirmed Decision 031: each `(account_id, broker_name)` must have its own broker/HTTP session/token state/auth adapter/provider/recovery boundary. Phase 1 Tasks 1A/1B and Phase 2 Tasks 2A–2C are complete within scope. A read-only source audit confirms authentication composition and TestRunner/DispatchCore share MainWindow's cached manager, but AccountsPage does not yet invoke AuthenticationService. Trading-state, instrument identity and feedback still have name-only/separate-manager paths. Next is Phase 3 Task 3A to align the display-name form/table with AccountStore. Preserve the accepted Accounts-page visual direction and keep account-management subtask 9 separate from simulation/stress tests `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 ---
 ## 1. Project Goal
