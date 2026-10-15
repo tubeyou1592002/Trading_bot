@@ -1440,7 +1440,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The Product Owner has accepted the ordered Task 3B-1 through 3B-5 implementation sequence recorded in `AI_HANDOFF.md`; Task 3B-1 is complete and pushed as `e4a0796`; next, the Architect issues the bounded Task 3B-2 credential save/delete UI task.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (`fbdc112`) establishes account display-name UI; Task 3B-1 (`e4a0796`) composes/injects lazy account services; Task 3B-2 (`f8764c0`) wires explicit credential save/delete UI through the injected CredentialStore. MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore. However, AccountsPage still does not invoke begin/cancel/complete login, logout or status APIs; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The owner-approved Task 3B-1 through 3B-5 order remains authoritative. Next is Task 3B-3 — begin/cancel login and generic challenge display — with its bounded allowlist and acceptance evidence specified in `AI_HANDOFF.md`.
 
 ## Completion Record — Block 9 Phase 3 Task 3B-1: Lazy service composition/injection — COMPLETE (2026-10-15)
 
@@ -1450,6 +1450,17 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 - **Owner/agent-reported offline verification:** `python3 -m pytest -q test_block9_phase2_service_composition.py` → **4 passed**; account-management tests → **24 passed**; UI foundation + account-management tests → **37 passed**; focused AuthenticationService/Agah adapter/integration suite → **145 passed**. `py_compile` and targeted `git diff --check` succeeded. The agent environment did not have the Windows `py` launcher, so equivalent `python3` commands were used.
 - **Final owner review:** only the three allowed Task 3B-1 files were staged and committed; cached diff check passed. The unrelated local `test_ui2_1_account_management.py` worktree marker had no content diff; `ui/test_runner.py` and other unrelated artifacts remained unstaged.
 - **Scope boundary:** no credential/login UI action, real vault access, network request, broker login, or order was added/performed.
+
+
+## Completion Record — Block 9 Phase 3 Task 3B-2: Credential save/delete UI — COMPLETE (2026-10-15)
+
+- **Commit pushed:** `f8764c0` — `feat: add account credential management UI`.
+- **Files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Decision applied:** selected-row identity is the actual account ID plus the broker name stored in the account record. UI credential operations are explicit user actions routed only through the injected `CredentialStore`; no credential read-back, prefill, or page-construction vault action is allowed. Password entry remains masked, entered values are passed verbatim after blank-only validation, sensitive fields clear after save/delete attempts, and UI messages do not expose backend exception details.
+- **Reviewed scope:** only the three allowlisted files were staged; `git diff --cached --check` passed. The unrelated local `ui/test_runner.py` modification and untracked artifacts were excluded from the commit.
+- **Reported offline verification:** agent-reported account-management **33 passed**, UI-foundation + account-management **46 passed**, service-composition + CredentialStore **68 passed, 7 skipped**, with compilation and scoped diff checks passing. These results were reported by the implementation agent using `python3`; no claim is made that the owner reran them locally.
+- **Safety:** no real vault access, broker login, CAPTCHA request, network request or order was performed.
+- **Next bounded task:** Task 3B-3 — begin/cancel login and generic challenge display. See `AI_HANDOFF.md`; complete-login, logout and status wiring remain outside that task.
 
 ### Accounts-page integration execution order — accepted by Product Owner (2026-10-15)
 
