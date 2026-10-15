@@ -1440,7 +1440,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) are complete and pushed. Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their scopes. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore. `AccountsPage` does not yet invoke AuthenticationService, so user-facing login/logout remains disconnected; trading-state, instrument identity and feedback still use name-only or separate-manager paths. Next: Phase 3 Task 3A, the display-name/account-store UI contract, followed by bounded login/credential integration and later account-bound activity routing.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`), and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (display-name/account-store UI contract) is complete and pushed as `fbdc112`. Source audit confirms MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore, but `AccountsPage` still does not invoke AuthenticationService; trading-state, instrument identity and feedback still use name-only or separate-manager paths. Next is Phase 3 Task 3B: a read-only Accounts-page authentication UX/integration proposal for Product Owner review before implementation.
 
 ### Decision
 
