@@ -62,7 +62,7 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 - Safety: no real login, credential-vault operation, network request or order; no change to Accounts-page UI or order dispatch. Same-instance account-aware authentication/dispatch remains incomplete.
 - Follow-up audit after Task 2C: MainWindow passes its cached `BrokerManager` to both AuthenticationService's adapter factory and the TestRunner/DispatchCore path. `AccountsPage` does not yet call AuthenticationService, so user-facing login/logout remains unwired. The trading-state and feedback factories still use name-only broker/provider APIs, and order identity resolution constructs a separate manager.
 - Phase 3 Task 3A is complete and pushed as `fbdc112` — `feat: add account display names to accounts page`. The owner verified 24 account-management tests and 37 UI-foundation/account-management tests passing. The Accounts page still does not invoke AuthenticationService.
-- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15. Task 3B-1 is complete and pushed as `e4a0796`; Task 3B-2 credential save/delete UI is complete and pushed as `f8764c0`; Task 3B-3 begin/cancel login and public challenge display is complete and pushed as `c8ec626`. Task 3B-4 (complete login, local logout and per-account status) is complete and pushed as `9cb1f95`. The next bounded task is Task 3B-5, integrated offline UX acceptance; its current test-only allowlist and acceptance criteria are in `AI_HANDOFF.md`. Implement tasks only within their issued allowlist and review evidence before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
+- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15. Task 3B-1 is complete and pushed as `e4a0796`; Task 3B-2 credential save/delete UI is complete and pushed as `f8764c0`; Task 3B-3 begin/cancel login and public challenge display is complete and pushed as `c8ec626`. Task 3B-4 (complete login, local logout and per-account status) is complete and pushed as `9cb1f95`. Task 3B-5 integrated offline UX acceptance is complete and pushed as 19d9558. The next bounded task is Task 5 Stage 3 final offline integration/regression audit, followed by account-routing Task 9; see AI_HANDOFF.md for exact criteria. Implement tasks only within their issued allowlist and review evidence before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
 
 
 ## Accepted follow-up sequence — Block 9 Phase 3 Task 3B
@@ -107,9 +107,12 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 
 
 
-## Current checkpoint — Block 9 Phase 3 Task 3B-4 COMPLETE (2026-10-16)
+## Current checkpoint — Block 9 Phase 3 Task 3B-5 COMPLETE (2026-10-16)
 
 - Commit pushed: `9cb1f95` — `feat: complete per-account login and status UI`.
 - Committed files: `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py` only.
 - Final account-management result after the last string correction: **45 passed**; prior broader UI regressions reported **58 passed** and service/composition regressions **149 passed** before that text-only change.
 - Next task: **3B-5 integrated offline UX acceptance**, test-only, adding `test_block9_phase3_accounts_ui_integration.py`. Follow `AI_HANDOFF.md`; no production changes or Git operations in the agent task.
+
+- Task 3B-5 completion: commit 19d9558 — test: verify integrated account UI offline; new integration suite 2 passed, UI regressions 58 passed, service/authentication regressions 149 passed.
+- Task 5 status: only Stage 3 (final offline integration/regression audit) remains for formal closeout; Stage 2C is complete. The next agent assignment is verification-only and allows no file changes. Task 9 account-aware routing follows after Architect acceptance of Stage 3.
