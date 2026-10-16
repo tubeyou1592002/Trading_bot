@@ -2,11 +2,11 @@
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-16.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Task 5 COMPLETE; Account-Aware Routing (Task 9) NEXT
+## Current Status — Task 5 and Task 9A COMPLETE; Account/Session Order Gate NEXT
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
-**Latest application implementation commit:** `9cb1f95` — `feat: complete per-account login and status UI`. **Latest integrated Accounts-page acceptance commit:** `19d9558` — `test: verify integrated account UI offline`. Documentation updates may create later repository commits.  
+**Latest Task 9A production commit:** `1123cd9` — `fix(ui): bind read paths to active account runtime`. **Task 9A offline acceptance-test commit:** `4aef682` — adds `test_block9_task9_account_bound_read_paths.py`. Prior milestones: `9cb1f95` (per-account login/status UI) and `19d9558` (integrated Accounts-page offline acceptance). Documentation updates may create later repository commits.  
 **Latest Task 5 implementation/test commit:** `2df4eed` — `test: guard Agah order POST against automatic retry` (Task 5 checkpoint; not the current repository HEAD).  
 **Phase 2 MainWindow composition:** `23802a7` — `feat: compose account authentication service lazily`.  
 **Phase 2 account-auth adapter:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
@@ -37,21 +37,25 @@
 
 **Stage 2C is complete within its defined scope:** authenticated Agah GET paths are routed through bounded recovery, the read-only audit found no remaining in-scope bypass, and a direct POST /order no-replay regression guard is in place. No real broker request or live order was made during these fake-session tests.
 
-### Critical unresolved production integration boundary — Block 9 Task 9
+### Current Block 9 boundary — Task 9A complete; order gate and feedback remain
 
-The Accounts-page authentication UI is now connected to AuthenticationService and its integrated offline flow is committed/tested. Production account-aware order authorization and all account-bound read/feedback paths are not yet complete: MainWindow._real_trading_state_query() uses name-only get('آگاه') and get_instrument_provider('آگاه'); ui/order_configuration_page.py::_default_order_identity_resolver() constructs a separate BrokerManager and resolves by broker name; MainWindow._real_feedback_broker_factory() also uses the name-only broker. DispatchCore resolves (account_id, broker_name) through its injected shared manager, so further changes must preserve that path. The active-account + logged-in + usable-session gate and account-correct feedback lifecycle remain unverified/unimplemented. Never automatically replay POST /order after HTTP 401.
+Task 9A is **COMPLETE and pushed** (`4aef682` adds the offline account-bound tests; `1123cd9` implements the read-path changes). Both the trading-state query and the `nscId` resolver now use the shared `MainWindow` `BrokerManager` with the exact `(account_id, broker_name)` runtime. Asynchronous read results are bound to `(account_id, broker_name, ins_code)` and stale results are rejected after an account switch. Missing/invalid account context fails closed; no name-only fallback was added. The existing `DispatchCore → OrderEngine → M6-A…M6-E` path was not changed.
+
+**Verification:** the new offline suite reports **6 passed**; `py_compile` passed. The requested broader regression currently reports **9 failed, 155 passed**: eight UI-3.2B tests use fixtures without an active account and still expect a trading-state query, and `test_ui3_1_order_configuration.py::test_14_ui_does_not_use_legacy_main` fails on the `brokers.authentication` import in `ui/accounts_page.py`, outside Task 9A. Do not weaken fail-closed behavior to satisfy a no-active-account fixture. A whole-worktree `git diff --check` previously showed CRLF/trailing-whitespace output in a file with prior local edits; the staged Task 9A diff check before commit passed, but the earlier whole-worktree output could not be attributed entirely to this task.
+
+**Still pending:** the active-account + logged-in + usable-session order-authorization gate, plus account-aware feedback in a separate task. Live trading remains disabled. Never automatically replay `POST /order` after HTTP 401.
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`) are complete within their scopes. MainWindow passes the same cached `BrokerManager` to authentication adapter composition and the `TestRunner`/`DispatchCore` path. Phase 3 Task 3A (`fbdc112`) and Tasks 3B-1 (`e4a0796`), 3B-2 (`f8764c0`), 3B-3 (`c8ec626`) and 3B-4 (`9cb1f95`) are complete and pushed within scope. Task 3B-5 integrated offline UX acceptance is complete and pushed as commit 19d9558. Task 5 Stage 3 final offline integration/regression audit is the only planned Task 5 stage still awaiting closeout. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work. The accepted dark RTL direction remains.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`), Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`), Phase 3 Tasks 3A/3B-1–3B-5, and Task 5 Stage 3 are complete within scope. **Task 9A is complete and pushed** (`4aef682`, `1123cd9`): trading-state and instrument-identity read paths now use the shared account-scoped runtime and reject stale results. The next task is the active-account + logged-in + usable-session order gate. Account-aware feedback remains a separate task. Regression caveats are recorded in the current Block 9 boundary above. The accepted dark RTL direction remains.
 
 | Phase | Scope | Status |
 |---|---|---|
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
 | **2. Compose and inject services** | Compose and inject account/session/authentication services; route the TestRunner/DispatchCore path through MainWindow's shared manager and account-scoped broker/provider registry. User-facing login/logout and active-session gating belong to Phase 3. | **COMPLETE within defined scope — Tasks 2A–2C reviewed/pushed** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | **COMPLETE — Task 3A and Tasks 3B-1–3B-5 reviewed/pushed** |
-| **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | **NEXT — Task 5 Stage 3 accepted; proceed with Task 9** |
-| **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
+| **4. Route account-bound activity** | Task 9A routes trading-state and `nscId` reads through the shared account-scoped runtime and rejects stale results. Remaining: enforce active-account + logged-in + usable-session authorization; implement account-aware feedback separately; preserve `DispatchCore → OrderEngine → M6-A…M6-E`. | **PARTIAL — Task 9A COMPLETE; order gate and feedback pending** |
+| **5. Regression and acceptance** | Task 9A offline acceptance: 6 passed. Broader requested regression: 9 failed, 155 passed; address the eight no-active-account UI fixtures and one separate import-guard failure without weakening fail-closed behavior. Live trading stays disabled; never automatically replay `POST /order` after 401. | **IN PROGRESS — broad regression not green** |
 
 #### Phase 1 — Task 1A: Public Per-Account Logout — COMPLETE (2026-10-15)
 
