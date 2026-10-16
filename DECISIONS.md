@@ -1440,7 +1440,7 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 
 ## Decision 031 — Per-Account Broker Runtime and Account-Page Authentication
 
-**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (`fbdc112`) establishes account display-name UI; Task 3B-1 (`e4a0796`) composes/injects lazy account services; Task 3B-2 (`f8764c0`) wires explicit credential save/delete UI through the injected CredentialStore. MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore. However, AccountsPage still does not invoke begin/cancel/complete login, logout or status APIs; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The owner-approved Task 3B-1 through 3B-5 order remains authoritative. Next is Task 3B-3 — begin/cancel login and generic challenge display — with its bounded allowlist and acceptance evidence specified in `AI_HANDOFF.md`.
+**Status:** Accepted architectural direction (Product Owner confirmed on 2026-10-15). Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`) and Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`) are complete within their documented scopes. Phase 3 Task 3A (`fbdc112`) establishes account display-name UI; Task 3B-1 (`e4a0796`) composes/injects lazy account services; Task 3B-2 (`f8764c0`) wires credential save/delete; Task 3B-3 (`c8ec626`) wires begin/cancel login and public challenge display. MainWindow shares its cached `BrokerManager` between AuthenticationService's adapter factory and TestRunner/DispatchCore. Complete login, local logout and per-account status UI remain unwired; trading-state, instrument identity and feedback still use name-only or separate-manager paths. The owner-approved Task 3B-1 through 3B-5 order remains authoritative. Next is Task 3B-4 — complete login, local logout and per-account status — with its bounded allowlist and acceptance evidence specified in `AI_HANDOFF.md`.
 
 ## Completion Record — Block 9 Phase 3 Task 3B-1: Lazy service composition/injection — COMPLETE (2026-10-15)
 
@@ -1460,7 +1460,17 @@ UI-5 remains COMPLETED. UI-6 Tasks 1–3 are completed; Task 4 (Integration, Reg
 - **Reviewed scope:** only the three allowlisted files were staged; `git diff --cached --check` passed. The unrelated local `ui/test_runner.py` modification and untracked artifacts were excluded from the commit.
 - **Reported offline verification:** agent-reported account-management **33 passed**, UI-foundation + account-management **46 passed**, service-composition + CredentialStore **68 passed, 7 skipped**, with compilation and scoped diff checks passing. These results were reported by the implementation agent using `python3`; no claim is made that the owner reran them locally.
 - **Safety:** no real vault access, broker login, CAPTCHA request, network request or order was performed.
-- **Next bounded task:** Task 3B-3 — begin/cancel login and generic challenge display. See `AI_HANDOFF.md`; complete-login, logout and status wiring remain outside that task.
+- **Next bounded task:** Task 3B-4 — complete login, local logout and per-account status. See `AI_HANDOFF.md`; account-bound trading-state, instrument identity, dispatch and feedback routing remain outside this task.
+
+
+## Completion Record — Block 9 Phase 3 Task 3B-3: Begin/cancel login and generic challenge display — COMPLETE (2026-10-16)
+
+- **Commit pushed:** `c8ec626` — `feat: add account login challenge UI`.
+- **Files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Accepted behavior:** Login begins only on explicit user action using the selected row's real account ID and the injected AuthenticationService; challenge images are Base64-decoded and validated; bad, missing or unsupported challenge content fails closed. Cancellation and cleanup call `cancel_login(pending_account_id)` for the original attempt rather than the selected row.
+- **Owner-reported final offline verification:** account-management **37 passed**; UI foundation + account-management **50 passed**; service-composition/authentication/Agah-adapter/integration **149 passed**; `py_compile` passed. Used `python3` because `py -3` was unavailable in the test environment.
+- **Final git evidence:** exactly the three allowed files staged; cached `git diff --cached --check` passed; commit `c8ec626` pushed successfully from `8bb7f54`.
+- **Safety:** no real credential, vault, broker/network login, CAPTCHA endpoint or order was used. Complete login, logout and status remain for Task 3B-4.
 
 ### Accounts-page integration execution order — accepted by Product Owner (2026-10-15)
 
