@@ -62,7 +62,7 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 - Safety: no real login, credential-vault operation, network request or order; no change to Accounts-page UI or order dispatch. Same-instance account-aware authentication/dispatch remains incomplete.
 - Follow-up audit after Task 2C: MainWindow passes its cached `BrokerManager` to both AuthenticationService's adapter factory and the TestRunner/DispatchCore path. `AccountsPage` does not yet call AuthenticationService, so user-facing login/logout remains unwired. The trading-state and feedback factories still use name-only broker/provider APIs, and order identity resolution constructs a separate manager.
 - Phase 3 Task 3A is complete and pushed as `fbdc112` — `feat: add account display names to accounts page`. The owner verified 24 account-management tests and 37 UI-foundation/account-management tests passing. The Accounts page still does not invoke AuthenticationService.
-- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15. Task 3B-1 is complete and pushed as `e4a0796`; Task 3B-2 credential save/delete UI is complete and pushed as `f8764c0`. The next bounded task is Task 3B-3 (begin/cancel login and generic challenge display), with the exact allowlist and acceptance criteria in `AI_HANDOFF.md`. Implement tasks only within their issued allowlist and review evidence before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
+- The Product Owner accepted the Task 3B-1 through Task 3B-5 execution order on 2026-10-15. Task 3B-1 is complete and pushed as `e4a0796`; Task 3B-2 credential save/delete UI is complete and pushed as `f8764c0`; Task 3B-3 begin/cancel login and public challenge display is complete and pushed as `c8ec626`. The next bounded task is Task 3B-4 (complete login, local logout and per-account status), with the exact allowlist and acceptance criteria in `AI_HANDOFF.md`. Implement tasks only within their issued allowlist and review evidence before proceeding. Name-only/separate-manager trading-state, instrument-identity and feedback routes remain later work.
 
 
 ## Accepted follow-up sequence — Block 9 Phase 3 Task 3B
@@ -86,6 +86,15 @@ Report each command and exact output. Do not claim tests that were not run. Neve
 - **Owner/agent-reported offline verification:** `python3 -m pytest -q test_block9_phase2_service_composition.py` → **4 passed**; account-management tests → **24 passed**; UI foundation + account-management tests → **37 passed**; focused AuthenticationService/Agah adapter/integration suite → **145 passed**. `py_compile` and targeted `git diff --check` succeeded. The agent environment did not have the Windows `py` launcher, so equivalent `python3` commands were used.
 - **Final owner review:** only the three allowed Task 3B-1 files were staged and committed; cached diff check passed. The unrelated local `test_ui2_1_account_management.py` worktree marker had no content diff; `ui/test_runner.py` and other unrelated artifacts remained unstaged.
 - **Scope boundary:** no credential/login UI action, real vault access, network request, broker login, or order was added/performed.
+
+
+## Later integration status — Block 9 Phase 3 Task 3B-3 COMPLETE (2026-10-16)
+
+- **Commit pushed:** `c8ec626` — `feat: add account login challenge UI`.
+- **Changed files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`.
+- **Verified/reported:** explicit begin/cancel login; safe generic challenge errors; Base64 CAPTCHA image validation before display; account-scoped cleanup/cancellation using the initiating account ID; lazy service-factory tests. Final report: account-management **37 passed**, UI foundation + account-management **50 passed**, auth/composition/adapter/integration **149 passed**; compile passed. `python3` used because the agent environment lacked `py -3`.
+- **Owner pushed:** `c8ec626`, from `8bb7f54`; staged path list and cached diff check were clean.
+- **Next:** Task 3B-4 — complete login, local logout and per-account status, specified in `AI_HANDOFF.md`. Order gating and account-bound trading-state/provider/feedback routing remain later work.
 
 ## Later integration status — Block 9 Phase 3 Task 3B-2 COMPLETE (2026-10-15)
 
