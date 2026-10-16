@@ -2334,7 +2334,7 @@ UI-6 does not include UI-7 scheduling/countdown, UI-8 end-to-end acceptance, Cen
 
 ### Block 9 — Account & Session Management (بلوک مدیریت حساب و نشست‌ها)
 
-**Status:** IN PROGRESS — Block 9 Tasks 1–4 and Task 5 Stages 2A–2C are complete within their documented scopes. Account-integration Phase 1 (Tasks 1A `9efb88e`, 1B `39bd0d6`) and Phase 2 (Tasks 2A `ccdd563`, 2B `23802a7`, 2C `56a317b`) are complete and pushed within scope. The shared `BrokerManager` is used by authentication composition and TestRunner/DispatchCore, resolving account-owned resources by `(account_id, broker_name)` when called. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`), Task 3B-2 (`f8764c0`) and Task 3B-3 (`c8ec626`) are complete and pushed. AccountsPage supports display names, credential save/delete, begin/cancel login, validated challenge display, complete login, local logout and per-account status; Phase 3 Tasks 3A and 3B-1 through 3B-4 are complete. Next is Task 3B-5, integrated offline UX acceptance. Name-only or separate-manager trading-state, instrument identity and feedback paths remain later work.
+**Status:** IN PROGRESS — Block 9 Tasks 1–4 and Task 5 Stages 2A–2C are complete within their documented scopes. Account-integration Phase 1 (Tasks 1A `9efb88e`, 1B `39bd0d6`) and Phase 2 (Tasks 2A `ccdd563`, 2B `23802a7`, 2C `56a317b`) are complete and pushed within scope. The shared `BrokerManager` is used by authentication composition and TestRunner/DispatchCore, resolving account-owned resources by `(account_id, broker_name)` when called. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`), Task 3B-2 (`f8764c0`) and Task 3B-3 (`c8ec626`) are complete and pushed. AccountsPage supports display names, credential save/delete, begin/cancel login, validated challenge display, complete login, local logout and per-account status; Phase 3 Tasks 3A and 3B-1 through 3B-4 are complete. Task 3B-5 is complete in commit 19d9558; Task 5 Stage 3 offline integration/regression audit is next. Name-only or separate-manager trading-state, instrument identity and feedback paths remain later work.
 
 This block is responsible for converting the current "Accounts" page from simple/temporary account registration into a real broker account management system.
 
@@ -2548,7 +2548,7 @@ Task 2 — Secure Credential Store: **COMPLETED and independently verified.** Co
 
 Task 3 — Account Session Manager: **COMPLETED and independently verified.** Commit `4ce8aab — feat: add account session manager` exists in git history. Independent verification evidence: `test_block9_task3_session_manager.py` — **56 passed**, exit code successful. `ui/session_manager.py` is broker-independent (imports nothing from `brokers/`, `core/`, `market/`, `models/` or `main.py`), tracks per-account login state independently, and rejects overlapping login flows and invalid state transitions fail-closed. Tokens are held in memory only and never written to a `Session` snapshot, a model, a file or an error message. No real credential, broker or network was used.
 
-Next: **Block 9 account-management subtask 9 — Account-Aware Order Routing**. Decision 031 requires each `(account_id, broker_name)` to own its broker/HTTP session/token state, authentication adapter/recovery callback and provider/cache. Phase 1 Tasks 1A and 1B are complete and pushed (`9efb88e`, `39bd0d6`). Phase 2 must wire the auth adapter to the same account-owned manager instance. Account-aware production dispatch, shared-instance auth wiring, and account-correct feedback are not implemented yet. Task 5 Stages 2A, 2B, 2C.1, 2C.2, 2C.3a and 2C.3b are complete within their defined scopes. Commit `2df4eed` adds a direct fake-session guard against replaying `POST /order` after 401. Focused test: **27 passed**; all 19 `test_block9_task*.py` files: **524 passed in 3.49s** in the owner’s Windows environment. Stage 2C is closed; no production code changed in the final guard. No real broker request or order was made. Production 401 recovery is not wired yet: `BrokerManager`/`DispatchCore` uses an account-agnostic broker path separate from the adapter-owned broker. Account-aware routing and service wiring must be implemented and verified before claiming runtime recovery is active. This account-management subtask 9 is distinct from the simulation/stress test roadmap `test_block9_task9_1.py`–`test_block9_task9_7.py`.
+Next: **Task 5 Stage 3 — Final Offline Integration and Regression Audit**; after its acceptance, proceed to account-management Task 9 — Account-Aware Order Routing. Decision 031 requires each `(account_id, broker_name)` to own its broker/HTTP session/token state, authentication adapter/recovery callback and provider/cache. Phase 1 Tasks 1A and 1B are complete and pushed (`9efb88e`, `39bd0d6`). Phase 2 must wire the auth adapter to the same account-owned manager instance. Account-aware production dispatch, shared-instance auth wiring, and account-correct feedback are not implemented yet. Task 5 Stages 2A, 2B, 2C.1, 2C.2, 2C.3a and 2C.3b are complete within their defined scopes. Commit `2df4eed` adds a direct fake-session guard against replaying `POST /order` after 401. Focused test: **27 passed**; all 19 `test_block9_task*.py` files: **524 passed in 3.49s** in the owner’s Windows environment. Stage 2C is closed; no production code changed in the final guard. No real broker request or order was made. Production 401 recovery is not wired yet: `BrokerManager`/`DispatchCore` uses an account-agnostic broker path separate from the adapter-owned broker. Account-aware routing and service wiring must be implemented and verified before claiming runtime recovery is active. This account-management subtask 9 is distinct from the simulation/stress test roadmap `test_block9_task9_1.py`–`test_block9_task9_7.py`.
 
 #### Task 4 — Agah Login & Captcha Flow — Execution Plan
 
@@ -2634,7 +2634,7 @@ This addendum records one architectural-review correction and its real, offline 
 
 #### Task 5 — Token / Session Lifecycle — Execution Plan
 
-**Status:** Stage 1, Stage 2A (Agah Refresh Primitive), and Stage 2B (Per-Account Session and Token Replacement) are **COMPLETED and reviewed**. Stage 2C.1 (bounded recovery for four broker read-only GETs) and Stage 2C.2 (instrument search) are also **COMPLETED and reviewed**. Stage 2C as a whole remains **IN PROGRESS** because Agah NATS/queue-position request paths still require a separately scoped review and implementation. Account-aware order routing remains separate under Task 9.
+**Status:** Stage 1, Stage 2A (Agah Refresh Primitive), and Stage 2B (Per-Account Session and Token Replacement) are **COMPLETED and reviewed**. Stage 2C.1 (bounded recovery for four broker read-only GETs) and Stage 2C.2 (instrument search) are also **COMPLETED and reviewed**. Stage 2C, including NATS and queue-position request paths, is **COMPLETE within scope**; Task 5 Stage 3 is the only planned stage awaiting formal closeout. Account-aware order routing remains separate under Task 9.
 
 ##### Stage 1 — Discovery Findings (Verified vs. Unverified)
 
@@ -2740,21 +2740,31 @@ This addendum records one architectural-review correction and its real, offline 
 - **Production integration boundary remains unresolved:** the recovery handler is installed by `AuthenticationService` on an account-owned broker instance. A `BrokerManager`/`DispatchCore` consumer may still hold a different broker instance. Stage 2C.2 therefore does not prove that the production instrument-provider/order path always uses the account-owned broker with that handler. Do not share one mutable authenticated broker across accounts; full account-aware routing remains a separate Block 9 Task 9 item.
 - **Review conclusion:** Stage 2C.2 is accepted within its narrow scope. It does not complete Task 5 or all of Stage 2C. Live trading remains disabled; no real credentials, broker calls, network calls, or orders were used.
 
-**Stage 2C — Remaining HTTP 401 Handling and Renewal Coordination (NOT COMPLETE)**
-- Stage 2C.1 covers four read-only GET methods in `brokers/agaah/broker.py`; Stage 2C.2 additionally covers only `AgaahInstrumentProvider._search_candidates()`. Remaining uncovered paths include `brokers/agaah/nats_transport.py` (`_fetch_connection_info()` and `_fetch_message_types()`) and `AgahQueuePositionService.get_queue_position()` / `brokers/agaah/queue_position.py`. Do not treat these as covered by either completed substage.
-- A successful refresh may trigger at most one retry for an eligible non-order request. Prevent retry loops and coordinate concurrent requests so a single account does not launch multiple overlapping refresh operations.
-- A refresh failure or invalid/incomplete refresh response must invalidate only that account's authenticated state and require login again; do not silently keep a stale token.
-- Do NOT automatically replay a live `POST /order` after `401`. Surface a clear authentication failure for explicit user recovery; no duplicate-order risk may be introduced by automatic replay.
-- **Next permitted step: read-only architecture audit only** of the NATS/queue-position paths above. Record each request, current error handling, sync/async and thread boundaries, broker-instance ownership, relevant tests, and whether the existing helper can be safely reused. Do not modify code during the audit, do not guess API behavior, and do not force a synchronous helper into an async path without analysis. After review, define a small separately scoped implementation task.
+#### Stage 2C.3a — NATS Bootstrap GET Recovery — COMPLETED and reviewed
 
-**Stage 3 — Offline Integration and Regression**
+- Commit 8f57b01 adds bounded recovery for NATS bootstrap GETs pusher/nats and Pusher/message-types through the existing helper via asyncio.to_thread.
+- Owner-run offline regression: 53 passed; no real network, broker login or order.
+
+#### Stage 2C.3b — Queue-Position GET Recovery — COMPLETED and reviewed
+
+- Commit 0e4b321 routes order/getorderposition through the recovery helper while preserving parameters, response conversion and the None error contract; queue_position.py remained unchanged.
+- Owner-run offline regression: 52 passed; no real network, broker login or order.
+
+#### Stage 2C — Final Disposition: COMPLETE within scope
+
+- Remaining authenticated Agah GET paths were reviewed and routed through bounded 401 recovery; the read-only audit found no other in-scope authenticated GET bypass.
+- Eligible read-only GETs retry at most once after successful refresh. A live POST /order is never automatically replayed after 401.
+- Stage 2C.1, 2C.2, 2C.3a and 2C.3b are complete and reviewed. Task 5 Stage 3 is unblocked and is the sole planned Task 5 stage awaiting final offline integration/regression acceptance.
+- Task 9 account-aware production order routing remains separate; Task 5 closeout is not proof of order authorization or account-correct feedback.
+
+**Stage 3 — Offline Integration and Regression — NEXT / final planned Task 5 stage**
 - Use fake HTTP transport; no live broker calls, real credentials, real tokens, CAPTCHA, or orders.
 - Verify token replacement is atomic and account-scoped; renewal failure affects only the relevant account.
 - Verify bounded retry behavior, no loops, no duplicate refresh under concurrent requests, no automatic live-order replay, and no secret leakage.
 - Run the new tests plus the relevant Task 2/3/4 authentication, broker, and order-path regression tests. Report exact commands, results, and pre-existing failures separately.
 - Preserve `DispatchCore → OrderEngine → M6`, the live-trading safety lock, and the existing broker-independent authentication boundary.
 
-**Execution control:** Each substage must be reviewed before the next starts. Stages 2A, 2B, 2C.1 and 2C.2 are completed and reviewed within their stated scopes. The next permitted step is a read-only audit of the remaining NATS/queue-position paths; no implementation on those paths is approved yet. Stage 3 must not begin until all remaining Stage 2C work is completed and reviewed.
+**Execution control:** Each substage must be reviewed before the next starts. Stages 2A, 2B, 2C.1 and 2C.2 are completed and reviewed within their stated scopes. NATS and queue-position path work is complete and reviewed; Stage 3 final offline integration/regression audit is next. Stage 3 must not begin until all remaining Stage 2C work is completed and reviewed.
 
 #### Block Boundaries
 
@@ -2789,3 +2799,8 @@ Never invent an endpoint, request field, authentication mechanism, broker identi
 Commit pushed: `9cb1f95` (`feat: complete per-account login and status UI`). Only `ui/accounts_page.py`, `ui/strings.py` and `test_ui2_1_account_management.py` were committed. After the last generic-message wording adjustment, account-management tests passed **45/45**. Earlier regression runs reported UI foundation + account management **58 passed**, composition/authentication/Agah adapter/integration **149 passed**, and compilation success; the combined suites were run before the final text-only adjustment. No real vault, broker network/login, CAPTCHA request or order was used.
 
 **Next:** Block 9 Phase 3 Task 3B-5 — integrated offline UX acceptance. Test the full MainWindow/AccountsPage → fake credential backend → real AuthenticationService → real account-owned Agah adapter/broker flow with a fake HTTP transport, prove two same-broker accounts remain isolated, and test UI logout/status. The task is test-only and may add only `test_block9_phase3_accounts_ui_integration.py`; no production edits, staging, commits or pushes. See `AI_HANDOFF.md` for exact acceptance criteria.
+## Latest checkpoint — Block 9 Phase 3 Task 3B-5 COMPLETE (2026-10-16)
+
+Commit 19d9558 (test: verify integrated account UI offline) adds only test_block9_phase3_accounts_ui_integration.py. Owner-reported results: integrated UI/lazy construction 2 passed in 1.37s; UI foundation + account-management 58 passed in 4.36s; composition/authentication/Agah-adapter/integration 149 passed in 3.11s; py_compile passed. Both tests guard requests.sessions.Session.request against real HTTP; credentials and per-account HTTP transports are fake.
+
+Task 5 status: one planned stage remains — Stage 3, final offline integration/regression audit. Stage 2C, including NATS bootstrap and queue-position GET paths, is complete. After Stage 3 is reviewed and closed, proceed to account-management Task 9 (account-aware production routing).
