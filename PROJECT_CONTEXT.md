@@ -40,6 +40,8 @@ The project is currently under active development and is \*\*not considered prod
 
 
 
+**Current Block 9 checkpoint (2026-10-16):** Task 9A is complete and pushed (`4aef682`, `1123cd9`). Trading-state and `nscId` read paths use the shared `MainWindow` `BrokerManager` and are bound to `(account_id, broker_name, ins_code)`; stale results after account switches are rejected. The new offline suite passed **6 tests**. The broader requested regression remains imperfect (**9 failed, 155 passed**): eight UI-3.2B tests have no active-account fixture and one independent import-guard test fails on the `brokers.authentication` import in `ui/accounts_page.py`. Do not weaken fail-closed behavior to satisfy a missing-account fixture. Next: the active-account + logged-in + usable-session order gate; account-aware feedback remains separate. Live trading stays disabled.
+
 The project currently has:
 
 
