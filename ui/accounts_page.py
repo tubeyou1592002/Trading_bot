@@ -35,6 +35,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
+import base64
+import binascii
 
 from models.account import AccountValidationError
 from ui.account_store import AccountStoreError
@@ -194,6 +198,34 @@ class AccountsPage(QWidget):
         credentials_layout.addWidget(self.credentials_message_label, 3, 0, 1, 3)
         root_layout.addWidget(credentials_group)
 
+        login_group = QGroupBox(STRINGS.GROUP_LOGIN, self)
+        login_layout = QVBoxLayout(login_group)
+        login_buttons = QHBoxLayout()
+        self.begin_login_button = QPushButton(STRINGS.BUTTON_BEGIN_LOGIN, login_group)
+        self.begin_login_button.clicked.connect(self._on_begin_login_clicked)
+        login_buttons.addWidget(self.begin_login_button)
+        self.cancel_login_button = QPushButton(STRINGS.BUTTON_CANCEL_LOGIN, login_group)
+        self.cancel_login_button.clicked.connect(self._on_cancel_login_clicked)
+        self.cancel_login_button.setEnabled(False)
+        login_buttons.addWidget(self.cancel_login_button)
+        login_layout.addLayout(login_buttons)
+        self.login_message_label = QLabel("", login_group)
+        self.login_message_label.setProperty("role", "danger")
+        self.login_message_label.setWordWrap(True)
+        self.login_message_label.setVisible(False)
+        login_layout.addWidget(self.login_message_label)
+        self.challenge_prompt_label = QLabel("", login_group)
+        self.challenge_prompt_label.setWordWrap(True)
+        self.challenge_prompt_label.setVisible(False)
+        login_layout.addWidget(self.challenge_prompt_label)
+        self.challenge_image_label = QLabel(login_group)
+        self.challenge_image_label.setAlignment(Qt.AlignCenter)
+        self.challenge_image_label.setVisible(False)
+        login_layout.addWidget(self.challenge_image_label)
+        root_layout.addWidget(login_group)
+        self._pending_login_account_id = None
+        self._pending_authentication_service = None
+
         self._refresh_list()
 
     # ---------------------------------------------------------
@@ -252,6 +284,102 @@ class AccountsPage(QWidget):
              if record.account_id == account_id),
             None,
         )
+
+    def _clear_challenge(self):
+        self.challenge_prompt_label.clear()
+        self.challenge_prompt_label.setVisible(False)
+        self.challenge_image_label.clear()
+        self.challenge_image_label.setVisible(False)
+
+    def _login_message(self, message, *, error=True):
+        self.login_message_label.setText(message)
+        self.login_message_label.setProperty("role", "danger" if error else "success")
+        self.login_message_label.setVisible(bool(message))
+
+    def _on_begin_login_clicked(self):
+        from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+        if self._pending_login_account_id is not None:
+            self._login_message(STRINGS.LOGIN_PENDING)
+            return
+        self._clear_challenge()
+        self.login_message_label.clear()
+        self.login_message_label.setVisible(False)
+        record = self._selected_account_record()
+        if record is None:
+            self._login_message(STRINGS.LOGIN_SELECT_ACCOUNT)
+            return
+        if self._authentication_service_factory is None:
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        try:
+            service = self._authentication_service_factory()
+            challenge = service.begin_login(record.account_id)
+        except Exception:
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        if challenge is None:
+            try:
+                service.cancel_login(record.account_id)
+            except Exception:
+                pass
+            self._clear_challenge()
+            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
+            return
+        if not isinstance(challenge, LoginChallenge):
+            try:
+                service.cancel_login(record.account_id)
+            except Exception:
+                pass
+            self._clear_challenge()
+            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
+            return
+        self._pending_login_account_id = record.account_id
+        self._pending_authentication_service = service
+        self.cancel_login_button.setEnabled(True)
+        try:
+            if challenge.kind != CHALLENGE_CAPTCHA_IMAGE:
+                raise ValueError
+            if not isinstance(challenge.display_payload, str):
+                raise ValueError
+            image_bytes = base64.b64decode(challenge.display_payload, validate=True)
+            pixmap = QPixmap()
+            if not pixmap.loadFromData(image_bytes) or pixmap.isNull():
+                raise ValueError
+            self.challenge_prompt_label.setText(challenge.prompt)
+            self.challenge_prompt_label.setVisible(True)
+            self.challenge_image_label.setPixmap(pixmap)
+            self.challenge_image_label.setVisible(True)
+        except Exception:
+            try:
+                service.cancel_login(record.account_id)
+            except Exception:
+                pass
+            self._pending_login_account_id = None
+            self._pending_authentication_service = None
+            self.cancel_login_button.setEnabled(False)
+            self._clear_challenge()
+            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
+
+    def _on_cancel_login_clicked(self):
+        account_id = self._pending_login_account_id
+        if account_id is None:
+            return
+        self._clear_challenge()
+        try:
+            service = self._pending_authentication_service
+            if service is None:
+                raise RuntimeError
+            service.cancel_login(account_id)
+        except Exception:
+            self._pending_login_account_id = None
+            self._pending_authentication_service = None
+            self.cancel_login_button.setEnabled(False)
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        self._pending_login_account_id = None
+        self._pending_authentication_service = None
+        self.cancel_login_button.setEnabled(False)
+        self._login_message(STRINGS.LOGIN_CANCELLED, error=False)
 
     def _on_save_credentials_clicked(self):
         username = self.username_input.text()

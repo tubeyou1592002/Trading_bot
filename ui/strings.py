@@ -154,6 +154,14 @@ __all__ = [
     "CREDENTIALS_DELETED",
     "CREDENTIALS_NOT_FOUND",
     "CREDENTIALS_OPERATION_FAILED",
+    "GROUP_LOGIN",
+    "BUTTON_BEGIN_LOGIN",
+    "BUTTON_CANCEL_LOGIN",
+    "LOGIN_SELECT_ACCOUNT",
+    "LOGIN_PENDING",
+    "LOGIN_OPERATION_FAILED",
+    "LOGIN_CANCELLED",
+    "LOGIN_CHALLENGE_UNAVAILABLE",
     # --- order validation dialogs (removed from the path in UI-9.4; titles
     #     centralized here so UI-9.4 has one place to change) ---
     "DIALOG_INVALID_SIDE",
@@ -508,6 +516,15 @@ CREDENTIALS_SAVED = "اعتبارنامه ذخیره شد."
 CREDENTIALS_DELETED = "اعتبارنامه حذف شد."
 CREDENTIALS_NOT_FOUND = "برای این حساب اعتبارنامه‌ای ذخیره نشده است."
 CREDENTIALS_OPERATION_FAILED = "عملیات اعتبارنامه انجام نشد؛ وضعیت مخزن را بررسی کنید."
+
+GROUP_LOGIN = "ورود به حساب انتخاب‌شده"
+BUTTON_BEGIN_LOGIN = "شروع ورود"
+BUTTON_CANCEL_LOGIN = "لغو ورود"
+LOGIN_SELECT_ACCOUNT = "ابتدا یک حساب را از فهرست انتخاب کنید."
+LOGIN_PENDING = "یک تلاش ورود در حال انتظار است؛ ابتدا آن را لغو کنید."
+LOGIN_OPERATION_FAILED = "عملیات ورود انجام نشد."
+LOGIN_CANCELLED = "تلاش ورود لغو شد."
+LOGIN_CHALLENGE_UNAVAILABLE = "چالش ورود قابل نمایش نیست؛ تلاش ورود لغو شد."
 
 
 # ============================================================

@@ -35,6 +35,9 @@ Run:
 import os
 import subprocess
 import sys
+import struct
+import zlib
+import base64
 
 import pytest
 
@@ -603,4 +606,175 @@ def test_page_refresh_and_selection_do_not_resolve_credential_factory(store, qap
     page.accounts_table.setCurrentCell(0, 0)
     page.accounts_table.setCurrentCell(-1, -1)
     assert calls == []
+    page.close()
+
+
+class FakeAuthenticationService:
+    def __init__(self, challenge=None, begin_error=None, cancel_error=None):
+        self.challenge = challenge
+        self.begin_error = begin_error
+        self.cancel_error = cancel_error
+        self.begun = []
+        self.cancelled = []
+
+    def begin_login(self, account_id):
+        self.begun.append(account_id)
+        if self.begin_error:
+            raise self.begin_error
+        return self.challenge
+
+    def cancel_login(self, account_id):
+        self.cancelled.append(account_id)
+        if self.cancel_error:
+            raise self.cancel_error
+
+
+def _login_page(store, qapp, service):
+    calls = []
+    page = AccountsPage(
+        store,
+        authentication_service_factory=lambda: (calls.append(True) or service),
+    )
+    return page, calls
+
+
+def _synthetic_png_base64():
+    def chunk(kind, data):
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xffffffff)
+    png = (b"\x89PNG\r\n\x1a\n"
+           + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+           + chunk(b"IDAT", zlib.compress(b"\x00\x00\x00\x00\xff"))
+           + chunk(b"IEND", b""))
+    return base64.b64encode(png).decode("ascii")
+
+
+def test_login_requires_selection_and_factory_is_lazy(store, qapp):
+    calls = []
+    page = AccountsPage(store, authentication_service_factory=lambda: calls.append(1))
+    page.begin_login_button.click()
+    page.refresh()
+    assert page.login_message_label.text() == STRINGS.LOGIN_SELECT_ACCOUNT
+    assert calls == []
+    page.close()
+
+    store.add("A", BROKER, "A")
+    page = AccountsPage(store)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.begin_login_button.click()
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    page.close()
+
+
+def test_authentication_factory_is_lazy_until_explicit_login(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    challenge = LoginChallenge(
+        CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "prompt"
+    )
+    service = FakeAuthenticationService(challenge=challenge)
+    calls = []
+
+    def factory():
+        calls.append(True)
+        return service
+
+    page = AccountsPage(store, authentication_service_factory=factory)
+    assert calls == []
+    page.refresh()
+    assert calls == []
+    page.accounts_table.setCurrentCell(0, 0)
+    assert calls == []
+    page.accounts_table.setCurrentCell(1, 0)
+    assert calls == []
+
+    page.begin_login_button.click()
+    assert calls == [True]
+    assert service.begun == ["B"]
+    page.cancel_login_button.click()
+    page.close()
+
+
+def test_login_uses_selected_identity_and_cancel_keeps_original_service(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+    store.add("REAL-A", BROKER, "Same broker A")
+    store.add("REAL-B", BROKER, "Same broker B")
+    tiny_png = _synthetic_png_base64()
+    challenge = LoginChallenge(CHALLENGE_CAPTCHA_IMAGE, tiny_png, "prompt")
+    service = FakeAuthenticationService(challenge=challenge)
+    page, calls = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(1, 0)
+    page.begin_login_button.click()
+    assert service.begun == ["REAL-B"]
+    assert page.challenge_prompt_label.text() == "prompt"
+    assert page.challenge_image_label.pixmap() is not None
+    assert not page.challenge_image_label.pixmap().isNull()
+    assert tiny_png not in page.challenge_prompt_label.text()
+    assert tiny_png not in page.login_message_label.text()
+    page.accounts_table.setCurrentCell(0, 0)
+    page.begin_login_button.click()
+    assert service.begun == ["REAL-B"]
+    page.cancel_login_button.click()
+    assert service.cancelled == ["REAL-B"]
+    assert page.challenge_prompt_label.text() == ""
+    assert len(calls) == 1
+    page.close()
+
+
+def test_login_failure_and_cancel_failure_are_safe_and_clear_challenge(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+    store.add("A", BROKER, "A")
+    service = FakeAuthenticationService(
+        begin_error=RuntimeError("secret token credential captchaId"),
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.challenge_prompt_label.setText("stale")
+    page._on_begin_login_clicked()
+    assert page.challenge_prompt_label.text() == ""
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "secret" not in page.login_message_label.text()
+    assert service.cancelled == []
+    page.close()
+
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+    for invalid_challenge in (
+        None,
+        object(),
+        LoginChallenge(CHALLENGE_CAPTCHA_IMAGE, "not-valid-base64!", "secret prompt"),
+        LoginChallenge(CHALLENGE_CAPTCHA_IMAGE, base64.b64encode(b"not an image").decode("ascii"), "secret prompt"),
+    ):
+        service = FakeAuthenticationService(challenge=invalid_challenge)
+        page, _ = _login_page(store, qapp, service)
+        page.accounts_table.setCurrentCell(0, 0)
+        page.challenge_prompt_label.setText("stale")
+        page.begin_login_button.click()
+        assert service.begun == ["A"]
+        assert service.cancelled == ["A"]
+        assert page.challenge_prompt_label.text() == ""
+        assert not page.challenge_prompt_label.isVisible()
+        assert page.challenge_image_label.pixmap().isNull()
+        assert not page.challenge_image_label.isVisible()
+        assert page.login_message_label.text() == STRINGS.LOGIN_CHALLENGE_UNAVAILABLE
+        assert invalid_challenge is None or not (
+            isinstance(invalid_challenge, LoginChallenge)
+            and invalid_challenge.display_payload in page.login_message_label.text()
+        )
+        page.close()
+
+    tiny_png = _synthetic_png_base64()
+    service = FakeAuthenticationService(
+        challenge=LoginChallenge(CHALLENGE_CAPTCHA_IMAGE, tiny_png, "prompt"),
+        cancel_error=RuntimeError("secret"),
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.begin_login_button.click()
+    page.cancel_login_button.click()
+    assert service.cancelled == ["A"]
+    assert page.challenge_prompt_label.text() == ""
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "secret" not in page.login_message_label.text()
     page.close()
