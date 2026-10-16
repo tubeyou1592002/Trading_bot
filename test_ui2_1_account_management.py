@@ -610,12 +610,21 @@ def test_page_refresh_and_selection_do_not_resolve_credential_factory(store, qap
 
 
 class FakeAuthenticationService:
-    def __init__(self, challenge=None, begin_error=None, cancel_error=None):
+    def __init__(self, challenge=None, begin_error=None, cancel_error=None,
+                 complete_error=None, logout_error=None, status_errors=None,
+                 logged_in=None):
         self.challenge = challenge
         self.begin_error = begin_error
         self.cancel_error = cancel_error
+        self.complete_error = complete_error
+        self.logout_error = logout_error
+        self.status_errors = status_errors or {}
+        self.logged_in = dict(logged_in or {})
         self.begun = []
         self.cancelled = []
+        self.completed = []
+        self.logged_out = []
+        self.status_queries = []
 
     def begin_login(self, account_id):
         self.begun.append(account_id)
@@ -627,6 +636,24 @@ class FakeAuthenticationService:
         self.cancelled.append(account_id)
         if self.cancel_error:
             raise self.cancel_error
+
+    def complete_login(self, account_id, response):
+        self.completed.append((account_id, response))
+        if self.complete_error:
+            raise self.complete_error
+        self.logged_in[account_id] = True
+
+    def logout(self, account_id):
+        self.logged_out.append(account_id)
+        if self.logout_error:
+            raise self.logout_error
+        self.logged_in[account_id] = False
+
+    def is_logged_in(self, account_id):
+        self.status_queries.append(account_id)
+        if account_id in self.status_errors:
+            raise self.status_errors[account_id]
+        return self.logged_in.get(account_id, False)
 
 
 def _login_page(store, qapp, service):
@@ -777,4 +804,187 @@ def test_login_failure_and_cancel_failure_are_safe_and_clear_challenge(store, qa
     assert page.challenge_prompt_label.text() == ""
     assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
     assert "secret" not in page.login_message_label.text()
+    page.close()
+
+
+def test_complete_login_uses_original_account_and_updates_only_its_status(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    service = FakeAuthenticationService(
+        challenge=LoginChallenge(
+            CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "prompt"
+        ),
+        logged_in={"A": False, "B": False},
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(1, 0)
+    page.begin_login_button.click()
+    page.refresh_status_button.click()
+    page.accounts_table.setCurrentCell(0, 0)
+    page.captcha_response_input.setText("answer")
+    page.complete_login_button.click()
+
+    assert service.completed == [("B", "answer")]
+    assert page._pending_login_account_id is None
+    assert page._pending_authentication_service is None
+    assert page.captcha_response_input.text() == ""
+    assert page.challenge_prompt_label.text() == ""
+    assert page.challenge_image_label.pixmap().isNull()
+    statuses = {
+        page.accounts_table.item(row, 0).text(): page.accounts_table.item(row, 4).text()
+        for row in range(page.accounts_table.rowCount())
+    }
+    assert statuses["A"] == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert statuses["B"] == STRINGS.LOGIN_STATUS_LOGGED_IN
+    page.close()
+
+
+def test_completion_failure_is_generic_and_clears_pending_challenge(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+
+    store.add("A", BROKER, "Account A")
+    service = FakeAuthenticationService(
+        challenge=LoginChallenge(
+            CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "prompt"
+        ),
+        complete_error=RuntimeError("private token captchaId credential"),
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(0, 0)
+    page.begin_login_button.click()
+    page.captcha_response_input.setText("response")
+    page.complete_login_button.click()
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "private" not in page.login_message_label.text()
+    assert page._pending_login_account_id is None
+    assert page.challenge_prompt_label.text() == ""
+    assert page.challenge_image_label.pixmap().isNull()
+    assert page.captcha_response_input.text() == ""
+    page.close()
+
+
+def test_logout_and_refresh_status_are_account_scoped(store, qapp):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    service = FakeAuthenticationService(logged_in={"A": True, "B": True})
+    page, _ = _login_page(store, qapp, service)
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    page.refresh_status_button.click()
+    assert service.status_queries == ["A", "B"]
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+
+    page.accounts_table.setCurrentCell(0, 0)
+    page.logout_button.click()
+    assert service.logged_out == ["A"]
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    page.close()
+
+
+def test_status_query_error_shows_unknown_and_safe_feedback(store, qapp):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    service = FakeAuthenticationService(
+        logged_in={"B": True},
+        status_errors={"A": RuntimeError("token and credentials")},
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.refresh_status_button.click()
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.login_message_label.text() == STRINGS.LOGIN_STATUS_REFRESH_FAILED
+    assert "token" not in page.login_message_label.text()
+    page.close()
+
+
+def test_blank_response_and_logout_pending_conflict_fail_safely(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    service = FakeAuthenticationService(
+        challenge=LoginChallenge(
+            CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "prompt"
+        )
+    )
+    page, calls = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(1, 0)
+    page.begin_login_button.click()
+    page.accounts_table.setCurrentCell(0, 0)
+    page.captcha_response_input.setText("   ")
+    page.complete_login_button.click()
+    assert service.completed == []
+    assert page.login_message_label.text() == STRINGS.LOGIN_RESPONSE_REQUIRED
+    assert page._pending_login_account_id == "B"
+    page.logout_button.click()
+    assert service.logged_out == ["A"]
+    page.accounts_table.setCurrentCell(1, 0)
+    page.logout_button.click()
+    assert service.logged_out == ["A"]
+    assert page.login_message_label.text() == STRINGS.LOGOUT_PENDING_LOGIN
+    assert calls == [True, True]
+    page.cancel_login_button.click()
+    page.close()
+
+
+def test_logout_requires_selection_and_reports_failure_safely(store, qapp):
+    page = AccountsPage(store, authentication_service_factory=None)
+    page.logout_button.click()
+    assert page.login_message_label.text() == STRINGS.LOGIN_SELECT_ACCOUNT
+    page.close()
+
+    store.add("A", BROKER, "Account A")
+    calls = []
+    service = FakeAuthenticationService(
+        logout_error=RuntimeError("private token and credentials")
+    )
+    page = AccountsPage(
+        store,
+        authentication_service_factory=lambda: (calls.append(True) or service),
+    )
+    page.accounts_table.setCurrentCell(0, 0)
+    page.logout_button.click()
+    assert calls == [True]
+    assert service.logged_out == ["A"]
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "private" not in page.login_message_label.text()
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "status_error,expected_status",
+    [
+        (None, STRINGS.LOGIN_STATUS_LOGGED_IN),
+        (RuntimeError("private status failure"), STRINGS.LOGIN_STATUS_UNKNOWN),
+    ],
+)
+def test_logout_failure_rechecks_same_account_status(
+    store, qapp, status_error, expected_status
+):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    service = FakeAuthenticationService(
+        logout_error=RuntimeError("private logout detail"),
+        logged_in={"A": True, "B": False},
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.refresh_status_button.click()
+    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    if status_error is not None:
+        service.status_errors["A"] = status_error
+    page.accounts_table.setCurrentCell(0, 0)
+
+    page.logout_button.click()
+
+    assert service.logged_out == ["A"]
+    assert service.status_queries == ["A", "B", "A"]
+    assert page.accounts_table.item(0, 4).text() == expected_status
+    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "private" not in page.login_message_label.text()
     page.close()

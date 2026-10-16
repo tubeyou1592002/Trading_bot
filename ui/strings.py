@@ -162,6 +162,19 @@ __all__ = [
     "LOGIN_OPERATION_FAILED",
     "LOGIN_CANCELLED",
     "LOGIN_CHALLENGE_UNAVAILABLE",
+    "BUTTON_COMPLETE_LOGIN",
+    "BUTTON_LOGOUT",
+    "BUTTON_REFRESH_STATUS",
+    "LABEL_CAPTCHA_RESPONSE",
+    "LOGIN_RESPONSE_REQUIRED",
+    "LOGIN_COMPLETED",
+    "LOGOUT_COMPLETED",
+    "LOGOUT_PENDING_LOGIN",
+    "LOGIN_STATUS_HEADER",
+    "LOGIN_STATUS_UNKNOWN",
+    "LOGIN_STATUS_LOGGED_IN",
+    "LOGIN_STATUS_LOGGED_OUT",
+    "LOGIN_STATUS_REFRESH_FAILED",
     # --- order validation dialogs (removed from the path in UI-9.4; titles
     #     centralized here so UI-9.4 has one place to change) ---
     "DIALOG_INVALID_SIDE",
@@ -522,9 +535,22 @@ BUTTON_BEGIN_LOGIN = "شروع ورود"
 BUTTON_CANCEL_LOGIN = "لغو ورود"
 LOGIN_SELECT_ACCOUNT = "ابتدا یک حساب را از فهرست انتخاب کنید."
 LOGIN_PENDING = "یک تلاش ورود در حال انتظار است؛ ابتدا آن را لغو کنید."
-LOGIN_OPERATION_FAILED = "عملیات ورود انجام نشد."
+LOGIN_OPERATION_FAILED = "انجام عملیات مربوط به حساب ناموفق بود."
 LOGIN_CANCELLED = "تلاش ورود لغو شد."
 LOGIN_CHALLENGE_UNAVAILABLE = "چالش ورود قابل نمایش نیست؛ تلاش ورود لغو شد."
+BUTTON_COMPLETE_LOGIN = "تأیید پاسخ و ورود"
+BUTTON_LOGOUT = "خروج محلی از حساب"
+BUTTON_REFRESH_STATUS = "بررسی وضعیت ورود حساب‌ها"
+LABEL_CAPTCHA_RESPONSE = "پاسخ تصویر امنیتی:"
+LOGIN_RESPONSE_REQUIRED = "پاسخ تصویر امنیتی را وارد کنید."
+LOGIN_COMPLETED = "ورود به حساب با موفقیت تأیید شد."
+LOGOUT_COMPLETED = "از حساب به‌صورت محلی خارج شدید."
+LOGOUT_PENDING_LOGIN = "ابتدا تلاش ورود در حال انتظار را لغو کنید."
+LOGIN_STATUS_HEADER = "وضعیت ورود"
+LOGIN_STATUS_UNKNOWN = "نامشخص / تأییدنشده"
+LOGIN_STATUS_LOGGED_IN = "واردشده"
+LOGIN_STATUS_LOGGED_OUT = "واردنشده"
+LOGIN_STATUS_REFRESH_FAILED = "بررسی وضعیت ورود انجام نشد."
 
 
 # ============================================================

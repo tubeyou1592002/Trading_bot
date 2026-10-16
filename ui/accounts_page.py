@@ -56,6 +56,7 @@ _ACCOUNT_ID_COLUMN = 0
 _DISPLAY_NAME_COLUMN = 1
 _BROKER_COLUMN = 2
 _ACTIVE_COLUMN = 3
+_LOGIN_STATUS_COLUMN = 4
 
 
 class AccountsPage(QWidget):
@@ -135,13 +136,14 @@ class AccountsPage(QWidget):
         list_group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
         list_layout = QVBoxLayout(list_group)
 
-        self.accounts_table = QTableWidget(0, 4, list_group)
+        self.accounts_table = QTableWidget(0, 5, list_group)
         self.accounts_table.setHorizontalHeaderLabels(
             [
                 STRINGS.TABLE_HEADER_ACCOUNT_ID,
                 STRINGS.TABLE_HEADER_DISPLAY_NAME,
                 STRINGS.TABLE_HEADER_BROKER,
                 STRINGS.TABLE_HEADER_ACTIVE,
+                STRINGS.LOGIN_STATUS_HEADER,
             ]
         )
         self.accounts_table.horizontalHeader().setSectionResizeMode(
@@ -157,6 +159,12 @@ class AccountsPage(QWidget):
         self.set_active_button = QPushButton(STRINGS.BUTTON_SET_ACTIVE, list_group)
         self.set_active_button.clicked.connect(self._on_set_active_clicked)
         selection_row.addWidget(self.set_active_button)
+        self.refresh_status_button = QPushButton(STRINGS.BUTTON_REFRESH_STATUS, list_group)
+        self.refresh_status_button.clicked.connect(self._on_refresh_status_clicked)
+        selection_row.addWidget(self.refresh_status_button)
+        self.logout_button = QPushButton(STRINGS.BUTTON_LOGOUT, list_group)
+        self.logout_button.clicked.connect(self._on_logout_clicked)
+        selection_row.addWidget(self.logout_button)
         selection_row.addStretch(1)
         list_layout.addLayout(selection_row)
 
@@ -208,7 +216,16 @@ class AccountsPage(QWidget):
         self.cancel_login_button.clicked.connect(self._on_cancel_login_clicked)
         self.cancel_login_button.setEnabled(False)
         login_buttons.addWidget(self.cancel_login_button)
+        self.complete_login_button = QPushButton(STRINGS.BUTTON_COMPLETE_LOGIN, login_group)
+        self.complete_login_button.clicked.connect(self._on_complete_login_clicked)
+        self.complete_login_button.setEnabled(False)
+        login_buttons.addWidget(self.complete_login_button)
         login_layout.addLayout(login_buttons)
+        response_row = QHBoxLayout()
+        response_row.addWidget(QLabel(STRINGS.LABEL_CAPTCHA_RESPONSE, login_group))
+        self.captcha_response_input = QLineEdit(login_group)
+        response_row.addWidget(self.captcha_response_input)
+        login_layout.addLayout(response_row)
         self.login_message_label = QLabel("", login_group)
         self.login_message_label.setProperty("role", "danger")
         self.login_message_label.setWordWrap(True)
@@ -225,6 +242,7 @@ class AccountsPage(QWidget):
         root_layout.addWidget(login_group)
         self._pending_login_account_id = None
         self._pending_authentication_service = None
+        self._login_status_by_account = {}
 
         self._refresh_list()
 
@@ -336,6 +354,7 @@ class AccountsPage(QWidget):
         self._pending_login_account_id = record.account_id
         self._pending_authentication_service = service
         self.cancel_login_button.setEnabled(True)
+        self.complete_login_button.setEnabled(True)
         try:
             if challenge.kind != CHALLENGE_CAPTCHA_IMAGE:
                 raise ValueError
@@ -357,6 +376,8 @@ class AccountsPage(QWidget):
             self._pending_login_account_id = None
             self._pending_authentication_service = None
             self.cancel_login_button.setEnabled(False)
+            self.complete_login_button.setEnabled(False)
+            self.captcha_response_input.clear()
             self._clear_challenge()
             self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
 
@@ -374,12 +395,113 @@ class AccountsPage(QWidget):
             self._pending_login_account_id = None
             self._pending_authentication_service = None
             self.cancel_login_button.setEnabled(False)
+            self.complete_login_button.setEnabled(False)
+            self.captcha_response_input.clear()
             self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
             return
         self._pending_login_account_id = None
         self._pending_authentication_service = None
         self.cancel_login_button.setEnabled(False)
+        self.complete_login_button.setEnabled(False)
+        self.captcha_response_input.clear()
         self._login_message(STRINGS.LOGIN_CANCELLED, error=False)
+
+    def _on_complete_login_clicked(self):
+        account_id = self._pending_login_account_id
+        service = self._pending_authentication_service
+        response = self.captcha_response_input.text()
+        if account_id is None or service is None:
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            self.captcha_response_input.clear()
+            return
+        if not response.strip():
+            self._login_message(STRINGS.LOGIN_RESPONSE_REQUIRED)
+            self.captcha_response_input.clear()
+            return
+        try:
+            service.complete_login(account_id, response)
+        except Exception:
+            self._clear_challenge()
+            self._pending_login_account_id = None
+            self._pending_authentication_service = None
+            self.cancel_login_button.setEnabled(False)
+            self.complete_login_button.setEnabled(False)
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+        else:
+            self._clear_challenge()
+            self._pending_login_account_id = None
+            self._pending_authentication_service = None
+            self.cancel_login_button.setEnabled(False)
+            self.complete_login_button.setEnabled(False)
+            self._login_message(STRINGS.LOGIN_COMPLETED, error=False)
+            self._login_status_by_account.pop(account_id, None)
+            self._refresh_one_login_status(account_id, service)
+        finally:
+            self.captcha_response_input.clear()
+
+    def _on_logout_clicked(self):
+        record = self._selected_account_record()
+        if record is None:
+            self._login_message(STRINGS.LOGIN_SELECT_ACCOUNT)
+            return
+        if self._pending_login_account_id == record.account_id:
+            self._login_message(STRINGS.LOGOUT_PENDING_LOGIN)
+            return
+        if self._authentication_service_factory is None:
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        try:
+            service = self._authentication_service_factory()
+            service.logout(record.account_id)
+        except Exception:
+            if "service" in locals():
+                self._refresh_one_login_status(record.account_id, service)
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        self._login_message(STRINGS.LOGOUT_COMPLETED, error=False)
+        self._login_status_by_account.pop(record.account_id, None)
+        self._refresh_one_login_status(record.account_id, service)
+
+    def _on_refresh_status_clicked(self):
+        if self._authentication_service_factory is None:
+            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            return
+        try:
+            service = self._authentication_service_factory()
+        except Exception:
+            self._login_message(STRINGS.LOGIN_STATUS_REFRESH_FAILED)
+            return
+        failed = False
+        for record in self.store.all_accounts():
+            self._refresh_one_login_status(record.account_id, service)
+            if self._login_status_by_account.get(record.account_id) is None:
+                failed = True
+        self._login_message(
+            STRINGS.LOGIN_STATUS_REFRESH_FAILED if failed else "",
+            error=failed,
+        )
+
+    def _refresh_one_login_status(self, account_id, service):
+        try:
+            logged_in = service.is_logged_in(account_id)
+            if not isinstance(logged_in, bool):
+                raise ValueError
+        except Exception:
+            self._login_status_by_account[account_id] = None
+            status_text = STRINGS.LOGIN_STATUS_UNKNOWN
+            self._login_message(STRINGS.LOGIN_STATUS_REFRESH_FAILED)
+        else:
+            self._login_status_by_account[account_id] = logged_in
+            status_text = (
+                STRINGS.LOGIN_STATUS_LOGGED_IN
+                if logged_in else STRINGS.LOGIN_STATUS_LOGGED_OUT
+            )
+        for row in range(self.accounts_table.rowCount()):
+            item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
+            if item is not None and item.text() == account_id:
+                self.accounts_table.setItem(
+                    row, _LOGIN_STATUS_COLUMN, QTableWidgetItem(status_text)
+                )
 
     def _on_save_credentials_clicked(self):
         username = self.username_input.text()
@@ -510,7 +632,17 @@ class AccountsPage(QWidget):
             active_item = QTableWidgetItem(
                 "Yes" if record.account_id == active_id else ""
             )
+            login_status = self._login_status_by_account.get(record.account_id)
+            login_status_item = QTableWidgetItem(
+                STRINGS.LOGIN_STATUS_UNKNOWN if login_status is None else (
+                    STRINGS.LOGIN_STATUS_LOGGED_IN if login_status
+                    else STRINGS.LOGIN_STATUS_LOGGED_OUT
+                )
+            )
             self.accounts_table.setItem(row, _ACCOUNT_ID_COLUMN, account_id_item)
             self.accounts_table.setItem(row, _DISPLAY_NAME_COLUMN, display_name_item)
             self.accounts_table.setItem(row, _BROKER_COLUMN, broker_item)
             self.accounts_table.setItem(row, _ACTIVE_COLUMN, active_item)
+            self.accounts_table.setItem(
+                row, _LOGIN_STATUS_COLUMN, login_status_item
+            )
