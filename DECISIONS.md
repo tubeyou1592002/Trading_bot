@@ -1525,3 +1525,14 @@ This decision records the architecture only; no implementation or UI redesign is
 **Roadmap naming note:** this is subtask 9, “Account-Aware Order Routing,” under Block 9 — Account & Session Management. It is distinct from the separate simulation/stress roadmap whose existing tests are named `test_block9_task9_1.py` through `test_block9_task9_7.py`; do not merge their scopes.
 
 ---
+
+
+\## Decision 017 — Account UI Status Is Not Order Authorization
+
+\*\*Status:\*\* Accepted
+
+Phase 3 account-page status is an informational view of the public per-account AuthenticationService state. It does not, by itself, gate order submission or prove the entire broker route is production-ready. Active-account, logged-in-session and usable-session enforcement belongs to the separate account-bound routing phase.
+
+\### Reason
+
+UI completion and offline acceptance must not be mistaken for production order gating. Keep account authentication isolated, fail closed when account/runtime identity cannot be verified, preserve the existing `DispatchCore → OrderEngine → M6-A…M6-E` chain, and never automatically replay `POST /order` after HTTP 401.
