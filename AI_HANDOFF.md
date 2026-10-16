@@ -2,7 +2,7 @@
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-16.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Task 3B-5 COMPLETE; Task 5 Stage 3 Audit NEXT
+## Current Status — Task 5 COMPLETE; Account-Aware Routing (Task 9) NEXT
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
@@ -19,7 +19,7 @@
 - Account/provider resolution failure blocks dispatch before execution. No name-only fallback was added. Existing dispatch chain and M6-A…M6-E gates remain in place.
 - Changed files: `core/dispatch_core.py`, `test_dispatch_core.py`, `test_block9_phase2_dispatch_account_identity.py`.
 - Reported offline verification: focused account-identity suite **4 passed**; `test_dispatch_core.py test_execution_planner.py test_broker_manager.py` **67 passed**; staged `git diff --cached --check` passed. Tests ran with `python3` because the agent environment did not provide the Windows `py` launcher.
-- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The Accounts page now has credential save/delete, begin/cancel login with public challenge rendering, complete-login, local logout and per-account status UI. Task 3B-4 is complete; the integrated offline UX acceptance remains Task 3B-5. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`), Task 3B-2 (`f8764c0`) and Task 3B-3 (`c8ec626`) are complete and pushed. Task 3B-4 and integrated UI acceptance Task 3B-5 are complete. Task 5 Stage 3 offline integration/regression audit is next; account-bound production consumers remain later work.
+- Read-only audit outcome: MainWindow composes authentication and the TestRunner/DispatchCore path with the same cached `BrokerManager`. The Accounts page now has credential save/delete, begin/cancel login with public challenge rendering, complete-login, local logout and per-account status UI. Task 3B-4 is complete; the integrated offline UX acceptance remains Task 3B-5. Trading-state and feedback still use name-only APIs, and instrument-identity resolution constructs a separate manager. Phase 3 Task 3A (`fbdc112`), Task 3B-1 (`e4a0796`), Task 3B-2 (`f8764c0`) and Task 3B-3 (`c8ec626`) are complete and pushed. Task 3B-4 and integrated UI acceptance Task 3B-5 are complete. Task 5 Stage 3 offline integration/regression audit was accepted on 2026-10-16; account-bound production consumers remain later work under Task 9.
 
 ### Stage 2C — implementation and verification status
 
@@ -50,7 +50,7 @@ The Accounts-page authentication UI is now connected to AuthenticationService an
 | **1. Lock contracts and logout lifecycle** | Finalize account-aware broker/provider manager contract and runtime identity; add a public, fail-closed per-account logout API in `AuthenticationService`; test cleanup failure and isolation between accounts. | **COMPLETE — Tasks 1A and 1B reviewed/pushed** |
 | **2. Compose and inject services** | Compose and inject account/session/authentication services; route the TestRunner/DispatchCore path through MainWindow's shared manager and account-scoped broker/provider registry. User-facing login/logout and active-session gating belong to Phase 3. | **COMPLETE within defined scope — Tasks 2A–2C reviewed/pushed** |
 | **3. Connect Accounts-page UI** | Add/edit/delete/sort/select/display-name management; OS-vault credential lifecycle; independent row login/logout/status; CAPTCHA only when needed. UI delegates to services and does not manage tokens or broker-specific auth. | **COMPLETE — Task 3A and Tasks 3B-1–3B-5 reviewed/pushed** |
-| **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | **NEXT after Task 5 Stage 3 audit** |
+| **4. Route account-bound activity** | Enforce active-account + logged-in + usable-session gate; route instrument lookup, trading-state queries, dispatch, queue/NATS and feedback by account; preserve `DispatchCore → OrderEngine → M6-A…M6-E`; fail closed on missing/mismatched runtime. | **NEXT — Task 5 Stage 3 accepted; proceed with Task 9** |
 | **5. Regression and acceptance** | Verify at least two accounts on one broker stay isolated end-to-end, including provider/cache, tokens, recovery and feedback; run focused and broad regression. Live trading stays disabled; never automatically replay `POST /order` after 401. | Pending |
 
 #### Phase 1 — Task 1A: Public Per-Account Logout — COMPLETE (2026-10-15)
@@ -218,37 +218,52 @@ If `py -3` is unavailable in the agent environment, use `python3` equivalents an
 - Owner-reported verification: integration suite 2 passed in 1.37s; UI foundation + account management 58 passed in 4.36s; composition/authentication/Agah-adapter/integration group 149 passed in 3.11s; py_compile passed. Only the new file was staged; its cached diff check was clean; commit/push succeeded.
 - Safety: no real credential vault, network, CAPTCHA endpoint, broker login or order was used. This completes Phase 3 UI acceptance, not order authorization or account-correct feedback.
 
-## Next bounded verification task — Block 9 Task 5 Stage 3: Final Offline Integration and Regression Audit
+## Completed audit — Block 9 Task 5 Stage 3: Final Offline Integration and Regression — ACCEPTED (2026-10-16)
 
-Task type: verification/coverage audit only. No code or test edits are permitted during this run.
+Task type: verification/coverage audit only. This stage made no code or test edits.
 
-Allowed files: none. Do not add, edit, delete, stage, commit or push any file.
+### Actual commands and results
 
-Why this is next: Task 5 Stage 1, Stage 2A, Stage 2B and Stage 2C.1, 2C.2, 2C.3a and 2C.3b are complete/reviewed. Stage 2C is closed. Stage 3 — offline integration and regression — is the sole planned Task 5 stage still awaiting formal acceptance. Do not confuse it with Phase 3 Task 3B-5 (already complete) or account-routing Task 9.
+1. Task 5 refresh/token synchronization/401 recovery, including NATS and queue-position paths:
+```bash
+/tmp/block9-stage3-venv-final/bin/python -m pytest -q test_block9_task5_refresh_token.py test_block9_task5_token_sync.py test_block9_task5_401_handling.py test_block9_task5_401_instrument_provider.py test_block9_task5_401_nats_transport.py test_block9_task5_401_queue_position.py
+```
+**Result: 175 passed in 2.28s.** The NATS and queue-position modules were collected and executed in this successful run.
 
-Run these exact suites using only fake/offline transports:
-```powershell
-python3 -m pytest -q test_block9_task5_refresh_token.py test_block9_task5_token_sync.py test_block9_task5_401_handling.py test_block9_task5_401_instrument_provider.py test_block9_task5_401_nats_transport.py test_block9_task5_401_queue_position.py
+2. Session/authentication/broker/dispatch regression:
+```bash
 python3 -m pytest -q test_block9_task3_session_manager.py test_block9_task4_authentication_contract.py test_block9_task4_authentication_service.py test_block9_task4_agah_auth_adapter.py test_block9_task4_integration.py test_broker_manager.py test_dispatch_core.py test_block9_phase2_dispatch_account_identity.py
+```
+**Result: 267 passed in 4.62s.**
+
+3. Accounts-page UI integration regression:
+```bash
 python3 -m pytest -q test_block9_phase3_accounts_ui_integration.py test_ui1_application_foundation.py test_ui2_1_account_management.py
 ```
+**Result: 60 passed in 5.65s.**
 
-Required report — test-to-requirement matrix:
-1. Refresh validates the complete replacement token pair atomically; failed refresh leaves prior values unchanged.
-2. Session token replacement/invalidation is per-account; failure on A leaves B’s adapter, token and session state unchanged.
-3. Eligible authenticated read-only GETs retry at most once; a second 401 fails closed; concurrent requests do not duplicate refresh.
-4. Instrument search, NATS bootstrap GETs and queue-position GET use reviewed recovery behavior and preserve request/response contracts.
-5. POST /order is not replayed and does not trigger automatic refresh/replay when it returns 401.
-6. Public errors and reachable exception chains do not leak passwords, access tokens or refresh tokens.
-7. Tests prohibit real network calls and use fake HTTP/vault seams; no real credentials, CAPTCHA, broker login or orders are attempted.
-8. For each row, cite the concrete test file/test name and report exact command output. Do not claim unrun tests passed.
+All three commands completed successfully: **502 passing test executions across the three suites, with no reported failures or skips**. These are separate suite totals, not a claim that 502 unique test cases exist.
 
-Stop conditions / worktree rules:
-- If all criteria pass and every row is supported by actual test evidence, report the matrix; Architect will decide whether Task 5 Stage 3 can be closed.
-- If required coverage is missing or any suite fails, do not fix or add tests autonomously. Stop and report the exact gap for a separately scoped task.
-- Preserve the existing worktree and unrelated local changes. Do not run broad clean/reset/checkout commands. Do not stage, commit or push.
+### Environment and safety notes
 
-After Stage 3 is accepted: proceed to Block 9 Task 9 — account-aware order routing. The first bounded implementation is expected to unify existing read-only pre-order instrument-identity and trading-state factories with the shared account-scoped BrokerManager. Active-account/usable-session order authorization and account-specific feedback are separate later tasks.
+- The initial system Python collection could not import `nats` because `nats-py` was not installed. A temporary environment was created at `/tmp/block9-stage3-venv-final` with `uv`; `nats-py==2.16.0` was installed only there.
+- The successful first suite used that temporary environment; the other two successful commands used `python3`.
+- No project code, test, or dependency file was changed to solve the environment issue. No project change was staged, committed or pushed by the audit run.
+- Tests used fake/offline broker transports and credentials; this audit did not log in to a real broker or submit an order. `POST /order` must never be replayed automatically after 401.
+
+### Test-to-requirement coverage
+
+1. **Atomic token replacement and failure preservation:** `test_block9_task5_refresh_token.py::test_success_replaces_both_tokens`, `test_valid_access_but_invalid_refresh_is_atomic`, `test_http_error_keeps_both_tokens`, and `test_invalid_replacement_refresh_token_keeps_both_tokens`.
+2. **Per-account token/session isolation:** `test_block9_task5_token_sync.py::test_replace_token_is_per_account`, `test_service_refresh_a_does_not_affect_b`, `test_invalidate_session_is_per_account`; `test_block9_task4_authentication_service.py::test_two_accounts_get_independent_adapters`, `test_two_accounts_have_independent_tokens`, and `test_failure_of_one_account_does_not_affect_other`.
+3. **Bounded GET recovery, concurrency, and fail-closed second 401:** `test_block9_task5_401_handling.py::test_401_retry_once_for_get_buy_capacity`, `test_second_401_no_extra_refresh`, `test_concurrent_same_account_single_refresh`, `test_overlapping_401_causes_exactly_one_refresh_deterministic`, and `test_no_cross_account_mixing_on_recovery`.
+4. **Instrument search recovery:** `test_block9_task5_401_instrument_provider.py::test_real_401_triggers_handler_and_retries_once` and `test_second_401_fails_closed_no_extra_refresh`.
+5. **NATS and queue-position recovery/contracts:** `test_block9_task5_401_nats_transport.py::test_connection_info_401_triggers_handler_and_retries_once`, `test_message_types_401_triggers_handler_and_retries_once`; `test_block9_task5_401_queue_position.py::test_401_triggers_handler_and_retries_once_with_new_token`, `test_second_401_returns_none_without_extra_retry`, and `test_at_most_one_retry_and_no_order_post`.
+6. **No automatic order POST replay after 401:** `test_block9_task5_401_handling.py::test_post_order_401_is_not_retried_and_does_not_refresh` and `test_post_never_retried`.
+7. **Secret-leak prevention and offline execution:** refresh/token-sync error-chain tests, `test_block9_task5_401_handling.py::test_no_token_leak_in_errors`, instrument/NATS/queue recovery secrecy tests, and the test modules' fake-transport/no-real-socket guards.
+
+### Architect disposition
+
+**Task 5 Stage 3 is accepted and complete.** The remaining Block 9 work is **Task 9 — account-aware production routing**. That work must still address account-correct trading-state/instrument-identity/feedback paths and the active-account + logged-in + usable-session order gate. Task 5 closeout does not authorize live trading or prove those separate production paths complete.
 
 ## 1. Project Goal
 
