@@ -261,6 +261,9 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_trading_state_query_factory(
             self._real_trading_state_query
         )
+        self.order_configuration_page.set_order_identity_factory(
+            self._real_order_identity_resolver
+        )
         # UI-5 Task 2: the Test action drives its pending entries through
         # the EXISTING dry-run execution chain. The runner is built lazily
         # (only on the first real Test pass, never here), so construction
@@ -359,7 +362,7 @@ class MainWindow(QMainWindow):
 
         return SymbolResolver()
 
-    def _real_trading_state_query(self):
+    def _real_trading_state_query(self, account_id=None, broker_name=None):
         """
         Lazily build the REAL read-only trading-state query seam
         (core.trading_state_query.TradingStateQuery) backed by the shared
@@ -373,10 +376,33 @@ class MainWindow(QMainWindow):
         """
         from core.trading_state_query import TradingStateQuery
 
+        if account_id is None and broker_name is None:
+            record = self._active_account_record()
+            if record is None:
+                raise ValueError("active account is unavailable")
+            account_id, broker_name = record.account_id, record.broker_name
+        if account_id is None or broker_name is None:
+            raise ValueError("account binding is incomplete")
         manager = self._shared_broker_manager()
-        broker = manager.get("آگاه")
-        provider = manager.get_instrument_provider("آگاه")
+        broker = manager.get_for_account(account_id, broker_name)
+        provider = manager.get_instrument_provider_for_account(
+            account_id, broker_name
+        )
         return TradingStateQuery(broker, provider)
+
+    def _real_order_identity_resolver(self, account_id, broker_name):
+        """Resolve the account-owned instrument provider lazily."""
+        manager = self._shared_broker_manager()
+        return manager.get_instrument_provider_for_account(account_id, broker_name)
+
+    def _active_account_record(self):
+        active_id = self.account_store.active_account_id()
+        if active_id is None:
+            return None
+        try:
+            return self.account_store.get(active_id)
+        except ValueError:
+            return None
 
     def _real_test_runner(self):
         """

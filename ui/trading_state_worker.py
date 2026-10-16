@@ -47,7 +47,8 @@ renders what the existing path returned.
 from PySide6.QtCore import QThread, Signal
 
 
-def _default_trading_state_query():
+def _default_trading_state_query(account_store=None, broker_manager=None,
+                                account_id=None, broker_name=None):
     """
     Lazily build the REAL project query seam.
 
@@ -59,12 +60,19 @@ def _default_trading_state_query():
     Built exactly like the real dispatch path does:
         BrokerManager → get_instrument_provider(name) → TradingStateQuery
     """
-    from brokers.manager import BrokerManager
     from core.trading_state_query import TradingStateQuery
 
-    manager = BrokerManager()
-    broker = manager.get("آگاه")
-    provider = manager.get_instrument_provider("آگاه")
+    if account_store is None or broker_manager is None:
+        raise ValueError("account-bound runtime is unavailable")
+    if account_id is None or broker_name is None:
+        raise ValueError("account identity is required")
+    record = account_store.get(account_id)
+    if record.account_id != account_id or record.broker_name != broker_name:
+        raise ValueError("account binding does not match the account store")
+    broker = broker_manager.get_for_account(account_id, broker_name)
+    provider = broker_manager.get_instrument_provider_for_account(
+        account_id, broker_name
+    )
     return TradingStateQuery(broker, provider)
 
 
@@ -81,15 +89,16 @@ class TradingStateWorker(QThread):
     # (ins_code, TradingState) — the real state object travels as
     # ``object`` so it is passed BY REFERENCE (Qt signals copy structured
     # payloads; identity must never be copied or rebuilt).
-    state_succeeded = Signal(str, object)
+    state_succeeded = Signal(object, str, object)
     # (ins_code, message) — the query itself failed (expected runtime
     # failure, e.g. TradingStateUnavailable escaping the seam). The page
     # renders "unknown"; nothing crashes.
-    state_failed = Signal(str, str)
+    state_failed = Signal(object, str, str)
 
-    def __init__(self, ins_code, query_factory=None, parent=None):
+    def __init__(self, ins_code, query_factory=None, parent=None, identity=None):
         super().__init__(parent)
         self.ins_code = ins_code
+        self.identity = identity
         self._query_factory = (
             query_factory if query_factory is not None
             else _default_trading_state_query
@@ -101,9 +110,9 @@ class TradingStateWorker(QThread):
             # The real repository seam — reused, not re-implemented.
             state = query.get_trading_state(self.ins_code)
         except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
-            self.state_failed.emit(self.ins_code, str(exc))
+            self.state_failed.emit(self.identity, self.ins_code, str(exc))
             return
-        self.state_succeeded.emit(self.ins_code, state)
+        self.state_succeeded.emit(self.identity, self.ins_code, state)
 
 
 __all__ = [

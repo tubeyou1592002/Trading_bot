@@ -114,6 +114,7 @@ quantity, resolved nsc_id and an active account nothing is queued.
 """
 
 import threading
+import inspect
 from datetime import datetime, timedelta
 
 from models.order import BUY, SELL, Order
@@ -497,7 +498,9 @@ def _account_record_or_none(account_store, account_id):
         return None
 
 
-def _default_order_identity_resolver(account_store):
+def _default_order_identity_resolver(
+    account_store, broker_manager=None, account_id=None, broker_name=None
+):
     """
     Lazily build the REAL broker ``InstrumentProvider`` that maps a
     TSETMC ``ins_code`` to a broker ``nscId``.
@@ -508,18 +511,20 @@ def _default_order_identity_resolver(account_store):
     import is deferred so every page construction stays fully offline;
     the provider itself performs no network call here.
     """
-    from brokers.manager import BrokerManager
-
-    if account_store is None:
+    if account_store is None or broker_manager is None:
         return None
-    active_id = account_store.active_account_id()
-    if not active_id:
-        return None
-    try:
-        record = account_store.get(active_id)
-    except ValueError:  # AccountStoreError — never guess an identity
-        return None
-    return BrokerManager().get_instrument_provider(record.broker_name)
+    if account_id is None or broker_name is None:
+        active_id = account_store.active_account_id()
+        if not active_id:
+            return None
+        try:
+            record = account_store.get(active_id)
+        except ValueError:  # AccountStoreError — never guess an identity
+            return None
+        account_id, broker_name = record.account_id, record.broker_name
+    return broker_manager.get_instrument_provider_for_account(
+        account_id, broker_name
+    )
 
 
 class _OrderIdentityWorker(QThread):
@@ -537,36 +542,37 @@ class _OrderIdentityWorker(QThread):
 
     # (ins_code, nsc_id) — the nsc_id string travels as ``object`` so it
     # is passed BY REFERENCE (no marshalling/copying of identity).
-    identity_succeeded = Signal(str, object)
+    identity_succeeded = Signal(object, str, object)
     # (ins_code, message) — resolution failed (no identity available).
-    identity_failed = Signal(str, str)
+    identity_failed = Signal(object, str, str)
 
-    def __init__(self, ins_code, resolver_factory, parent=None):
+    def __init__(self, ins_code, resolver_factory, parent=None, identity=None):
         super().__init__(parent)
         self.ins_code = ins_code
         self._resolver_factory = resolver_factory
+        self.identity = identity
 
     def run(self):
         try:
             resolver = self._resolver_factory()
         except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
-            self.identity_failed.emit(self.ins_code, str(exc))
+            self.identity_failed.emit(self.identity, self.ins_code, str(exc))
             return
         if resolver is None:
             # Fail-closed: no real identity source (e.g. no active
             # account → no broker). Nothing may be guessed/emitted.
             self.identity_failed.emit(
-                self.ins_code, "no broker identity resolver available"
+                self.identity, self.ins_code, "no broker identity resolver available"
             )
             return
         try:
             nsc_id = resolver.get_nsc_id(self.ins_code)
         except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
-            self.identity_failed.emit(self.ins_code, str(exc))
+            self.identity_failed.emit(self.identity, self.ins_code, str(exc))
             return
         if not isinstance(nsc_id, str) or not nsc_id:
             nsc_id = None
-        self.identity_succeeded.emit(self.ins_code, nsc_id)
+        self.identity_succeeded.emit(self.identity, self.ins_code, nsc_id)
 
 
 class OrderConfigurationPage(QWidget):
@@ -607,6 +613,7 @@ class OrderConfigurationPage(QWidget):
         self._trading_state_thread = None
         self._trading_state_worker = None
         self._trading_state_instrument = None  # ins_code the shown state belongs to
+        self._trading_state_account_scope = None
         self._trading_state_shown = None       # last TradingState actually rendered
 
         # --- UI-4: queue + order-identity state ------------------------
@@ -624,6 +631,8 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_worker = None
         self._order_identity_instrument = None  # ins_code the nsc_id belongs to
         self._order_identity_broker = None      # broker the nsc_id belongs to
+        self._order_identity_account = None
+        self._order_identity_scope = None
         self._order_nsc_id = None               # the resolved broker nscId
 
         # ---------------------------------------------
@@ -1646,6 +1655,7 @@ class OrderConfigurationPage(QWidget):
         the shown selection) and the display is reset.
         """
         self._trading_state_instrument = None
+        self._trading_state_account_scope = None
         self._trading_state_shown = None
         self._cancel_trading_state_query()
         self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
@@ -1687,13 +1697,34 @@ class OrderConfigurationPage(QWidget):
             self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
             return
 
+        record = self._active_account_record()
+        if record is None:
+            self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
+            return
+        identity = (record.account_id, record.broker_name, ins_code)
         self._trading_state_instrument = ins_code
+        self._trading_state_account_scope = identity
         self.trading_state_label.setText(STATUS_PENDING_LABEL)
+
+        def query_factory():
+            if self._trading_state_factory is None:
+                from ui.trading_state_worker import _default_trading_state_query
+                return _default_trading_state_query(
+                    self.store, account_id=record.account_id,
+                    broker_name=record.broker_name,
+                )
+            try:
+                signature = inspect.signature(self._trading_state_factory)
+                signature.bind(record.account_id, record.broker_name)
+            except (TypeError, ValueError):
+                return self._trading_state_factory()
+            return self._trading_state_factory(record.account_id, record.broker_name)
 
         worker = TradingStateWorker(
             ins_code,
-            query_factory=self._trading_state_factory,
+            query_factory=query_factory,
             parent=self,
+            identity=identity,
         )
         self._trading_state_worker = worker
         self._trading_state_thread = worker
@@ -1723,7 +1754,7 @@ class OrderConfigurationPage(QWidget):
         if thread is not None and not thread.wait(timeout_ms):
             raise TimeoutError("trading-state worker thread did not finish")
 
-    def _on_trading_state_succeeded(self, ins_code, state):
+    def _on_trading_state_succeeded(self, identity, ins_code, state):
         """
         Render the returned ``TradingState`` — but ONLY if it still
         belongs to the currently selected instrument.
@@ -1732,7 +1763,10 @@ class OrderConfigurationPage(QWidget):
         discarded: the old status can never be attributed to the new
         symbol or to bare typed text.
         """
-        if ins_code != self._trading_state_instrument:
+        if (ins_code != self._trading_state_instrument
+                or identity != self._trading_state_account_scope
+                or (identity is not None
+                    and identity != self._current_read_identity(ins_code))):
             return  # stale query — discarded deterministically
         if not isinstance(state, TradingState):
             # Anything unexpected from the seam is unknown (fail-closed).
@@ -1741,13 +1775,16 @@ class OrderConfigurationPage(QWidget):
         self._trading_state_shown = state
         self._render_trading_state(self._trading_state_text(state))
 
-    def _on_trading_state_failed(self, ins_code, message):
+    def _on_trading_state_failed(self, identity, ins_code, message):
         """
         The query seam reported a failure (e.g. the expected
         TradingStateUnavailable path): the UI must not crash and the
         status is shown as unknown — never tradable, never fabricated.
         """
-        if ins_code != self._trading_state_instrument:
+        if (ins_code != self._trading_state_instrument
+                or identity != self._trading_state_account_scope
+                or (identity is not None
+                    and identity != self._current_read_identity(ins_code))):
             return  # stale query — discarded deterministically
         self._trading_state_shown = None
         self._render_trading_state(STATUS_LABEL_UNKNOWN)
@@ -1795,6 +1832,8 @@ class OrderConfigurationPage(QWidget):
         """
         self._order_identity_instrument = None
         self._order_identity_broker = None
+        self._order_identity_account = None
+        self._order_identity_scope = None
         self._order_nsc_id = None
 
     def _start_order_identity_resolution(self, instrument):
@@ -1818,6 +1857,14 @@ class OrderConfigurationPage(QWidget):
             return
 
         broker_name = self._active_broker_name()
+        record = self._active_account_record()
+        if record is None:
+            self._clear_order_identity()
+            return
+        if broker_name != record.broker_name:
+            self._clear_order_identity()
+            return
+        identity = (record.account_id, record.broker_name, ins_code)
 
         # A resolution for the SAME (ins_code, broker_name) pair is
         # already in flight — do not start a duplicate worker.
@@ -1826,20 +1873,34 @@ class OrderConfigurationPage(QWidget):
             and not self._order_identity_thread.isFinished()
             and self._order_identity_instrument == ins_code
             and self._order_identity_broker == broker_name
+            and self._order_identity_account == record.account_id
         ):
             return
 
         self._clear_order_identity()
         self._order_identity_instrument = ins_code
         self._order_identity_broker = broker_name
+        self._order_identity_account = record.account_id
+        self._order_identity_scope = identity
 
-        factory = (
-            self._order_identity_factory
-            if self._order_identity_factory is not None
-            else lambda: _default_order_identity_resolver(self.store)
+        factory = self._order_identity_factory
+
+        def account_resolver_factory():
+            if factory is None:
+                return _default_order_identity_resolver(
+                    self.store, account_id=record.account_id,
+                    broker_name=record.broker_name,
+                )
+            try:
+                signature = inspect.signature(factory)
+                signature.bind(record.account_id, record.broker_name)
+            except (TypeError, ValueError):
+                return factory()
+            return factory(record.account_id, record.broker_name)
+
+        worker = _OrderIdentityWorker(
+            ins_code, account_resolver_factory, parent=self, identity=identity
         )
-
-        worker = _OrderIdentityWorker(ins_code, factory, parent=self)
         self._order_identity_worker = worker
         self._order_identity_thread = worker
         worker.identity_succeeded.connect(self._on_order_identity_succeeded)
@@ -1868,7 +1929,7 @@ class OrderConfigurationPage(QWidget):
         if thread is not None and not thread.wait(timeout_ms):
             raise TimeoutError("order-identity worker thread did not finish")
 
-    def _on_order_identity_succeeded(self, ins_code, nsc_id):
+    def _on_order_identity_succeeded(self, identity, ins_code=None, nsc_id=None):
         """
         Store the resolved broker nscId — but ONLY if it still belongs
         to the currently selected (ins_code, broker_name) pair.
@@ -1877,7 +1938,17 @@ class OrderConfigurationPage(QWidget):
         an account the user already switched, is discarded (fail-closed:
         an identity is never attached to a different selection).
         """
-        if ins_code != self._order_identity_instrument:
+        # Compatibility for the existing internal two-argument slot contract
+        # used by older tests/callers: recover the captured scope only when
+        # the current full selection still matches exactly.
+        if nsc_id is None and isinstance(identity, str):
+            nsc_id = ins_code
+            ins_code = identity
+            identity = self._order_identity_scope
+        if (ins_code != self._order_identity_instrument
+                or identity != self._order_identity_scope
+                or (identity is not None
+                    and identity != self._current_read_identity(ins_code))):
             return  # stale resolution — discarded deterministically
         if self._order_identity_broker != self._active_broker_name():
             # The active broker changed mid-resolution: this nscId
@@ -1888,9 +1959,16 @@ class OrderConfigurationPage(QWidget):
             nsc_id if isinstance(nsc_id, str) and nsc_id else None
         )
 
-    def _on_order_identity_failed(self, ins_code, message):
+    def _on_order_identity_failed(self, identity, ins_code=None, message=None):
         """A failed resolution leaves the identity unresolved (closed)."""
-        if ins_code != self._order_identity_instrument:
+        if message is None and isinstance(identity, str):
+            message = ins_code
+            ins_code = identity
+            identity = self._order_identity_scope
+        if (ins_code != self._order_identity_instrument
+                or identity != self._order_identity_scope
+                or (identity is not None
+                    and identity != self._current_read_identity(ins_code))):
             return  # stale failure — discarded deterministically
         self._order_nsc_id = None
 
@@ -1935,6 +2013,11 @@ class OrderConfigurationPage(QWidget):
             return False
 
         ins_code = getattr(instrument, "ins_code", None)
+        if (record.account_id != self._order_identity_account
+                or self._order_identity_scope
+                != (record.account_id, record.broker_name, ins_code)):
+            self._show_queue_status(QUEUE_STATUS_NO_IDENTITY)
+            return False
         if ins_code != self._order_identity_instrument:
             # The identity belongs to a different (or no) selection.
             self._show_queue_status(QUEUE_STATUS_NO_IDENTITY)
@@ -4069,8 +4152,11 @@ class OrderConfigurationPage(QWidget):
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""
         self.active_account_label.setText(self._active_account_text())
-        # UI-4: an account switch invalidates the resolved identity (it is
-        # broker-scoped). Re-resolve for the current selection if stale.
+        self._clear_trading_state()
+        self._clear_order_identity()
+        instrument = self.config.selected_instrument
+        if instrument is not None:
+            self._start_trading_state_query(instrument)
         self._restart_order_identity_if_stale()
         self._refresh_test_button_state()
 
@@ -4094,6 +4180,16 @@ class OrderConfigurationPage(QWidget):
                 return None
         return record.broker_name
 
+    def _current_read_identity(self, expected_ins_code=None):
+        """Current account/broker/instrument binding, or None fail-closed."""
+        record = self._active_account_record()
+        instrument = self.config.selected_instrument
+        ins_code = getattr(instrument, "ins_code", None)
+        if (record is None or not ins_code
+                or (expected_ins_code is not None and ins_code != expected_ins_code)):
+            return None
+        return (record.account_id, record.broker_name, ins_code)
+
     def _restart_order_identity_if_stale(self):
         """
         Re-resolve the selected instrument's order identity when selecting
@@ -4104,9 +4200,12 @@ class OrderConfigurationPage(QWidget):
         instrument = self.config.selected_instrument
         if instrument is None:
                 return
-        if (
-                self._order_nsc_id
-                and self._order_identity_broker == self._active_broker_name()
-        ):
+        record = self._active_account_record()
+        if record is None:
+                self._clear_order_identity()
+                return
+        if (self._order_nsc_id
+                and self._order_identity_broker == record.broker_name
+                and self._order_identity_account == record.account_id):
                 return  # still coherent — nothing to do
         self._start_order_identity_resolution(instrument)
