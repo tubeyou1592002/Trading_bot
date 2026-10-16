@@ -2814,3 +2814,22 @@ Commit 19d9558 (test: verify integrated account UI offline) adds only test_block
 The NATS dependency `nats-py==2.16.0` was installed only in the temporary venv at `/tmp/block9-stage3-venv-final`; no project code, test, or dependency file was changed to resolve the environment issue. Tests used fake/offline transports and did not perform real broker login or order placement.
 
 **Next:** Block 9 Task 9 — account-aware production routing. Task 5 closeout does not prove account-correct trading-state/instrument-identity/feedback paths or the active-account + logged-in + usable-session order gate; live trading remains disabled.
+
+## Latest checkpoint — Block 9 Task 9A COMPLETE; account/session order gate NEXT (2026-10-16)
+
+**Commits pushed to `master`:**
+- `4aef682` — Task 9A offline acceptance tests in `test_block9_task9_account_bound_read_paths.py`.
+- `1123cd9` — account-bound read-path implementation in `ui/main_window.py`, `ui/order_configuration_page.py`, and `ui/trading_state_worker.py`.
+
+**Task 9A accepted scope:** the trading-state query and instrument `nscId` resolver use the shared `MainWindow` `BrokerManager` and the exact account runtime keyed by `(account_id, broker_name)`. Async read results are bound to `(account_id, broker_name, ins_code)`; results from an old account are rejected after a switch, and missing/invalid account context fails closed without a name-only fallback. `DispatchCore → OrderEngine → M6-A…M6-E` was not changed. Tests used offline fakes; no real network, broker login or order was performed.
+
+**Verification:**
+- `python3 -m pytest -q test_block9_task9_account_bound_read_paths.py` → **6 passed** (latest recorded run: 1.37s).
+- `python3 -m py_compile ui/main_window.py ui/order_configuration_page.py ui/trading_state_worker.py test_block9_task9_account_bound_read_paths.py` → passed.
+- Requested broader regression → **9 failed, 155 passed**. Eight failures are in `test_ui3_2b_trading_state_display.py`: fixtures have no active account but still expect a query/result, which conflicts with the new fail-closed contract. One failure, `test_ui3_1_order_configuration.py::test_14_ui_does_not_use_legacy_main`, rejects the `brokers.authentication` import in `ui/accounts_page.py`, outside Task 9A. Do not weaken fail-closed behavior to make no-account fixtures pass.
+- The staged Task 9A code diff passed `git diff --cached --check` before commit. A prior whole-worktree check showed CRLF/trailing-whitespace output in a file with older local edits, so that broad output could not be attributed entirely to Task 9A.
+- Unrelated local `ui/test_runner.py` edits and untracked artifacts were excluded from these commits and must be preserved.
+
+**Architect disposition:** Task 9A is **COMPLETE within its approved scope**. This does not mean the broad regression is green or that order authorization is implemented.
+
+**Next:** define a separate task for the active-account + logged-in + usable-session order-authorization gate. Account-aware `MainWindow._real_feedback_broker_factory()`/feedback lifecycle remains separate. Keep live trading disabled, preserve `DispatchCore → OrderEngine → M6-A…M6-E`, and never automatically replay `POST /order` after HTTP 401.
