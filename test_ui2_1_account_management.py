@@ -41,7 +41,7 @@ import base64
 
 import pytest
 
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit
 
 from models.account import Account, AccountValidationError
 
@@ -240,7 +240,9 @@ def test_10_duplicate_account_id_rejected(store):
 def test_11_accounts_page_creates_no_real_broker(store, qapp):
     page = AccountsPage(store)
 
-    assert page.account_id_input is not None
+    assert page.display_name_input is not None
+    assert page.username_input is not None
+    assert page.password_input is not None
     assert page.broker_selector is not None
     assert page.add_button is not None
     assert page.accounts_table is not None
@@ -262,7 +264,7 @@ def test_11_accounts_page_creates_no_real_broker(store, qapp):
     page._on_add_clicked()  # empty form -> rejected, page still healthy
     # UI-9.4: the rejection is reported by the inline error label instead
     # of a blocking QMessageBox.
-    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_ACCOUNT
+    assert page.validation_error_label.text() == STRINGS.FORM_DISPLAY_NAME_REQUIRED
     assert not page.validation_error_label.isHidden()
     assert len(page.store.all_accounts()) == 0
 
@@ -311,8 +313,7 @@ def test_12_accounts_page_performs_no_network_or_login():
             # selects the same row correctly under RTL. Same assertion below
             # still proves row 0 is selected and Set Active switches to
             # ACC-001; nothing is weakened.
-            "page.accounts_table.setCurrentCell(0, 0)",
-            "page._on_set_active_clicked()",
+            "page._activate('ACC-001')",
             "assert store.active_account_id() == 'ACC-001'",
             "app.processEvents()",
             "print('NO_NETWORK_OK')",
@@ -360,38 +361,35 @@ def test_13_home_and_settings_still_placeholders(qapp):
 
 
 def test_extra_page_add_and_active_flow(store, qapp):
-    page = AccountsPage(store)
+    backend = FakeCredentialStore()
+    page = AccountsPage(store, credential_store_factory=lambda: backend)
+    for label in ("Primary account", "Secondary account"):
+        page.display_name_input.setText(label)
+        page.username_input.setText("offline-user")
+        page.password_input.setText("offline-password")
+        page.add_button.click()
 
-    page.account_id_input.setText("ACC-001")
-    page.display_name_input.setText("Primary account")
-    page.add_button.click()
-    page.account_id_input.setText("ACC-002")
-    page.display_name_input.setText("Secondary account")
-    page.add_button.click()
-
-    assert [r.account_id for r in store.all_accounts()] == ["ACC-001", "ACC-002"]
+    assert len({r.account_id for r in store.all_accounts()}) == 2
     assert page.accounts_table.rowCount() == 2
     assert [r.display_name for r in store.all_accounts()] == [
         "Primary account", "Secondary account"
     ]
-    assert page.accounts_table.item(0, 1).text() == "Primary account"
-    assert page.accounts_table.item(1, 1).text() == "Secondary account"
-    assert page.accounts_table.item(0, 0).text() == "ACC-001"
-    assert page.accounts_table.item(0, 2).text() == BROKER
+    assert page.accounts_table.item(0, 1).text().startswith("Primary account")
+    assert page.accounts_table.item(1, 1).text().startswith("Secondary account")
+    assert page.accounts_table.item(0, 1).data(256) == store.all_accounts()[0].account_id
+    assert page.accounts_table.item(0, 1).text().endswith(BROKER)
     assert page.display_name_input.text() == ""
-    assert page.account_id_input.text() == ""
 
-    page.accounts_table.selectRow(0)
-    page.set_active_button.click()
-    assert store.active_account_id() == "ACC-001"
-    assert page.accounts_table.item(0, 3).text() == "Yes"
-    assert page.accounts_table.item(1, 3).text() == ""
+    ids = [r.account_id for r in store.all_accounts()]
+    page._activate(ids[0])
+    assert store.active_account_id() == ids[0]
+    assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_ACTIVE
+    assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_INACTIVE
 
-    page.accounts_table.selectRow(1)
-    page.set_active_button.click()
-    assert store.active_account_id() == "ACC-002"
-    assert page.accounts_table.item(0, 3).text() == ""
-    assert page.accounts_table.item(1, 3).text() == "Yes"
+    page._activate(ids[1])
+    assert store.active_account_id() == ids[1]
+    assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_ACTIVE
 
 
 @pytest.mark.parametrize("display_name", ["", "   "])
@@ -399,14 +397,13 @@ def test_page_rejects_empty_display_name_without_adding_account(
     store, qapp, display_name
 ):
     page = AccountsPage(store)
-    page.account_id_input.setText("ACC-001")
     page.display_name_input.setText(display_name)
 
     page._on_add_clicked()
 
     assert store.all_accounts() == ()
     assert page.accounts_table.rowCount() == 0
-    assert page.validation_error_label.text() == STRINGS.DIALOG_INVALID_ACCOUNT
+    assert page.validation_error_label.text() == STRINGS.FORM_DISPLAY_NAME_REQUIRED
 
 
 # ============================================================
@@ -501,20 +498,15 @@ def _credentials_page(store, qapp, backend, factory_calls=None):
 
 
 def test_credential_actions_require_selected_account(store, qapp):
-    backend = FakeCredentialStore()
-    page, factory_calls = _credentials_page(store, qapp, backend)
+    calls = []
+    page = AccountsPage(store, credential_store_factory=lambda: calls.append(True))
+    page.display_name_input.setText("Display")
     page.username_input.setText("username")
     page.password_input.setText("secret-password")
-
-    page.save_credentials_button.click()
-    assert factory_calls == []
-    assert backend.saved == []
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_SELECT_ACCOUNT
-    assert page.password_input.text() == ""
-
-    page.delete_credentials_button.click()
-    assert factory_calls == []
-    assert backend.deleted == []
+    page.add_button.click()
+    assert calls == [True]
+    assert store.all_accounts() == ()  # credential write failure triggers rollback
+    page.close()
 
 
 def test_credentials_use_selected_account_identity_not_display_or_active(
@@ -525,21 +517,17 @@ def test_credentials_use_selected_account_identity_not_display_or_active(
     store.set_active("REAL-ID-A")
     backend = FakeCredentialStore()
     page, factory_calls = _credentials_page(store, qapp, backend)
-    page.accounts_table.setCurrentCell(1, 0)
+    page.display_name_input.setText("Display C")
     page.username_input.setText("  user-B  ")
     page.password_input.setText(" pass-B ")
 
-    page.save_credentials_button.click()
+    page.add_button.click()
 
-    assert backend.saved == [("REAL-ID-B", BROKER, "  user-B  ", " pass-B ")]
+    new_record = next(r for r in store.all_accounts() if r.display_name == "Display C")
+    assert backend.saved == [(new_record.account_id, BROKER, "  user-B  ", " pass-B ")]
     assert len(factory_calls) == 1
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_SAVED
+    assert page.login_message_label.text() == STRINGS.ACCOUNT_ADD_SUCCESS
     assert page.password_input.text() == ""
-
-    page.accounts_table.setCurrentCell(0, 0)
-    page.delete_credentials_button.click()
-    assert backend.deleted == [("REAL-ID-A", BROKER)]
-    assert len(factory_calls) == 2
     page.close()
 
 
@@ -548,35 +536,32 @@ def test_invalid_credentials_do_not_resolve_factory(store, qapp, username, passw
     store.add("ACC-001", BROKER, "Display")
     backend = FakeCredentialStore()
     page, factory_calls = _credentials_page(store, qapp, backend)
-    page.accounts_table.setCurrentCell(0, 0)
+    page.display_name_input.setText("Display")
+    page.accounts_table.setCurrentCell(0, 1)
     page.username_input.setText(username)
     page.password_input.setText(password)
 
-    page.save_credentials_button.click()
+    page._on_add_clicked()
 
     assert factory_calls == []
     assert backend.saved == []
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_INVALID
-    assert page.password_input.text() == ""
+    assert page.validation_error_label.text() == STRINGS.FORM_CREDENTIALS_REQUIRED
     page.close()
 
 
 def test_credential_delete_not_found_differs_from_backend_error(store, qapp):
-    store.add("ACC-001", BROKER, "Display")
-    not_found = FakeCredentialStore(CredentialNotFoundError("raw sensitive detail"))
-    page, _ = _credentials_page(store, qapp, not_found)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.delete_credentials_button.click()
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_NOT_FOUND
-    page.close()
-
-    backend_error = FakeCredentialStore(CredentialBackendError("raw sensitive detail"))
-    page, _ = _credentials_page(store, qapp, backend_error)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.delete_credentials_button.click()
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_OPERATION_FAILED
-    assert "raw sensitive detail" not in page.credentials_message_label.text()
-    page.close()
+    for failure in (CredentialNotFoundError("raw sensitive detail"),
+                    CredentialBackendError("raw sensitive detail")):
+        backend = FakeCredentialStore(failure)
+        page = AccountsPage(store, credential_store_factory=lambda b=backend: b)
+        page.display_name_input.setText("No-save")
+        page.username_input.setText("user")
+        page.password_input.setText("secret")
+        page.add_button.click()
+        assert page.validation_error_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
+        assert "raw sensitive detail" not in page.validation_error_label.text()
+        assert not any(r.display_name == "No-save" for r in store.all_accounts())
+        page.close()
 
 
 def test_credential_save_failure_is_generic_and_clears_secrets(store, qapp):
@@ -584,17 +569,18 @@ def test_credential_save_failure_is_generic_and_clears_secrets(store, qapp):
     secret = "TOP-SECRET-PASSWORD"
     backend = FakeCredentialStore(CredentialValidationError(secret))
     page, _ = _credentials_page(store, qapp, backend)
-    page.accounts_table.setCurrentCell(0, 0)
+    page.display_name_input.setText("New Display")
     page.username_input.setText("username")
     page.password_input.setText(secret)
     assert page.password_input.echoMode() == QLineEdit.Password
 
-    page.save_credentials_button.click()
+    page._on_add_clicked()
 
-    assert page.credentials_message_label.text() == STRINGS.CREDENTIALS_OPERATION_FAILED
-    assert secret not in page.credentials_message_label.text()
-    assert page.username_input.text() == ""
-    assert page.password_input.text() == ""
+    assert page.validation_error_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
+    assert secret not in page.validation_error_label.text()
+    assert page.username_input.text() == "username"
+    assert page.password_input.text() == secret
+    assert not any(r.display_name == "New Display" for r in store.all_accounts())
     page.close()
 
 
@@ -679,7 +665,7 @@ def _synthetic_png_base64():
 def test_login_requires_selection_and_factory_is_lazy(store, qapp):
     calls = []
     page = AccountsPage(store, authentication_service_factory=lambda: calls.append(1))
-    page.begin_login_button.click()
+    page._on_begin_login_clicked()
     page.refresh()
     assert page.login_message_label.text() == STRINGS.LOGIN_SELECT_ACCOUNT
     assert calls == []
@@ -687,9 +673,9 @@ def test_login_requires_selection_and_factory_is_lazy(store, qapp):
 
     store.add("A", BROKER, "A")
     page = AccountsPage(store)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.begin_login_button.click()
-    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    page.accounts_table.setCurrentCell(0, 1)
+    page._on_begin_login_clicked()
+    assert page.login_message_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
     page.close()
 
 
@@ -712,15 +698,15 @@ def test_authentication_factory_is_lazy_until_explicit_login(store, qapp):
     assert calls == []
     page.refresh()
     assert calls == []
-    page.accounts_table.setCurrentCell(0, 0)
+    page.accounts_table.setCurrentCell(0, 1)
     assert calls == []
-    page.accounts_table.setCurrentCell(1, 0)
+    page.accounts_table.setCurrentCell(1, 1)
     assert calls == []
 
-    page.begin_login_button.click()
+    page._on_begin_login_clicked()
     assert calls == [True]
     assert service.begun == ["B"]
-    page.cancel_login_button.click()
+    page._on_cancel_login_clicked()
     page.close()
 
 
@@ -732,20 +718,21 @@ def test_login_uses_selected_identity_and_cancel_keeps_original_service(store, q
     challenge = LoginChallenge(CHALLENGE_CAPTCHA_IMAGE, tiny_png, "prompt")
     service = FakeAuthenticationService(challenge=challenge)
     page, calls = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(1, 0)
-    page.begin_login_button.click()
+    page.accounts_table.setCurrentCell(1, 1)
+    page._on_begin_login_clicked()
     assert service.begun == ["REAL-B"]
-    assert page.challenge_prompt_label.text() == "prompt"
-    assert page.challenge_image_label.pixmap() is not None
-    assert not page.challenge_image_label.pixmap().isNull()
-    assert tiny_png not in page.challenge_prompt_label.text()
+    assert isinstance(page._captcha_dialog, QDialog)
+    dialog_labels = page._captcha_dialog.findChildren(QLabel)
+    assert any("ادامهٔ ورود" in label.text() for label in dialog_labels)
+    assert any(label.pixmap() is not None and not label.pixmap().isNull()
+               for label in dialog_labels)
     assert tiny_png not in page.login_message_label.text()
-    page.accounts_table.setCurrentCell(0, 0)
-    page.begin_login_button.click()
+    page.accounts_table.setCurrentCell(0, 1)
+    page._on_begin_login_clicked()
     assert service.begun == ["REAL-B"]
-    page.cancel_login_button.click()
+    page._on_cancel_login_clicked()
     assert service.cancelled == ["REAL-B"]
-    assert page.challenge_prompt_label.text() == ""
+    assert page._captcha_dialog is None
     assert len(calls) == 1
     page.close()
 
@@ -757,11 +744,10 @@ def test_login_failure_and_cancel_failure_are_safe_and_clear_challenge(store, qa
         begin_error=RuntimeError("secret token credential captchaId"),
     )
     page, _ = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.challenge_prompt_label.setText("stale")
+    page.accounts_table.setCurrentCell(0, 1)
     page._on_begin_login_clicked()
-    assert page.challenge_prompt_label.text() == ""
-    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert page._captcha_dialog is None
+    assert page.login_message_label.text() == STRINGS.LOGIN_CHALLENGE_UNAVAILABLE
     assert "secret" not in page.login_message_label.text()
     assert service.cancelled == []
     page.close()
@@ -775,15 +761,11 @@ def test_login_failure_and_cancel_failure_are_safe_and_clear_challenge(store, qa
     ):
         service = FakeAuthenticationService(challenge=invalid_challenge)
         page, _ = _login_page(store, qapp, service)
-        page.accounts_table.setCurrentCell(0, 0)
-        page.challenge_prompt_label.setText("stale")
-        page.begin_login_button.click()
+        page.accounts_table.setCurrentCell(0, 1)
+        page._on_begin_login_clicked()
         assert service.begun == ["A"]
         assert service.cancelled == ["A"]
-        assert page.challenge_prompt_label.text() == ""
-        assert not page.challenge_prompt_label.isVisible()
-        assert page.challenge_image_label.pixmap().isNull()
-        assert not page.challenge_image_label.isVisible()
+        assert page._captcha_dialog is None
         assert page.login_message_label.text() == STRINGS.LOGIN_CHALLENGE_UNAVAILABLE
         assert invalid_challenge is None or not (
             isinstance(invalid_challenge, LoginChallenge)
@@ -797,12 +779,12 @@ def test_login_failure_and_cancel_failure_are_safe_and_clear_challenge(store, qa
         cancel_error=RuntimeError("secret"),
     )
     page, _ = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.begin_login_button.click()
-    page.cancel_login_button.click()
+    page.accounts_table.setCurrentCell(0, 1)
+    page._on_begin_login_clicked()
+    page._on_cancel_login_clicked()
     assert service.cancelled == ["A"]
-    assert page.challenge_prompt_label.text() == ""
-    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert page._captcha_dialog is None
+    assert page.login_message_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
     assert "secret" not in page.login_message_label.text()
     page.close()
 
@@ -819,21 +801,22 @@ def test_complete_login_uses_original_account_and_updates_only_its_status(store,
         logged_in={"A": False, "B": False},
     )
     page, _ = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(1, 0)
-    page.begin_login_button.click()
+    page.accounts_table.setCurrentCell(1, 1)
+    page._on_begin_login_clicked()
     page.refresh_status_button.click()
-    page.accounts_table.setCurrentCell(0, 0)
-    page.captcha_response_input.setText("answer")
-    page.complete_login_button.click()
+    page.accounts_table.setCurrentCell(0, 1)
+    dialog = page._captcha_dialog
+    entry = dialog.findChild(QLineEdit)
+    error = next(label for label in dialog.findChildren(QLabel) if label.text() == "")
+    entry.setText("answer")
+    page._complete_login_dialog("B", entry, error, dialog)
 
     assert service.completed == [("B", "answer")]
     assert page._pending_login_account_id is None
     assert page._pending_authentication_service is None
-    assert page.captcha_response_input.text() == ""
-    assert page.challenge_prompt_label.text() == ""
-    assert page.challenge_image_label.pixmap().isNull()
+    assert page._captcha_dialog is None
     statuses = {
-        page.accounts_table.item(row, 0).text(): page.accounts_table.item(row, 4).text()
+        page.accounts_table.item(row, 0).text(): page.accounts_table.item(row, 3).text()
         for row in range(page.accounts_table.rowCount())
     }
     assert statuses["A"] == STRINGS.LOGIN_STATUS_LOGGED_OUT
@@ -852,16 +835,17 @@ def test_completion_failure_is_generic_and_clears_pending_challenge(store, qapp)
         complete_error=RuntimeError("private token captchaId credential"),
     )
     page, _ = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(0, 0)
-    page.begin_login_button.click()
-    page.captcha_response_input.setText("response")
-    page.complete_login_button.click()
-    assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    page.accounts_table.setCurrentCell(0, 1)
+    page._on_begin_login_clicked()
+    dialog = page._captcha_dialog
+    entry = dialog.findChild(QLineEdit)
+    error = next(label for label in dialog.findChildren(QLabel) if label.text() == "")
+    entry.setText("response")
+    page._complete_login_dialog("A", entry, error, dialog)
+    assert page.login_message_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
     assert "private" not in page.login_message_label.text()
     assert page._pending_login_account_id is None
-    assert page.challenge_prompt_label.text() == ""
-    assert page.challenge_image_label.pixmap().isNull()
-    assert page.captcha_response_input.text() == ""
+    assert page._captcha_dialog is None
     page.close()
 
 
@@ -870,17 +854,17 @@ def test_logout_and_refresh_status_are_account_scoped(store, qapp):
     store.add("B", BROKER, "Account B")
     service = FakeAuthenticationService(logged_in={"A": True, "B": True})
     page, _ = _login_page(store, qapp, service)
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
     page.refresh_status_button.click()
     assert service.status_queries == ["A", "B"]
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
-    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
 
-    page.accounts_table.setCurrentCell(0, 0)
+    page.accounts_table.setCurrentCell(0, 1)
     page.logout_button.click()
     assert service.logged_out == ["A"]
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
-    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
     page.close()
 
 
@@ -893,8 +877,8 @@ def test_status_query_error_shows_unknown_and_safe_feedback(store, qapp):
     )
     page, _ = _login_page(store, qapp, service)
     page.refresh_status_button.click()
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_UNKNOWN
-    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
     assert page.login_message_label.text() == STRINGS.LOGIN_STATUS_REFRESH_FAILED
     assert "token" not in page.login_message_label.text()
     page.close()
@@ -911,22 +895,25 @@ def test_blank_response_and_logout_pending_conflict_fail_safely(store, qapp):
         )
     )
     page, calls = _login_page(store, qapp, service)
-    page.accounts_table.setCurrentCell(1, 0)
-    page.begin_login_button.click()
-    page.accounts_table.setCurrentCell(0, 0)
-    page.captcha_response_input.setText("   ")
-    page.complete_login_button.click()
+    page.accounts_table.setCurrentCell(1, 1)
+    page._on_begin_login_clicked()
+    dialog = page._captcha_dialog
+    entry = dialog.findChild(QLineEdit)
+    error = next(label for label in dialog.findChildren(QLabel) if label.text() == "")
+    entry.setText("   ")
+    page._complete_login_dialog("B", entry, error, dialog)
     assert service.completed == []
-    assert page.login_message_label.text() == STRINGS.LOGIN_RESPONSE_REQUIRED
+    assert error.text() == STRINGS.CAPTCHA_RESPONSE_REQUIRED
     assert page._pending_login_account_id == "B"
+    page.accounts_table.setCurrentCell(0, 1)
     page.logout_button.click()
     assert service.logged_out == ["A"]
-    page.accounts_table.setCurrentCell(1, 0)
+    page.accounts_table.setCurrentCell(1, 1)
     page.logout_button.click()
     assert service.logged_out == ["A"]
     assert page.login_message_label.text() == STRINGS.LOGOUT_PENDING_LOGIN
     assert calls == [True, True]
-    page.cancel_login_button.click()
+    page._on_cancel_login_clicked()
     page.close()
 
 
@@ -945,13 +932,13 @@ def test_logout_requires_selection_and_reports_failure_safely(store, qapp):
         store,
         authentication_service_factory=lambda: (calls.append(True) or service),
     )
-    page.accounts_table.setCurrentCell(0, 0)
+    page.accounts_table.setCurrentCell(0, 1)
     page.logout_button.click()
     assert calls == [True]
     assert service.logged_out == ["A"]
     assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
     assert "private" not in page.login_message_label.text()
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
     page.close()
 
 
@@ -973,8 +960,8 @@ def test_logout_failure_rechecks_same_account_status(
     )
     page, _ = _login_page(store, qapp, service)
     page.refresh_status_button.click()
-    assert page.accounts_table.item(0, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
-    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
     if status_error is not None:
         service.status_errors["A"] = status_error
     page.accounts_table.setCurrentCell(0, 0)
@@ -983,8 +970,85 @@ def test_logout_failure_rechecks_same_account_status(
 
     assert service.logged_out == ["A"]
     assert service.status_queries == ["A", "B", "A"]
-    assert page.accounts_table.item(0, 4).text() == expected_status
-    assert page.accounts_table.item(1, 4).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(0, 3).text() == expected_status
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
     assert page.login_message_label.text() == STRINGS.LOGIN_OPERATION_FAILED
+    assert "private" not in page.login_message_label.text()
+    page.close()
+
+
+def test_redesigned_add_generates_internal_id_and_saves_credentials_offline(store, qapp):
+    backend = FakeCredentialStore()
+    page = AccountsPage(store, credential_store_factory=lambda: backend)
+    page.display_name_input.setText("حساب آزمایشی")
+    page.username_input.setText("offline-user")
+    page.password_input.setText("offline-password")
+    page.add_button.click()
+    record, = store.all_accounts()
+    assert record.display_name == "حساب آزمایشی"
+    assert record.account_id.startswith("ACC-")
+    assert backend.saved == [(record.account_id, BROKER, "offline-user", "offline-password")]
+    assert not hasattr(page, "account_id_input")
+    assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    page.close()
+
+
+def test_redesigned_captcha_is_modal_dialog_only_for_image_challenge(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+    store.add("CAPTCHA-A", BROKER, "حساب آزمون")
+    service = FakeAuthenticationService(LoginChallenge(
+        CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "متن راهنما"))
+    page, _ = _login_page(store, qapp, service)
+    assert not hasattr(page, "captcha_response_input")
+    page._begin_login("CAPTCHA-A")
+    qapp.processEvents()
+    dialog = page._captcha_dialog
+    assert dialog is not None and dialog.isVisible()
+    assert isinstance(dialog, __import__("PySide6.QtWidgets", fromlist=["QDialog"]).QDialog)
+    assert dialog.isModal()
+    assert dialog.layoutDirection().name == "RightToLeft"
+    image_labels = dialog.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+    assert any(label.pixmap() is not None and not label.pixmap().isNull() for label in image_labels)
+    page._cancel_login(dialog)
+    assert service.cancelled == ["CAPTCHA-A"]
+    assert page._captcha_dialog is None
+    page.close()
+
+
+def test_redesigned_login_completion_updates_status_without_real_broker(store, qapp):
+    from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+    store.add("CAPTCHA-B", BROKER, "حساب دوم")
+    service = FakeAuthenticationService(LoginChallenge(
+        CHALLENGE_CAPTCHA_IMAGE, _synthetic_png_base64(), "راهنما"))
+    page, _ = _login_page(store, qapp, service)
+    page._begin_login("CAPTCHA-B")
+    dialog = page._captcha_dialog
+    entry = dialog.findChild(QLineEdit)
+    error = next(label for label in dialog.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+                 if label.text() == "")
+    entry.setText("1234")
+    page._complete_login_dialog("CAPTCHA-B", entry, error, dialog)
+    assert service.completed == [("CAPTCHA-B", "1234")]
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    page.close()
+
+
+def test_redesigned_logout_is_account_scoped_and_refreshes_failure(store, qapp):
+    store.add("LOGOUT-A", BROKER, "حساب اول")
+    store.add("LOGOUT-B", BROKER, "حساب دوم")
+    service = FakeAuthenticationService(
+        logout_error=RuntimeError("private token"),
+        logged_in={"LOGOUT-A": True, "LOGOUT-B": False},
+    )
+    page, _ = _login_page(store, qapp, service)
+    page._login_status_by_account.update(service.logged_in)
+    page.refresh()
+    page.accounts_table.setCurrentCell(0, 1)
+    page._on_logout_clicked()
+    assert service.logged_out == ["LOGOUT-A"]
+    assert service.status_queries == ["LOGOUT-A"]
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
     assert "private" not in page.login_message_label.text()
     page.close()

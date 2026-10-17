@@ -6,9 +6,11 @@ import zlib
 
 import pytest
 import requests
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
 from ui.main_window import MainWindow
+from ui.account_store import AccountStore
 from ui.credential_store import CredentialStore
 from ui import credential_store as credential_store_module
 from ui.session_manager import SessionManager
@@ -23,6 +25,7 @@ USERNAME_A, PASSWORD_A = "user-a", "password-a-offline"
 USERNAME_B, PASSWORD_B = "user-b", "password-b-offline"
 CAPTCHA_A, CAPTCHA_B = "captcha-id-a", "captcha-id-b"
 TOKEN_A, TOKEN_B = "offline-token-a", "offline-token-b"
+SYNTHETIC_ACCOUNT_FIXTURES = {}
 
 
 @pytest.fixture(scope="module")
@@ -82,7 +85,8 @@ class FakeHttpSession:
 
     def get(self, url, **kwargs):
         self.calls.append(("GET", url, kwargs))
-        captcha_id = CAPTCHA_A if self.account_id == ACCOUNT_A else CAPTCHA_B
+        fixture_id = SYNTHETIC_ACCOUNT_FIXTURES[self.account_id]
+        captcha_id = CAPTCHA_A if fixture_id == ACCOUNT_A else CAPTCHA_B
         return FakeResponse({
             "isSuccess": True,
             "data": {"captchaId": captcha_id, "captcha": synthetic_png_base64()},
@@ -91,23 +95,24 @@ class FakeHttpSession:
     def post(self, url, **kwargs):
         payload = kwargs["json"]
         self.calls.append(("POST", url, kwargs))
-        expected_captcha = CAPTCHA_A if self.account_id == ACCOUNT_A else CAPTCHA_B
+        fixture_id = SYNTHETIC_ACCOUNT_FIXTURES[self.account_id]
+        expected_captcha = CAPTCHA_A if fixture_id == ACCOUNT_A else CAPTCHA_B
         expected_user, expected_password = (
             (USERNAME_A, PASSWORD_A)
-            if self.account_id == ACCOUNT_A
+            if fixture_id == ACCOUNT_A
             else (USERNAME_B, PASSWORD_B)
         )
         assert payload["userName"] == expected_user
         assert payload["password"] == expected_password
         assert payload["captchaId"] == expected_captcha
-        assert payload["captcha"] == "answer-" + self.account_id
-        token = TOKEN_A if self.account_id == ACCOUNT_A else TOKEN_B
+        assert payload["captcha"] == "answer-" + fixture_id
+        token = TOKEN_A if fixture_id == ACCOUNT_A else TOKEN_B
         return FakeResponse({
             "isSuccess": True,
             "data": {
                 "accessToken": token,
                 "refreshToken": "refresh-" + self.account_id,
-                "userIdentifier": "uid-" + self.account_id,
+                "userIdentifier": "uid-" + fixture_id,
                 "userName": expected_user,
             },
         })
@@ -127,27 +132,30 @@ class StaticDeviceInfo:
 
 def select_account(page, account_id):
     for row in range(page.accounts_table.rowCount()):
-        if page.accounts_table.item(row, 0).text() == account_id:
-            page.accounts_table.setCurrentCell(row, 0)
+        if page.accounts_table.item(row, 0).data(Qt.UserRole) == account_id:
+            page.accounts_table.setCurrentCell(row, 1)
             return row
     raise AssertionError(f"missing account row: {account_id}")
 
 
 def set_account_credentials(page, account_id, username, password):
-    select_account(page, account_id)
-    page.username_input.setText(username)
-    page.password_input.setText(password)
-    page.save_credentials_button.click()
+    """The add form stores credentials together with generated identity."""
+    del page, account_id, username, password
 
 
 def login_from_ui(page, account_id):
     select_account(page, account_id)
-    page.begin_login_button.click()
-    assert page.challenge_image_label.pixmap() is not None
-    assert not page.challenge_image_label.pixmap().isNull()
-    page.captcha_response_input.setText("answer-" + account_id)
-    page.complete_login_button.click()
-    assert page.captcha_response_input.text() == ""
+    page._begin_login(account_id)
+    dialog = page._captcha_dialog
+    assert dialog is not None, page.login_message_label.text()
+    image = next(label for label in dialog.findChildren(QLabel)
+                 if label.pixmap() is not None and not label.pixmap().isNull())
+    assert image.pixmap() is not None and not image.pixmap().isNull()
+    entry = dialog.findChild(QLineEdit)
+    error = next(label for label in dialog.findChildren(QLabel) if label is not image and label.text() == "")
+    fixture_id = SYNTHETIC_ACCOUNT_FIXTURES[account_id]
+    entry.setText("answer-" + fixture_id)
+    page._complete_login_dialog(account_id, entry, error, dialog)
     assert page._pending_login_account_id is None
 
 
@@ -191,51 +199,58 @@ def test_real_main_window_accounts_ui_two_account_login_and_local_logout(
         adapter_module, "make_agah_adapter_factory", tracked_adapter_factory
     )
 
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
     page = window.accounts_page
     assert window._authentication_service is None
     assert window._credential_store is None
     assert window._session_manager is None
     assert window._broker_manager_cache is None
 
-    for account_id in (ACCOUNT_A, ACCOUNT_B):
-        page.account_id_input.setText(account_id)
+    for account_id, username, password in (
+        (ACCOUNT_A, USERNAME_A, PASSWORD_A), (ACCOUNT_B, USERNAME_B, PASSWORD_B)
+    ):
         page.display_name_input.setText(account_id)
+        page.username_input.setText(username)
+        page.password_input.setText(password)
         page.add_button.click()
-
-    set_account_credentials(page, ACCOUNT_A, USERNAME_A, PASSWORD_A)
-    set_account_credentials(page, ACCOUNT_B, USERNAME_B, PASSWORD_B)
+    account_ids = [record.account_id for record in window.account_store.all_accounts()]
+    account_id_by_username = dict(zip((USERNAME_A, USERNAME_B), account_ids))
+    account_a = account_id_by_username[USERNAME_A]
+    account_b = account_id_by_username[USERNAME_B]
+    SYNTHETIC_ACCOUNT_FIXTURES.update({account_a: ACCOUNT_A, account_b: ACCOUNT_B})
+    # Keep constants as external broker fixture identities, while the UI uses generated ids.
+    created_adapters.clear()
     assert vault.entries
     assert page._authentication_service_factory
     assert window._authentication_service is None
 
-    login_from_ui(page, ACCOUNT_A)
+    login_from_ui(page, account_a)
     # The explicit Login UI action lazily composed the cached service.
     service = window.authentication_service
-    login_from_ui(page, ACCOUNT_B)
+    login_from_ui(page, account_b)
 
     page.refresh_status_button.click()
-    row_a = select_account(page, ACCOUNT_A)
-    row_b = select_account(page, ACCOUNT_B)
-    assert page.accounts_table.item(row_a, 4).text() == "واردشده"
-    assert page.accounts_table.item(row_b, 4).text() == "واردشده"
+    row_a = select_account(page, account_a)
+    row_b = select_account(page, account_b)
+    assert page.accounts_table.item(row_a, 3).text() == "واردشده"
+    assert page.accounts_table.item(row_b, 3).text() == "واردشده"
 
-    adapter_a = created_adapters[ACCOUNT_A]
-    adapter_b = created_adapters[ACCOUNT_B]
+    adapter_a = created_adapters[account_a]
+    adapter_b = created_adapters[account_b]
     broker_a, broker_b = adapter_a.broker, adapter_b.broker
     http_a, http_b = broker_a.session, broker_b.session
     sessions = window.session_manager
     assert adapter_a is not adapter_b
     assert broker_a is not broker_b
     assert http_a is not http_b
-    assert http_a.account_id == ACCOUNT_A
-    assert http_b.account_id == ACCOUNT_B
-    assert service.get_adapter(ACCOUNT_A) is adapter_a
-    assert service.get_adapter(ACCOUNT_B) is adapter_b
-    assert sessions.is_logged_in(ACCOUNT_A) is True
-    assert sessions.is_logged_in(ACCOUNT_B) is True
-    assert sessions.get_token(ACCOUNT_A) == TOKEN_A
-    assert sessions.get_token(ACCOUNT_B) == TOKEN_B
+    assert http_a.account_id == account_a
+    assert http_b.account_id == account_b
+    assert service.get_adapter(account_a) is adapter_a
+    assert service.get_adapter(account_b) is adapter_b
+    assert sessions.is_logged_in(account_a) is True
+    assert sessions.is_logged_in(account_b) is True
+    assert sessions.get_token(account_a) == TOKEN_A
+    assert sessions.get_token(account_b) == TOKEN_B
 
     post_a = [call for call in http_a.calls if call[0] == "POST"]
     post_b = [call for call in http_b.calls if call[0] == "POST"]
@@ -245,14 +260,14 @@ def test_real_main_window_accounts_ui_two_account_login_and_local_logout(
     assert post_a[0][2]["json"]["userName"] == USERNAME_A
     assert post_b[0][2]["json"]["userName"] == USERNAME_B
 
-    row_a = select_account(page, ACCOUNT_A)
+    row_a = select_account(page, account_a)
     page.logout_button.click()
-    assert sessions.is_logged_in(ACCOUNT_A) is False
-    assert sessions.get_token(ACCOUNT_A) is None
-    assert page.accounts_table.item(row_a, 4).text() == "واردنشده"
-    assert sessions.is_logged_in(ACCOUNT_B) is True
-    assert sessions.get_token(ACCOUNT_B) == TOKEN_B
-    assert service.get_adapter(ACCOUNT_B) is adapter_b
+    assert sessions.is_logged_in(account_a) is False
+    assert sessions.get_token(account_a) is None
+    assert page.accounts_table.item(row_a, 3).text() == "خارج‌شده"
+    assert sessions.is_logged_in(account_b) is True
+    assert sessions.get_token(account_b) == TOKEN_B
+    assert service.get_adapter(account_b) is adapter_b
     assert broker_b.access_token == TOKEN_B
     assert broker_b.session is http_b
     window.close()

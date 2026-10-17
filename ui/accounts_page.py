@@ -1,648 +1,493 @@
-"""
-ui/accounts_page.py — UI-2.1 Accounts page of the User Application.
+"""RTL account management page with isolated, explicitly triggered authentication."""
 
-Presentation of in-memory account management:
-
-    * "Add Account" form  — Account ID input + Broker selector + Add button
-    * Account list        — Account ID | Broker | Active columns
-    * Active selection    — the user explicitly selects the active account
-
-Boundaries (UI-2.1 / Decision 024):
-
-    * Account identity comes verbatim from the user input and is stored on
-      a real ``models.account.Account`` via ``ui.account_store.AccountStore``
-      — it is never guessed from an index, symbol or broker.
-    * The broker association is the explicit ``broker_name`` string of the
-      record; no broker is ever instantiated here, no BrokerManager is
-      created and the broker list is NOT read from BrokerManager.
-    * The only implemented broker in the repository today is Agah
-      (``آگاه``), so the selector currently offers exactly that option.
-    * No network, login, credential, broker API or TSETMC access; no
-      persistence; no trading/order/symbol functionality.
-"""
-
-from PySide6.QtWidgets import (
-    QComboBox,
-    QGridLayout,
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QLineEdit,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
-from PySide6.QtGui import QPixmap
-from PySide6.QtCore import Qt
 import base64
-import binascii
+import uuid
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import (
+    QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton,
+    QScrollArea, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+)
 
 from models.account import AccountValidationError
 from ui.account_store import AccountStoreError
-from ui.credential_store import (
-    CredentialNotFoundError,
-    CredentialStoreError,
-)
+from ui.credential_store import CredentialStoreError
 from ui import strings as STRINGS
 
-# The only broker implemented in the repository today (UI-2.1).
-# Deliberately NOT read from BrokerManager — no broker object is created.
 AVAILABLE_BROKERS = ("آگاه",)
-
-_ACCOUNT_ID_COLUMN = 0
-_DISPLAY_NAME_COLUMN = 1
-_BROKER_COLUMN = 2
-_ACTIVE_COLUMN = 3
-_LOGIN_STATUS_COLUMN = 4
+_ID, _DISPLAY, _ACTIVE, _STATUS, _ACTIONS = range(5)
 
 
 class AccountsPage(QWidget):
-    """
-    Accounts page: add accounts, list them and select the active one.
-
-    The page owns no state of its own beyond the widgets: all account
-    state lives in the supplied ``AccountStore`` (in-memory), and the page
-    mirrors that state in the list.
-    """
-
-    def __init__(
-        self,
-        account_store,
-        parent=None,
-        *,
-        authentication_service_factory=None,
-        credential_store_factory=None,
-        session_manager_factory=None,
-    ):
+    def __init__(self, account_store, parent=None, *,
+                 authentication_service_factory=None,
+                 credential_store_factory=None, session_manager_factory=None):
         super().__init__(parent)
-
+        self.setLayoutDirection(Qt.RightToLeft)
         self.store = account_store
         self._authentication_service_factory = authentication_service_factory
         self._credential_store_factory = credential_store_factory
         self._session_manager_factory = session_manager_factory
-
-        root_layout = QVBoxLayout(self)
-
-        # ---------------------------------------------
-        # Add Account group
-        # ---------------------------------------------
-
-        add_group = QGroupBox(STRINGS.GROUP_ADD_ACCOUNT, self)
-        add_form = QGridLayout(add_group)
-
-        add_form.addWidget(QLabel(STRINGS.LABEL_ACCOUNT_ID, add_group), 0, 0)
-        self.account_id_input = QLineEdit(add_group)
-        self.account_id_input.setPlaceholderText(
-            STRINGS.PLACEHOLDER_ACCOUNT_ID
-        )
-        add_form.addWidget(self.account_id_input, 0, 1)
-
-        add_form.addWidget(QLabel(STRINGS.LABEL_DISPLAY_NAME, add_group), 1, 0)
-        self.display_name_input = QLineEdit(add_group)
-        add_form.addWidget(self.display_name_input, 1, 1)
-
-        add_form.addWidget(QLabel(STRINGS.LABEL_BROKER, add_group), 2, 0)
-        self.broker_selector = QComboBox(add_group)
-        for broker_name in AVAILABLE_BROKERS:
-            self.broker_selector.addItem(broker_name)
-        add_form.addWidget(self.broker_selector, 2, 1)
-
-        self.add_button = QPushButton(STRINGS.BUTTON_ADD, add_group)
-        self.add_button.clicked.connect(self._on_add_clicked)
-        add_form.addWidget(self.add_button, 3, 0, 1, 2)
-
-        # UI-9.4: the inline validation message of this form, directly
-        # under it. It replaces the former blocking QMessageBox, so an
-        # invalid entry is reported in place instead of in a pop-up.
-        # Colours come from the ui/theme.py danger role (the "danger"
-        # property below); no colour or spacing is invented here. It is
-        # empty and hidden while there is nothing to report, so the
-        # normal layout is unchanged.
-        self.validation_error_label = QLabel("", add_group)
-        self.validation_error_label.setProperty("role", "danger")
-        self.validation_error_label.setWordWrap(True)
-        self.validation_error_label.setVisible(False)
-        add_form.addWidget(self.validation_error_label, 4, 0, 1, 2)
-
-        root_layout.addWidget(add_group)
-
-        # ---------------------------------------------
-        # Account list (Account ID | Display name | Broker | Active)
-        # ---------------------------------------------
-
-        list_group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
-        list_layout = QVBoxLayout(list_group)
-
-        self.accounts_table = QTableWidget(0, 5, list_group)
-        self.accounts_table.setHorizontalHeaderLabels(
-            [
-                STRINGS.TABLE_HEADER_ACCOUNT_ID,
-                STRINGS.TABLE_HEADER_DISPLAY_NAME,
-                STRINGS.TABLE_HEADER_BROKER,
-                STRINGS.TABLE_HEADER_ACTIVE,
-                STRINGS.LOGIN_STATUS_HEADER,
-            ]
-        )
-        self.accounts_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.Stretch
-        )
-        self.accounts_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.accounts_table.setSelectionMode(QTableWidget.SingleSelection)
-        self.accounts_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        list_layout.addWidget(self.accounts_table)
-
-        # Explicit "set active" action on the selected row.
-        selection_row = QHBoxLayout()
-        self.set_active_button = QPushButton(STRINGS.BUTTON_SET_ACTIVE, list_group)
-        self.set_active_button.clicked.connect(self._on_set_active_clicked)
-        selection_row.addWidget(self.set_active_button)
-        self.refresh_status_button = QPushButton(STRINGS.BUTTON_REFRESH_STATUS, list_group)
-        self.refresh_status_button.clicked.connect(self._on_refresh_status_clicked)
-        selection_row.addWidget(self.refresh_status_button)
-        self.logout_button = QPushButton(STRINGS.BUTTON_LOGOUT, list_group)
-        self.logout_button.clicked.connect(self._on_logout_clicked)
-        selection_row.addWidget(self.logout_button)
-        selection_row.addStretch(1)
-        list_layout.addLayout(selection_row)
-
-        root_layout.addWidget(list_group, stretch=1)
-
-        credentials_group = QGroupBox(STRINGS.GROUP_CREDENTIALS, self)
-        credentials_layout = QGridLayout(credentials_group)
-        credentials_layout.addWidget(
-            QLabel(STRINGS.LABEL_USERNAME, credentials_group), 0, 0
-        )
-        self.username_input = QLineEdit(credentials_group)
-        credentials_layout.addWidget(self.username_input, 0, 1, 1, 2)
-        credentials_layout.addWidget(
-            QLabel(STRINGS.LABEL_PASSWORD, credentials_group), 1, 0
-        )
-        self.password_input = QLineEdit(credentials_group)
-        self.password_input.setEchoMode(QLineEdit.Password)
-        credentials_layout.addWidget(self.password_input, 1, 1, 1, 2)
-
-        self.save_credentials_button = QPushButton(
-            STRINGS.BUTTON_SAVE_CREDENTIALS, credentials_group
-        )
-        self.save_credentials_button.clicked.connect(
-            self._on_save_credentials_clicked
-        )
-        credentials_layout.addWidget(self.save_credentials_button, 2, 1)
-        self.delete_credentials_button = QPushButton(
-            STRINGS.BUTTON_DELETE_CREDENTIALS, credentials_group
-        )
-        self.delete_credentials_button.clicked.connect(
-            self._on_delete_credentials_clicked
-        )
-        credentials_layout.addWidget(self.delete_credentials_button, 2, 2)
-
-        self.credentials_message_label = QLabel("", credentials_group)
-        self.credentials_message_label.setProperty("role", "danger")
-        self.credentials_message_label.setWordWrap(True)
-        self.credentials_message_label.setVisible(False)
-        credentials_layout.addWidget(self.credentials_message_label, 3, 0, 1, 3)
-        root_layout.addWidget(credentials_group)
-
-        login_group = QGroupBox(STRINGS.GROUP_LOGIN, self)
-        login_layout = QVBoxLayout(login_group)
-        login_buttons = QHBoxLayout()
-        self.begin_login_button = QPushButton(STRINGS.BUTTON_BEGIN_LOGIN, login_group)
-        self.begin_login_button.clicked.connect(self._on_begin_login_clicked)
-        login_buttons.addWidget(self.begin_login_button)
-        self.cancel_login_button = QPushButton(STRINGS.BUTTON_CANCEL_LOGIN, login_group)
-        self.cancel_login_button.clicked.connect(self._on_cancel_login_clicked)
-        self.cancel_login_button.setEnabled(False)
-        login_buttons.addWidget(self.cancel_login_button)
-        self.complete_login_button = QPushButton(STRINGS.BUTTON_COMPLETE_LOGIN, login_group)
-        self.complete_login_button.clicked.connect(self._on_complete_login_clicked)
-        self.complete_login_button.setEnabled(False)
-        login_buttons.addWidget(self.complete_login_button)
-        login_layout.addLayout(login_buttons)
-        response_row = QHBoxLayout()
-        response_row.addWidget(QLabel(STRINGS.LABEL_CAPTCHA_RESPONSE, login_group))
-        self.captcha_response_input = QLineEdit(login_group)
-        response_row.addWidget(self.captcha_response_input)
-        login_layout.addLayout(response_row)
-        self.login_message_label = QLabel("", login_group)
-        self.login_message_label.setProperty("role", "danger")
-        self.login_message_label.setWordWrap(True)
-        self.login_message_label.setVisible(False)
-        login_layout.addWidget(self.login_message_label)
-        self.challenge_prompt_label = QLabel("", login_group)
-        self.challenge_prompt_label.setWordWrap(True)
-        self.challenge_prompt_label.setVisible(False)
-        login_layout.addWidget(self.challenge_prompt_label)
-        self.challenge_image_label = QLabel(login_group)
-        self.challenge_image_label.setAlignment(Qt.AlignCenter)
-        self.challenge_image_label.setVisible(False)
-        login_layout.addWidget(self.challenge_image_label)
-        root_layout.addWidget(login_group)
         self._pending_login_account_id = None
         self._pending_authentication_service = None
         self._login_status_by_account = {}
+        self._captcha_dialog = None
+        self._cancelled_login_account_id = None
 
-        self._refresh_list()
+        root = QVBoxLayout(self)
+        title = QLabel(STRINGS.ACCOUNTS_PAGE_TITLE, self)
+        title.setObjectName("pageTitle")
+        root.addWidget(title)
+        subtitle = QLabel(STRINGS.ACCOUNTS_PAGE_SUBTITLE, self)
+        subtitle.setWordWrap(True)
+        subtitle.setObjectName("pageSubtitle")
+        root.addWidget(subtitle)
 
-    # ---------------------------------------------------------
-    # Actions
-    # ---------------------------------------------------------
+        add_group = QGroupBox(STRINGS.GROUP_ADD_ACCOUNT, self)
+        form = QGridLayout(add_group)
+        self.display_name_input = QLineEdit(add_group)
+        self.display_name_input.setPlaceholderText(STRINGS.PLACEHOLDER_DISPLAY_NAME)
+        self.broker_selector = QComboBox(add_group)
+        self.broker_selector.addItems(AVAILABLE_BROKERS)
+        self.username_input = QLineEdit(add_group)
+        self.username_input.setPlaceholderText(STRINGS.PLACEHOLDER_USERNAME)
+        self.password_input = QLineEdit(add_group)
+        self.password_input.setPlaceholderText(STRINGS.PLACEHOLDER_PASSWORD)
+        self.password_input.setEchoMode(QLineEdit.Password)
+        for col, (label, widget) in enumerate((
+            (STRINGS.LABEL_DISPLAY_NAME, self.display_name_input),
+            (STRINGS.LABEL_BROKER, self.broker_selector),
+            (STRINGS.LABEL_USERNAME, self.username_input),
+            (STRINGS.LABEL_PASSWORD, self.password_input),
+        )):
+            form.addWidget(QLabel(label, add_group), 0, col)
+            form.addWidget(widget, 1, col)
+        self.add_button = QPushButton(STRINGS.BUTTON_ADD, add_group)
+        self.add_button.clicked.connect(self._on_add_clicked)
+        form.addWidget(self.add_button, 2, 0, 1, 2)
+        auto_id_note = QLabel(STRINGS.NOTE_AUTO_ACCOUNT_ID, add_group)
+        form.addWidget(auto_id_note, 2, 2, 1, 2)
+        self.validation_error_label = QLabel("", add_group)
+        self.validation_error_label.setProperty("role", "danger")
+        self.validation_error_label.setWordWrap(True)
+        self.validation_error_label.hide()
+        form.addWidget(self.validation_error_label, 3, 0, 1, 4)
+        root.addWidget(add_group)
 
-    def _on_add_clicked(self):
-        """Add an account from the form; invalid input is reported, never guessed."""
-        account_id = self.account_id_input.text()
-        display_name = self.display_name_input.text()
-        broker_name = self.broker_selector.currentText()
+        group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
+        list_layout = QVBoxLayout(group)
+        list_layout.addWidget(QLabel(STRINGS.ACCOUNTS_LIST_SUBTITLE, group))
+        tools = QHBoxLayout()
+        tools.addWidget(QLabel(STRINGS.LABEL_SORT, group))
+        self.sort_selector = QComboBox(group)
+        self.sort_selector.addItem(STRINGS.SORT_MANUAL, "manual")
+        self.sort_selector.addItem(STRINGS.SORT_BY_NAME_ASC, "name")
+        self.sort_selector.currentIndexChanged.connect(self._refresh_list)
+        tools.addWidget(self.sort_selector)
+        self.refresh_status_button = QPushButton(STRINGS.BUTTON_REFRESH_STATUS, group)
+        self.refresh_status_button.clicked.connect(self._on_refresh_status_clicked)
+        tools.addWidget(self.refresh_status_button)
+        self.logout_button = QPushButton(STRINGS.BUTTON_LOGOUT, group)
+        self.logout_button.clicked.connect(self._on_logout_clicked)
+        tools.addWidget(self.logout_button)
+        tools.addStretch(1)
+        list_layout.addLayout(tools)
+        self.accounts_table = QTableWidget(0, 5, group)
+        self.accounts_table.setHorizontalHeaderLabels([
+            "شناسهٔ داخلی", STRINGS.TABLE_HEADER_ACCOUNT_BROKER,
+            STRINGS.TABLE_HEADER_CURRENT_USE, STRINGS.TABLE_HEADER_LOGIN_STATUS,
+            STRINGS.TABLE_HEADER_ACTIONS,
+        ])
+        self.accounts_table.setColumnHidden(_ID, True)
+        self.accounts_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.accounts_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.accounts_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.accounts_table.verticalHeader().hide()
+        self.accounts_table.horizontalHeader().setSectionResizeMode(_DISPLAY, QHeaderView.Stretch)
+        self.accounts_table.horizontalHeader().setSectionResizeMode(_ACTIONS, QHeaderView.ResizeToContents)
+        self.accounts_table.horizontalHeader().setStretchLastSection(True)
+        list_layout.addWidget(self.accounts_table, 1)
+        self.login_message_label = QLabel("", group)
+        self.login_message_label.setWordWrap(True)
+        self.login_message_label.hide()
+        list_layout.addWidget(self.login_message_label)
+        list_layout.addWidget(QLabel(STRINGS.ACCOUNTS_SECURITY_NOTE, group))
+        root.addWidget(group, 1)
+        self.refresh()
 
-        try:
-            if not display_name.strip():
-                raise AccountStoreError(STRINGS.DIALOG_INVALID_ACCOUNT)
-            self.store.add(account_id, broker_name, display_name)
-        except (AccountStoreError, AccountValidationError):
-            self._show_validation_error(STRINGS.DIALOG_INVALID_ACCOUNT)
-            return
+    def _records(self):
+        records = list(self.store.all_accounts())
+        if self.sort_selector.currentData() == "name":
+            records.sort(key=lambda record: record.display_name.casefold())
+        return records
 
-        self._clear_validation_error()
-        self.account_id_input.clear()
-        self.display_name_input.clear()
-        self._refresh_list()
+    def _refresh_list(self, *_):
+        records = self._records()
+        active_id = self.store.active_account_id()
+        selected_id = self._selected_account_id()
+        self.accounts_table.setRowCount(len(records))
+        for row, record in enumerate(records):
+            identity = QTableWidgetItem(record.account_id)
+            identity.setData(Qt.UserRole, record.account_id)
+            self.accounts_table.setItem(row, _ID, identity)
+            details = QTableWidgetItem(f"{record.display_name}\n{record.broker_name}")
+            details.setData(Qt.UserRole, record.account_id)
+            self.accounts_table.setItem(row, _DISPLAY, details)
+            status = self._login_status_by_account.get(record.account_id)
+            text = (STRINGS.LOGIN_STATUS_UNKNOWN if status is None else
+                    STRINGS.LOGIN_STATUS_LOGGED_IN if status else STRINGS.LOGIN_STATUS_LOGGED_OUT)
+            is_active = record.account_id == active_id
+            self.accounts_table.setItem(row, _ACTIVE, QTableWidgetItem(
+                STRINGS.CURRENT_USE_ACTIVE if is_active else STRINGS.CURRENT_USE_INACTIVE))
+            self.accounts_table.setItem(row, _STATUS, QTableWidgetItem(text))
+            actions = QWidget(self.accounts_table)
+            row_layout = QHBoxLayout(actions)
+            row_layout.setContentsMargins(4, 3, 4, 3)
+            self._button(row_layout, STRINGS.BUTTON_SET_ACTIVE, lambda _, i=record.account_id: self._activate(i), not is_active)
+            self._button(row_layout, STRINGS.BUTTON_LOGIN if self._pending_login_account_id != record.account_id else STRINGS.BUTTON_LOGIN_PENDING,
+                         lambda _, i=record.account_id: self._begin_login(i), self._pending_login_account_id is None)
+            if status:
+                self._button(row_layout, STRINGS.BUTTON_LOGOUT, lambda _, i=record.account_id: self._logout(i))
+            self._button(row_layout, STRINGS.BUTTON_EDIT, lambda _, i=record.account_id: self._edit_account(i))
+            self._button(row_layout, STRINGS.BUTTON_DELETE, lambda _, i=record.account_id: self._delete_account(i))
+            if self.sort_selector.currentData() == "manual":
+                self._button(row_layout, "↑", lambda _, i=record.account_id, r=row: self._move(i, r-1), row > 0)
+                self._button(row_layout, "↓", lambda _, i=record.account_id, r=row: self._move(i, r+1), row < len(records)-1)
+            row_layout.addStretch(1)
+            self.accounts_table.setCellWidget(row, _ACTIONS, actions)
+            self.accounts_table.setRowHeight(row, 58)
+            if selected_id == record.account_id:
+                self.accounts_table.setCurrentCell(row, _DISPLAY)
+        self.accounts_table.setColumnHidden(_ID, True)
+        self.accounts_table.setColumnHidden(_ID, True)
+        self.accounts_table.setColumnWidth(_DISPLAY, 250)
+        self.accounts_table.setColumnWidth(_ACTIVE, 130)
+        self.accounts_table.setColumnWidth(_STATUS, 160)
+        # Action widgets are deliberately placed in the visible last column.
 
-    def _on_set_active_clicked(self):
-        """Activate the account of the currently selected row."""
-        row = self.accounts_table.currentRow()
-        if row < 0:
-            self._show_validation_error(
-                f"{STRINGS.DIALOG_NO_SELECTION}: "
-                f"{STRINGS.DIALOG_SELECT_ACCOUNT_FIRST}"
-            )
-            return
+    def _button(self, layout, text, callback, enabled=True):
+        button = QPushButton(text, self.accounts_table)
+        button.setEnabled(enabled)
+        button.clicked.connect(callback)
+        layout.addWidget(button)
 
-        account_item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
-        try:
-            self.store.set_active(account_item.text())
-        except AccountStoreError:
-            self._show_validation_error(STRINGS.DIALOG_INVALID_ACCOUNT)
-            return
-
-        self._clear_validation_error()
-        self._refresh_list()
+    def _selected_account_id(self):
+        row = self.accounts_table.currentRow() if hasattr(self, "accounts_table") else -1
+        details = self.accounts_table.item(row, _DISPLAY) if row >= 0 else None
+        return details.data(Qt.UserRole) if details is not None else None
 
     def _selected_account_record(self):
-        row = self.accounts_table.currentRow()
-        if row < 0:
-            return None
-        account_item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
-        if account_item is None:
-            return None
-        account_id = account_item.text()
-        return next(
-            (record for record in self.store.all_accounts()
-             if record.account_id == account_id),
-            None,
-        )
+        account_id = self._selected_account_id()
+        return next((r for r in self.store.all_accounts() if r.account_id == account_id), None)
 
-    def _clear_challenge(self):
-        self.challenge_prompt_label.clear()
-        self.challenge_prompt_label.setVisible(False)
-        self.challenge_image_label.clear()
-        self.challenge_image_label.setVisible(False)
-
-    def _login_message(self, message, *, error=True):
+    def _report(self, message, error=False):
         self.login_message_label.setText(message)
         self.login_message_label.setProperty("role", "danger" if error else "success")
         self.login_message_label.setVisible(bool(message))
 
-    def _on_begin_login_clicked(self):
+    def _on_add_clicked(self):
+        display = self.display_name_input.text().strip()
+        username, password = self.username_input.text(), self.password_input.text()
+        if not display:
+            self._show_validation_error(STRINGS.FORM_DISPLAY_NAME_REQUIRED)
+            return
+        if not username.strip() or not password.strip():
+            self._show_validation_error(STRINGS.FORM_CREDENTIALS_REQUIRED)
+            return
+        account_id = "ACC-" + uuid.uuid4().hex
+        try:
+            self.store.add(account_id, self.broker_selector.currentText(), display)
+            if self._credential_store_factory is None:
+                self.store.delete(account_id)
+                raise CredentialStoreError("Credential storage unavailable")
+            self._credential_store_factory().save_credentials(
+                account_id, self.broker_selector.currentText(), username, password)
+        except Exception:
+            try:
+                if any(r.account_id == account_id for r in self.store.all_accounts()):
+                    self.store.delete(account_id)
+            except Exception:
+                pass
+            self._show_validation_error(STRINGS.ACCOUNT_OPERATION_FAILED)
+            return
+        for widget in (self.display_name_input, self.username_input, self.password_input):
+            widget.clear()
+        self._clear_validation_error()
+        self._report(STRINGS.ACCOUNT_ADD_SUCCESS)
+        self._refresh_list()
+
+    def _activate(self, account_id):
+        try:
+            self.store.set_active(account_id)
+            self._refresh_list()
+        except AccountStoreError:
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+
+    def _begin_login(self, account_id):
         from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
         if self._pending_login_account_id is not None:
-            self._login_message(STRINGS.LOGIN_PENDING)
-            return
-        self._clear_challenge()
-        self.login_message_label.clear()
-        self.login_message_label.setVisible(False)
-        record = self._selected_account_record()
-        if record is None:
-            self._login_message(STRINGS.LOGIN_SELECT_ACCOUNT)
+            self._report(STRINGS.LOGIN_PENDING, True)
             return
         if self._authentication_service_factory is None:
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
             return
+        service = None
+        challenge_received = False
         try:
             service = self._authentication_service_factory()
-            challenge = service.begin_login(record.account_id)
-        except Exception:
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
-            return
-        if challenge is None:
-            try:
-                service.cancel_login(record.account_id)
-            except Exception:
-                pass
-            self._clear_challenge()
-            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
-            return
-        if not isinstance(challenge, LoginChallenge):
-            try:
-                service.cancel_login(record.account_id)
-            except Exception:
-                pass
-            self._clear_challenge()
-            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
-            return
-        self._pending_login_account_id = record.account_id
-        self._pending_authentication_service = service
-        self.cancel_login_button.setEnabled(True)
-        self.complete_login_button.setEnabled(True)
-        try:
-            if challenge.kind != CHALLENGE_CAPTCHA_IMAGE:
+            challenge = service.begin_login(account_id)
+            challenge_received = True
+            if not isinstance(challenge, LoginChallenge):
+                candidate = getattr(challenge, "challenge", None)
+                if isinstance(candidate, LoginChallenge):
+                    challenge = candidate
+            if not isinstance(challenge, LoginChallenge) or challenge.kind != CHALLENGE_CAPTCHA_IMAGE:
                 raise ValueError
             if not isinstance(challenge.display_payload, str):
                 raise ValueError
-            image_bytes = base64.b64decode(challenge.display_payload, validate=True)
+            data = base64.b64decode(challenge.display_payload, validate=True)
             pixmap = QPixmap()
-            if not pixmap.loadFromData(image_bytes) or pixmap.isNull():
+            if not pixmap.loadFromData(data) or pixmap.isNull():
                 raise ValueError
-            self.challenge_prompt_label.setText(challenge.prompt)
-            self.challenge_prompt_label.setVisible(True)
-            self.challenge_image_label.setPixmap(pixmap)
-            self.challenge_image_label.setVisible(True)
         except Exception:
-            try:
-                service.cancel_login(record.account_id)
-            except Exception:
-                pass
-            self._pending_login_account_id = None
-            self._pending_authentication_service = None
-            self.cancel_login_button.setEnabled(False)
-            self.complete_login_button.setEnabled(False)
-            self.captcha_response_input.clear()
-            self._clear_challenge()
-            self._login_message(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE)
-
-    def _on_cancel_login_clicked(self):
-        account_id = self._pending_login_account_id
-        if account_id is None:
+            if service is not None and challenge_received:
+                try:
+                    service.cancel_login(account_id)
+                except Exception:
+                    # Never surface provider details; keep this account out of
+                    # the pending UI state even if cleanup itself fails.
+                    self._pending_login_account_id = None
+                    self._pending_authentication_service = None
+                    self._captcha_dialog = None
+            self._report(STRINGS.LOGIN_CHALLENGE_UNAVAILABLE, True)
             return
-        self._clear_challenge()
+        self._pending_login_account_id = account_id
+        self._pending_authentication_service = service
+        self._cancelled_login_account_id = None
+        dialog = QDialog(self)
+        dialog.setWindowTitle(STRINGS.CAPTCHA_DIALOG_TITLE)
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        dialog.setModal(True)
+        layout = QVBoxLayout(dialog)
+        prompt = QLabel(STRINGS.CAPTCHA_DIALOG_PROMPT.format(self.store.get(account_id).display_name), dialog)
+        prompt.setWordWrap(True)
+        layout.addWidget(prompt)
+        image = QLabel(dialog)
+        image.setAlignment(Qt.AlignCenter)
+        image.setPixmap(pixmap.scaled(420, 180, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        layout.addWidget(image)
+        entry = QLineEdit(dialog)
+        entry.setPlaceholderText(STRINGS.CAPTCHA_RESPONSE_PLACEHOLDER)
+        entry.setAccessibleName(STRINGS.CAPTCHA_RESPONSE_LABEL)
+        layout.addWidget(entry)
+        error = QLabel("", dialog)
+        error.setProperty("role", "danger")
+        layout.addWidget(error)
+        buttons = QDialogButtonBox(dialog)
+        confirm = buttons.addButton(STRINGS.BUTTON_CAPTCHA_CONFIRM, QDialogButtonBox.AcceptRole)
+        cancel = buttons.addButton(STRINGS.BUTTON_CANCEL, QDialogButtonBox.RejectRole)
+        layout.addWidget(buttons)
+        confirm.clicked.connect(lambda: self._complete_login_dialog(account_id, entry, error, dialog))
+        cancel.clicked.connect(lambda: self._cancel_login(dialog))
+        dialog.rejected.connect(lambda: self._cancel_login(dialog) if self._pending_login_account_id else None)
+        self._captcha_dialog = dialog
+        self._refresh_list()
+        dialog.show()
+
+    def _complete_login_dialog(self, account_id, entry, error, dialog):
+        response = entry.text()
+        if not response.strip():
+            error.setText(STRINGS.CAPTCHA_RESPONSE_REQUIRED)
+            return
         try:
-            service = self._pending_authentication_service
-            if service is None:
-                raise RuntimeError
-            service.cancel_login(account_id)
+            self._pending_authentication_service.complete_login(account_id, response)
         except Exception:
-            self._pending_login_account_id = None
-            self._pending_authentication_service = None
-            self.cancel_login_button.setEnabled(False)
-            self.complete_login_button.setEnabled(False)
-            self.captcha_response_input.clear()
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            self._login_status_by_account[account_id] = None
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+            self._finish_login(dialog)
             return
-        self._pending_login_account_id = None
-        self._pending_authentication_service = None
-        self.cancel_login_button.setEnabled(False)
-        self.complete_login_button.setEnabled(False)
-        self.captcha_response_input.clear()
-        self._login_message(STRINGS.LOGIN_CANCELLED, error=False)
+        service = self._pending_authentication_service
+        self._login_status_by_account[account_id] = True
+        self._report(STRINGS.LOGIN_COMPLETED)
+        self._finish_login(dialog)
+        self._refresh_list()
 
-    def _on_complete_login_clicked(self):
+    def _cancel_login(self, dialog=None):
         account_id = self._pending_login_account_id
         service = self._pending_authentication_service
-        response = self.captcha_response_input.text()
-        if account_id is None or service is None:
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
-            self.captcha_response_input.clear()
-            return
-        if not response.strip():
-            self._login_message(STRINGS.LOGIN_RESPONSE_REQUIRED)
-            self.captcha_response_input.clear()
+        if account_id is None:
             return
         try:
-            service.complete_login(account_id, response)
+            service.cancel_login(account_id)
         except Exception:
-            self._clear_challenge()
-            self._pending_login_account_id = None
-            self._pending_authentication_service = None
-            self.cancel_login_button.setEnabled(False)
-            self.complete_login_button.setEnabled(False)
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
         else:
-            self._clear_challenge()
-            self._pending_login_account_id = None
-            self._pending_authentication_service = None
-            self.cancel_login_button.setEnabled(False)
-            self.complete_login_button.setEnabled(False)
-            self._login_message(STRINGS.LOGIN_COMPLETED, error=False)
-            self._login_status_by_account.pop(account_id, None)
-            self._refresh_one_login_status(account_id, service)
-        finally:
-            self.captcha_response_input.clear()
+            self._cancelled_login_account_id = account_id
+            self._report(STRINGS.LOGIN_CANCELLED)
+        self._finish_login(dialog)
+        self._refresh_list()
 
-    def _on_logout_clicked(self):
-        record = self._selected_account_record()
-        if record is None:
-            self._login_message(STRINGS.LOGIN_SELECT_ACCOUNT)
+    def _finish_login(self, dialog=None):
+        self._pending_login_account_id = None
+        self._pending_authentication_service = None
+        self._captcha_dialog = None
+        if dialog is not None:
+            dialog.close()
+
+    def _on_begin_login_clicked(self):
+        account_id = self._selected_account_id()
+        if account_id is None:
+            self._report(STRINGS.LOGIN_SELECT_ACCOUNT, True)
             return
-        if self._pending_login_account_id == record.account_id:
-            self._login_message(STRINGS.LOGOUT_PENDING_LOGIN)
+        self._begin_login(account_id)
+
+    def _on_cancel_login_clicked(self):
+        self._cancel_login(self._captcha_dialog)
+
+    def _on_complete_login_clicked(self):
+        # The response editor belongs exclusively to the active challenge dialog.
+        if self._captcha_dialog is None:
             return
-        if self._authentication_service_factory is None:
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
-            return
+        entry = self._captcha_dialog.findChild(QLineEdit)
+        labels = self._captcha_dialog.findChildren(QLabel)
+        error = next((label for label in labels if label.text() == ""), None)
+        if entry is not None and error is not None:
+            self._complete_login_dialog(
+                self._pending_login_account_id, entry, error, self._captcha_dialog
+            )
+
+    def _logout(self, account_id):
+        service = None
         try:
             service = self._authentication_service_factory()
-            service.logout(record.account_id)
+            service.logout(account_id)
+            self._login_status_by_account[account_id] = False
+            self._report(STRINGS.LOGOUT_COMPLETED)
         except Exception:
-            if "service" in locals():
-                self._refresh_one_login_status(record.account_id, service)
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
-            return
-        self._login_message(STRINGS.LOGOUT_COMPLETED, error=False)
-        self._login_status_by_account.pop(record.account_id, None)
-        self._refresh_one_login_status(record.account_id, service)
+            try:
+                if service is None:
+                    service = self._authentication_service_factory()
+                status = service.is_logged_in(account_id)
+                self._login_status_by_account[account_id] = status if isinstance(status, bool) else None
+            except Exception:
+                self._login_status_by_account[account_id] = None
+            self._report(STRINGS.LOGIN_OPERATION_FAILED, True)
+        self._refresh_list()
+
+    def _on_logout_clicked(self):
+        account_id = self._selected_account_id()
+        if account_id is None:
+            self._report(STRINGS.LOGIN_SELECT_ACCOUNT, True)
+        elif account_id == self._pending_login_account_id:
+            self._report(STRINGS.LOGOUT_PENDING_LOGIN, True)
+        else:
+            self._logout(account_id)
 
     def _on_refresh_status_clicked(self):
         if self._authentication_service_factory is None:
-            self._login_message(STRINGS.LOGIN_OPERATION_FAILED)
+            self._report(STRINGS.LOGIN_STATUS_REFRESH_FAILED, True)
             return
         try:
             service = self._authentication_service_factory()
         except Exception:
-            self._login_message(STRINGS.LOGIN_STATUS_REFRESH_FAILED)
+            self._report(STRINGS.LOGIN_STATUS_REFRESH_FAILED, True)
             return
         failed = False
         for record in self.store.all_accounts():
-            self._refresh_one_login_status(record.account_id, service)
-            if self._login_status_by_account.get(record.account_id) is None:
+            try:
+                result = service.is_logged_in(record.account_id)
+                if not isinstance(result, bool):
+                    raise ValueError("invalid login status")
+                self._login_status_by_account[record.account_id] = result
+            except Exception:
+                self._login_status_by_account[record.account_id] = None
                 failed = True
-        self._login_message(
-            STRINGS.LOGIN_STATUS_REFRESH_FAILED if failed else "",
-            error=failed,
-        )
+        self._refresh_list()
+        if failed:
+            self._report(STRINGS.LOGIN_STATUS_REFRESH_FAILED, True)
 
-    def _refresh_one_login_status(self, account_id, service):
+    def _edit_account(self, account_id):
+        record = self.store.get(account_id)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(STRINGS.EDIT_DIALOG_TITLE)
+        dialog.setLayoutDirection(Qt.RightToLeft)
+        layout = QFormLayout(dialog)
+        name = QLineEdit(record.display_name, dialog)
+        broker = QComboBox(dialog)
+        broker.addItems(AVAILABLE_BROKERS)
+        broker.setCurrentText(record.broker_name)
+        username = QLineEdit(dialog)
+        new_password = QLineEdit(dialog)
+        new_password.setEchoMode(QLineEdit.Password)
+        new_password.setPlaceholderText(STRINGS.PLACEHOLDER_NEW_PASSWORD)
+        layout.addRow(STRINGS.LABEL_DISPLAY_NAME, name)
+        layout.addRow(STRINGS.LABEL_BROKER, broker)
+        layout.addRow(STRINGS.LABEL_USERNAME, username)
+        layout.addRow(STRINGS.LABEL_NEW_PASSWORD, new_password)
+        layout.addRow(QLabel(STRINGS.EDIT_PASSWORD_NOTE, dialog))
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel, parent=dialog)
+        buttons.button(QDialogButtonBox.Save).setText(STRINGS.BUTTON_SAVE_CHANGES)
+        buttons.button(QDialogButtonBox.Cancel).setText(STRINGS.BUTTON_CANCEL)
+        layout.addRow(buttons)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        if not name.text().strip():
+            self._report(STRINGS.EDIT_DISPLAY_NAME_REQUIRED, True)
+            return
+        if username.text().strip() or new_password.text():
+            if not username.text().strip() or not new_password.text():
+                self._report(STRINGS.EDIT_CREDENTIALS_PAIR_REQUIRED, True)
+                return
+            try:
+                self._credential_store_factory().save_credentials(
+                    account_id, broker.currentText(), username.text(), new_password.text())
+            except Exception:
+                self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+                return
         try:
-            logged_in = service.is_logged_in(account_id)
-            if not isinstance(logged_in, bool):
-                raise ValueError
+            self.store.update(account_id, broker_name=broker.currentText(), display_name=name.text())
         except Exception:
-            self._login_status_by_account[account_id] = None
-            status_text = STRINGS.LOGIN_STATUS_UNKNOWN
-            self._login_message(STRINGS.LOGIN_STATUS_REFRESH_FAILED)
-        else:
-            self._login_status_by_account[account_id] = logged_in
-            status_text = (
-                STRINGS.LOGIN_STATUS_LOGGED_IN
-                if logged_in else STRINGS.LOGIN_STATUS_LOGGED_OUT
-            )
-        for row in range(self.accounts_table.rowCount()):
-            item = self.accounts_table.item(row, _ACCOUNT_ID_COLUMN)
-            if item is not None and item.text() == account_id:
-                self.accounts_table.setItem(
-                    row, _LOGIN_STATUS_COLUMN, QTableWidgetItem(status_text)
-                )
-
-    def _on_save_credentials_clicked(self):
-        username = self.username_input.text()
-        password = self.password_input.text()
-        try:
-            if not username.strip() or not password.strip():
-                self._show_credentials_message(
-                    STRINGS.CREDENTIALS_INVALID, error=True
-                )
-                return
-            record = self._selected_account_record()
-            if record is None:
-                self._show_credentials_message(
-                    STRINGS.CREDENTIALS_SELECT_ACCOUNT, error=True
-                )
-                return
-            if self._credential_store_factory is None:
-                self._show_credentials_message(
-                    STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-                )
-                return
-            credential_store = self._credential_store_factory()
-            credential_store.save_credentials(
-                record.account_id, record.broker_name, username, password
-            )
-        except CredentialStoreError:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-            )
-        except Exception:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-            )
-        else:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_SAVED, error=False
-            )
-        finally:
-            self.username_input.clear()
-            self.password_input.clear()
-
-    def _on_delete_credentials_clicked(self):
-        try:
-            record = self._selected_account_record()
-            if record is None:
-                self._show_credentials_message(
-                    STRINGS.CREDENTIALS_SELECT_ACCOUNT, error=True
-                )
-                return
-            if self._credential_store_factory is None:
-                self._show_credentials_message(
-                    STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-                )
-                return
-            credential_store = self._credential_store_factory()
-            credential_store.delete_credentials(
-                record.account_id, record.broker_name
-            )
-        except CredentialNotFoundError:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_NOT_FOUND, error=True
-            )
-        except CredentialStoreError:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-            )
-        except Exception:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_OPERATION_FAILED, error=True
-            )
-        else:
-            self._show_credentials_message(
-                STRINGS.CREDENTIALS_DELETED, error=False
-            )
-        finally:
-            self.username_input.clear()
-            self.password_input.clear()
-
-    def _show_credentials_message(self, message, *, error):
-        self.credentials_message_label.setText(message)
-        self.credentials_message_label.setProperty(
-            "role", "danger" if error else "success"
-        )
-        self.credentials_message_label.setVisible(bool(message))
-
-    # ---------------------------------------------------------
-    # Inline validation message (UI-9.4)
-    # ---------------------------------------------------------
-
-    def _show_validation_error(self, message):
-        """
-        Show one inline error on the add-account form (UI-9.4).
-
-        Replaces the former blocking ``QMessageBox``: the message is the
-        same Persian ``STRINGS.DIALOG_*`` text the dialog carried. A new
-        error simply replaces the previous one.
-        """
-        self.validation_error_label.setText(message)
-        self.validation_error_label.setVisible(bool(message))
-
-    def _clear_validation_error(self):
-        """
-        Clear the inline error after a successful action (UI-9.4).
-
-        The label is emptied *and* hidden, so an error-free form occupies
-        exactly the space it did before this task.
-        """
-        self.validation_error_label.clear()
-        self.validation_error_label.setVisible(False)
-
-    # ---------------------------------------------------------
-    # State mirroring (store -> widgets)
-    # ---------------------------------------------------------
-
-    def refresh(self):
-        """Public hook to re-mirror the store into the page."""
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+            return
         self._refresh_list()
 
-    def _refresh_list(self):
-        active_id = self.store.active_account_id()
+    def _delete_account(self, account_id):
+        record = self.store.get(account_id)
+        answer = QMessageBox.question(self, STRINGS.DELETE_DIALOG_TITLE,
+                                      STRINGS.DELETE_DIALOG_CONFIRM.format(record.display_name))
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            if self._credential_store_factory is not None:
+                try:
+                    self._credential_store_factory().delete_credentials(account_id, record.broker_name)
+                except Exception:
+                    pass
+            self.store.delete(account_id)
+            self._login_status_by_account.pop(account_id, None)
+        except Exception:
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+        self._refresh_list()
 
-        records = self.store.all_accounts()
-        self.accounts_table.setRowCount(len(records))
-        for row, record in enumerate(records):
-            account_id_item = QTableWidgetItem(str(record.account_id))
-            display_name_item = QTableWidgetItem(record.display_name)
-            broker_item = QTableWidgetItem(record.broker_name)
-            active_item = QTableWidgetItem(
-                "Yes" if record.account_id == active_id else ""
-            )
-            login_status = self._login_status_by_account.get(record.account_id)
-            login_status_item = QTableWidgetItem(
-                STRINGS.LOGIN_STATUS_UNKNOWN if login_status is None else (
-                    STRINGS.LOGIN_STATUS_LOGGED_IN if login_status
-                    else STRINGS.LOGIN_STATUS_LOGGED_OUT
-                )
-            )
-            self.accounts_table.setItem(row, _ACCOUNT_ID_COLUMN, account_id_item)
-            self.accounts_table.setItem(row, _DISPLAY_NAME_COLUMN, display_name_item)
-            self.accounts_table.setItem(row, _BROKER_COLUMN, broker_item)
-            self.accounts_table.setItem(row, _ACTIVE_COLUMN, active_item)
-            self.accounts_table.setItem(
-                row, _LOGIN_STATUS_COLUMN, login_status_item
-            )
+    def _move(self, account_id, position):
+        try:
+            records = list(self.store.all_accounts())
+            self.store.move(account_id, max(0, min(position, len(records)-1)))
+            self._refresh_list()
+        except Exception:
+            self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+
+    def _show_validation_error(self, message):
+        self.validation_error_label.setText(message)
+        self.validation_error_label.show()
+
+    def _clear_validation_error(self):
+        self.validation_error_label.clear()
+        self.validation_error_label.hide()
+
+    def refresh(self):
+        self._refresh_list()
