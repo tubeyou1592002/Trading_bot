@@ -2846,7 +2846,7 @@ The NATS dependency `nats-py==2.16.0` was installed only in the temporary venv a
 
 **Architectural boundary:** this work changes local account-metadata persistence only. It does not redesign `AccountsPage`, change authentication/session/token persistence, or modify order dispatch/live-trading policy. See Decision 032 in `DECISIONS.md`.
 
-**Immediate follow-up:** finish review/approval of the Accounts-page UX mockup, then handle UI implementation as a separate bounded task. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain distinct pending work. Live trading remains disabled.
+**Follow-up at this checkpoint (superseded):** the Accounts-page mockup and redesign were subsequently approved and completed in code commit `f8d564f` (see the latest checkpoint appended below). The active-account + logged-in + usable-session order gate and account-aware feedback remain distinct pending work. Live trading remains disabled.
 
 
 ## Latest checkpoint — Accounts-page redesign COMPLETE (2026-10-17)
