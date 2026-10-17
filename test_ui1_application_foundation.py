@@ -45,6 +45,7 @@ Run:
 import os
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -53,6 +54,7 @@ from PySide6.QtWidgets import QApplication
 import ui  # noqa: F401  (Test 1: the package is importable)
 import ui.app as ui_app
 from ui.main_window import ApplicationMode, MainWindow
+from ui.account_store import AccountStore
 from ui import strings as STRINGS
 
 
@@ -72,6 +74,11 @@ def qapp():
     if app is None:
         app = QApplication([])
     yield app
+
+
+def _main_window():
+    """Build a MainWindow with an in-memory store (never the real DB)."""
+    return MainWindow(account_store=AccountStore(repository=False))
 
 
 # ============================================================
@@ -96,7 +103,7 @@ def test_1_ui_package_is_importable():
 
 
 def test_2_main_window_is_constructible(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     assert window.windowTitle() == EXPECTED_TITLE
     assert window.centralWidget() is not None
@@ -116,7 +123,7 @@ def test_2_main_window_is_constructible(qapp):
 
 
 def test_3_navigation_placeholders_exact(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     assert window.navigation_area is not None
     # navigation: Home/Accounts/Settings plus Order Configuration
@@ -139,7 +146,7 @@ def test_3_navigation_placeholders_exact(qapp):
 
 
 def test_4_home_is_initial_page(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     assert window.content_area.currentWidget() is window.placeholder_pages["Home"]
 
@@ -150,7 +157,7 @@ def test_4_home_is_initial_page(qapp):
 
 
 def test_5_navigation_switching_works(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     window.nav_buttons["Settings"].click()
     assert window.content_area.currentWidget() is window.placeholder_pages["Settings"]
@@ -166,7 +173,7 @@ def test_5_navigation_switching_works(qapp):
 
 
 def test_6_default_mode_is_normal(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     assert window.mode is ApplicationMode.NORMAL
 
@@ -177,7 +184,7 @@ def test_6_default_mode_is_normal(qapp):
 
 
 def test_7_mode_can_change_to_diagnostic(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     window.set_mode(ApplicationMode.DIAGNOSTIC)
     assert window.mode is ApplicationMode.DIAGNOSTIC
@@ -192,7 +199,7 @@ def test_7_mode_can_change_to_diagnostic(qapp):
 
 
 def test_8_invalid_mode_rejected(qapp):
-    window = MainWindow()
+    window = _main_window()
 
     with pytest.raises(ValueError):
         window.set_mode("DIAGNOSTIC")
@@ -232,6 +239,9 @@ def test_9_construction_imports_no_trading_module():
     )
     env = dict(os.environ)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sandbox = tempfile.mkdtemp()
+    env["LOCALAPPDATA"] = sandbox
+    env["XDG_DATA_HOME"] = sandbox
 
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -282,6 +292,9 @@ def test_10_construction_performs_no_network_or_login():
     )
     env = dict(os.environ)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sandbox = tempfile.mkdtemp()
+    env["LOCALAPPDATA"] = sandbox
+    env["XDG_DATA_HOME"] = sandbox
 
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -406,6 +419,9 @@ def test_extra_create_app_succeeds_without_existing_application():
     )
     env = dict(os.environ)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sandbox = tempfile.mkdtemp()
+    env["LOCALAPPDATA"] = sandbox
+    env["XDG_DATA_HOME"] = sandbox
 
     result = subprocess.run(
         [sys.executable, "-c", code],

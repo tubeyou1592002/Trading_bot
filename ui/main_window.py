@@ -105,7 +105,7 @@ class MainWindow(QMainWindow):
     broker.
     """
 
-    def __init__(self, mode=ApplicationMode.NORMAL):
+    def __init__(self, mode=ApplicationMode.NORMAL, *, account_store=None):
         super().__init__()
 
         if not isinstance(mode, ApplicationMode):
@@ -117,10 +117,19 @@ class MainWindow(QMainWindow):
         self.mode = mode
 
         # ---------------------------------------------
-        # In-memory application state (UI-2.1)
+        # Application account state (UI-2.1 + persistence)
         # ---------------------------------------------
+        # The real application defaults to the persistent store so the
+        # account list and its display order survive restarts (only
+        # non-sensitive metadata is stored). Tests inject an in-memory or
+        # temporary-database store through ``account_store`` so they never
+        # touch the real per-user database.
 
-        self.account_store = AccountStore()
+        self.account_store = (
+            account_store
+            if account_store is not None
+            else AccountStore.persistent_default()
+        )
 
         # ---------------------------------------------
         # Lazy shared BrokerManager (UI-5 Task 4 Stage 3 prerequisite)

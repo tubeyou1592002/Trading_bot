@@ -72,7 +72,7 @@ def qapp():
 
 @pytest.fixture()
 def store():
-    return AccountStore()
+    return AccountStore(repository=False)
 
 
 # ============================================================
@@ -81,7 +81,7 @@ def store():
 
 
 def test_1_main_window_shows_real_accounts_page(qapp):
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
 
     assert isinstance(window.accounts_page, AccountsPage)
     assert window.pages["Accounts"] is window.accounts_page
@@ -340,7 +340,7 @@ def test_12_accounts_page_performs_no_network_or_login():
 
 
 def test_13_home_and_settings_still_placeholders(qapp):
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
 
     assert set(window.placeholder_pages) == {"Home", "Settings"}
     assert "Accounts" not in window.placeholder_pages
