@@ -2833,3 +2833,17 @@ The NATS dependency `nats-py==2.16.0` was installed only in the temporary venv a
 **Architect disposition:** Task 9A is **COMPLETE within its approved scope**. This does not mean the broad regression is green or that order authorization is implemented.
 
 **Next:** define a separate task for the active-account + logged-in + usable-session order-authorization gate. Account-aware `MainWindow._real_feedback_broker_factory()`/feedback lifecycle remains separate. Keep live trading disabled, preserve `DispatchCore → OrderEngine → M6-A…M6-E`, and never automatically replay `POST /order` after HTTP 401.
+
+## Latest checkpoint — Block 9 SQLite Account Metadata Persistence COMPLETE (2026-10-17)
+
+**Implementation commit pushed:** `fa3e6ad` — `feat(ui): persist account metadata in SQLite`.
+
+**Changed code/test files:** `ui/account_repository.py` (new), `ui/account_store.py`, `ui/main_window.py`, `test_account_repository.py` (new), `test_ui2_1_account_persistence.py` (new), `test_ui1_application_foundation.py`, and `test_ui2_1_account_management.py`.
+
+**Behavior:** production `MainWindow()` uses `AccountStore.persistent_default()`. On Windows the default SQLite path is `%LOCALAPPDATA%\Trading Bot\accounts.db`; non-Windows fallback is `XDG_DATA_HOME/Trading Bot/accounts.db`, then `~/.local/share/Trading Bot/accounts.db`. Only `account_id`, `broker_name`, `display_name`, and `position` are stored. Credentials remain in the OS-backed `CredentialStore`. Active selection, login state, sessions and access/refresh tokens are not persisted or restored. Tests can inject a temporary database path or `repository=False` for in-memory behavior.
+
+**Verification (owner-run Windows environment):** `py -3 -m pytest -q test_account_repository.py test_ui2_1_account_persistence.py test_ui2_1_account_management.py test_ui1_application_foundation.py` → **67 passed in 4.06s** using a temporary `LOCALAPPDATA`/`XDG_DATA_HOME`. The real user database was not touched. This records the focused suites only; the broader Task 9A regression remains **9 failed, 155 passed** as stated above.
+
+**Architectural boundary:** this work changes local account-metadata persistence only. It does not redesign `AccountsPage`, change authentication/session/token persistence, or modify order dispatch/live-trading policy. See Decision 032 in `DECISIONS.md`.
+
+**Immediate follow-up:** finish review/approval of the Accounts-page UX mockup, then handle UI implementation as a separate bounded task. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain distinct pending work. Live trading remains disabled.

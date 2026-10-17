@@ -1,8 +1,8 @@
 # PROJECT STATE
 
-> **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-16.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
+> **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-17.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Task 5 and Task 9A COMPLETE; Account/Session Order Gate NEXT
+## Current Status — Task 5 and Task 9A COMPLETE; SQLite Metadata Persistence COMPLETE; Order Gate Pending
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
@@ -12,6 +12,18 @@
 **Phase 2 account-auth adapter:** `ccdd563` — `feat: wire account-owned brokers into auth adapters`.  
 **Account-integration foundation:** `39bd0d6` — `feat: add account-scoped broker registry`.  
 **Phase 1 logout:** `9efb88e` — `feat: add safe per-account logout`.
+
+### Latest Owner-Directed Subtask — SQLite Account Metadata Persistence COMPLETE (2026-10-17)
+
+- **Code commit pushed:** `fa3e6ad` — `feat(ui): persist account metadata in SQLite`.
+- **Changed files:** `ui/account_repository.py`, `ui/account_store.py`, `ui/main_window.py`, `test_account_repository.py`, `test_ui2_1_account_persistence.py`, `test_ui1_application_foundation.py`, and `test_ui2_1_account_management.py`.
+- Production `MainWindow()` now uses a persistent `AccountStore` by default. Windows database path: `%LOCALAPPDATA%\Trading Bot\accounts.db`; fallback: `XDG_DATA_HOME/Trading Bot/accounts.db`, then `~/.local/share/Trading Bot/accounts.db`.
+- SQLite stores only `account_id`, `broker_name`, `display_name`, and `position`. Username/password remain in the OS-backed `CredentialStore`; active selection, login state, sessions and tokens remain in memory and are not restored. Repository paths can be injected for isolated temporary-database tests.
+- **Focused owner-run verification:** repository + persistence + UI account-management + UI foundation → **67 passed in 4.06s**, with `LOCALAPPDATA` and `XDG_DATA_HOME` set to a temporary test directory. The real user database was not touched. This does not supersede the recorded broader Task 9A regression result of **9 failed, 155 passed**.
+- Decision 032 in `DECISIONS.md` supersedes only the historical in-memory-only detail in Decision 024. The broker/account isolation and order architecture are unchanged.
+- **Immediate owner-directed follow-up:** finish the Accounts-page UX mockup review and then implement the redesign in a separate bounded task. Do not mix UI changes into the SQLite persistence task. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain separate pending items. Live trading remains disabled.
+
+---
 
 ### Account-integration Phase 2 — Task 2C — COMPLETE within scope
 
@@ -47,7 +59,7 @@ Task 9A is **COMPLETE and pushed** (`4aef682` adds the offline account-bound tes
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`), Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`), Phase 3 Tasks 3A/3B-1–3B-5, and Task 5 Stage 3 are complete within scope. **Task 9A is complete and pushed** (`4aef682`, `1123cd9`): trading-state and instrument-identity read paths now use the shared account-scoped runtime and reject stale results. The next task is the active-account + logged-in + usable-session order gate. Account-aware feedback remains a separate task. Regression caveats are recorded in the current Block 9 boundary above. The accepted dark RTL direction remains.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`), Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`), Phase 3 Tasks 3A/3B-1–3B-5, and Task 5 Stage 3 are complete within scope. **Task 9A is complete and pushed** (`4aef682`, `1123cd9`): trading-state and instrument-identity read paths now use the shared account-scoped runtime and reject stale results. The next roadmap-level task is the active-account + logged-in + usable-session order gate. The immediate owner-directed follow-up is to finalize the Accounts-page UX mockup, then implement the redesign as a separate approved task; do not merge it with the order gate. Account-aware feedback remains a separate task. Regression caveats are recorded in the current Block 9 boundary above. The accepted dark RTL direction remains.
 
 | Phase | Scope | Status |
 |---|---|---|

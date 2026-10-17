@@ -1039,7 +1039,7 @@ AccountRecord (ui/account_store.py)
 * The UI reuses the existing `models.account.Account` model unchanged; account identity validation stays exactly the model's own rule — the UI never relaxes or redefines it.
 * The broker association is NOT stored on the Account model. It lives only on `AccountRecord.broker_name` in the application layer (`ui/account_store.py`).
 * The UI does not connect to BrokerManager or any Broker API for account management; no broker is instantiated by the UI. The broker selector currently offers only the one broker implemented in the repository (`آگاه`).
-* `AccountStore` is purely in-memory (no persistence); there is no active account until the user explicitly selects one, and at most one account is active.
+* Historical implementation detail at the time of this decision: `AccountStore` was purely in-memory (no persistence). The persistence detail was superseded by Decision 032 on 2026-10-17; the remaining rule is unchanged: there is no active account until explicit user selection, and at most one account is active in memory.
 * This decision introduces no change to the execution architecture (Blocks 0–10, DispatchCore, OrderEngine, SafetyGate and M6-A…M6-E unchanged).
 
 **Reason:**
@@ -1536,3 +1536,23 @@ Phase 3 account-page status is an informational view of the public per-account A
 \### Reason
 
 UI completion and offline acceptance must not be mistaken for production order gating. Keep account authentication isolated, fail closed when account/runtime identity cannot be verified, preserve the existing `DispatchCore → OrderEngine → M6-A…M6-E` chain, and never automatically replay `POST /order` after HTTP 401.
+
+---
+
+## Decision 032 — Persist Non-sensitive Account Metadata Locally with SQLite
+
+**Status:** Accepted and implemented (2026-10-17; code commit `fa3e6ad`).
+
+**Decision:**
+
+The production `AccountStore` persists account metadata and user-defined order in a local SQLite database. On Windows the default path is `%LOCALAPPDATA%\Trading Bot\accounts.db`. If `LOCALAPPDATA` is unavailable, the path falls back to `XDG_DATA_HOME/Trading Bot/accounts.db`, or `~/.local/share/Trading Bot/accounts.db`.
+
+Only `account_id`, `broker_name`, `display_name`, and `position` are persisted. Username and password remain exclusively in `CredentialStore` backed by the operating-system credential vault; they are not written to SQLite or ordinary files. Active-account selection, login status, sessions, access tokens, and refresh tokens remain in memory and are never restored from the database.
+
+The implementation uses Python's standard-library `sqlite3`; repository paths can be injected so tests use temporary databases. Repository changes are committed before corresponding in-memory state is changed. Delete/move/reorder operations resequence positions within one SQLite transaction; temporary positions are calculated from the existing maximum to avoid collisions with the `UNIQUE(position)` constraint. Errors exposed to callers use generic messages without database values or secrets.
+
+This decision supersedes only the in-memory-only persistence detail recorded in Decision 024. The existing `models.account.Account` domain model, broker association in `AccountRecord`, active-account selection rule, OS-vault credential boundary, and broker-independent order architecture remain unchanged.
+
+**Verification recorded:** the owner ran the four focused repository/persistence/account-management/UI-foundation test files with `LOCALAPPDATA` and `XDG_DATA_HOME` directed to a temporary directory: **67 passed in 4.06s**. The real user database was not touched. This is focused verification, not a claim that the entire repository regression suite is green.
+
+**Reason:** account metadata and display order should survive application restarts without persisting secrets or authenticated runtime state, and the persistence implementation must remain testable without touching a user's real database.
