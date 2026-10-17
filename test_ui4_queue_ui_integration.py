@@ -199,6 +199,15 @@ def store():
     return AccountStore()
 
 
+@pytest.fixture(autouse=True)
+def _fake_order_authorization(monkeypatch):
+    from ui.order_authorization import AuthorizationResult
+    monkeypatch.setattr(
+        OrderConfigurationPage, "_order_authorization",
+        lambda self, account_id, broker_name: AuthorizationResult(True, "test"),
+    )
+
+
 def _store_with_active(account_id=ACCOUNT_ONE, broker_name=BROKER_ONE):
     store = AccountStore()
     store.add(account_id, broker_name, account_id)
@@ -629,6 +638,8 @@ def test_10_add_to_queue_never_calls_execution_path():
             "store.add('ACC-001', 'آگاه', 'ACC-001')",
             "store.set_active('ACC-001')",
             "page = OrderConfigurationPage(store)",
+            "from ui.order_authorization import AuthorizationResult",
+            "page.set_order_authorizer_factory(lambda: lambda account_id, broker_name: AuthorizationResult(True, 'test'))",
             "",
             "# construction stays fully offline",
             "banned = ('brokers', 'market', 'core')",

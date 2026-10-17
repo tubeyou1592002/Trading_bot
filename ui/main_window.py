@@ -288,6 +288,9 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_feedback_binder_factory(
             lambda: self.feedback_service
         )
+        self.order_configuration_page.set_order_authorizer_factory(
+            self._real_order_authorizer
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 
@@ -428,6 +431,18 @@ class MainWindow(QMainWindow):
 
         return TestRunner(
             broker_manager=self._shared_broker_manager()
+        )
+
+    def _real_order_authorizer(self):
+        """Build the authorization gate only when an order action needs it."""
+        from ui.order_authorization import authorize_order
+
+        return lambda account_id, broker_name: authorize_order(
+            self.account_store,
+            self._authentication_service,
+            self._session_manager,
+            account_id,
+            broker_name,
         )
 
     def _shared_broker_manager(self):

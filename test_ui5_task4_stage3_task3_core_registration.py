@@ -113,9 +113,21 @@ def make_page(qapp):
     store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=OrderQueue())
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
     binder = _Binder()
     page.set_feedback_binder_factory(lambda: binder)
     return page, binder
+
+
+def _allow_order_authorization_for_non_auth_test(page):
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
+    return page
 
 
 def send_one_order(page, decision_id=None):
@@ -197,6 +209,7 @@ def row_is_green(page, row_index):
 class TestAcceptedByBourseRegistersTheRow:
     def test_timestamp_is_stamped_and_row_turns_green(self, qapp):
         page, binder = make_page(qapp)
+        _allow_order_authorization_for_non_auth_test(page)
         order = send_one_order(page, decision_id="DEC-T1")
 
         # Before the event: the column is empty and the row is plain.

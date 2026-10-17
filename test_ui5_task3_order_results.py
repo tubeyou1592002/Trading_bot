@@ -140,8 +140,17 @@ def make_page(qapp, harness, queue=None):
     store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue or OrderQueue())
+    _allow_order_authorization_for_non_auth_test(page)
     page.set_test_runner_factory(lambda: TestRunner(dispatch_core=harness.dispatch_core))
     return store, page
+
+
+def _allow_order_authorization_for_non_auth_test(page):
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
+    return page
 
 
 def enqueue_via_page(qapp, page, seam, instrument, side, price, quantity):
@@ -311,7 +320,7 @@ def test_4_and_5_mixed_three_order_run_identity_and_order(qapp):
 
 
 def test_5_per_row_account_symbol_side_display_layer(qapp):
-    page = OrderConfigurationPage(AccountStore(), order_queue=OrderQueue())
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(AccountStore(), order_queue=OrderQueue()))
 
     o1 = Order(nsc_id="NSC-A", side=BUY, price=100, quantity=10)
     o2 = Order(nsc_id="NSC-B", side=SELL, price=200, quantity=20)
@@ -365,7 +374,7 @@ def test_6_no_false_success(qapp):
     assert _result_status_label(_StubResult(None, None)) == RESULT_STATUS_FAILED
 
     # display layer: a row with NO per-order result fails closed to ناموفق
-    page = OrderConfigurationPage(AccountStore(), order_queue=OrderQueue())
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(AccountStore(), order_queue=OrderQueue()))
     o1 = Order(nsc_id="NSC-1", side=BUY, price=100, quantity=10)
     queue = OrderQueue()
     queue.enqueue(o1, account_id="ACC-001", broker_name=BROKER)
@@ -605,7 +614,7 @@ def test_e3_dispatch_only_core_falls_back_without_invented_results(qapp):
 
 def test_e1_empty_state_before_first_run(qapp):
     store = AccountStore()
-    page = OrderConfigurationPage(store, order_queue=OrderQueue())
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=OrderQueue()))
     assert page.result_status_label is not None
     assert page.result_list is not None
     assert page.result_status_label.text() == RESULT_EMPTY_STATE

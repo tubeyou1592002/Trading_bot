@@ -861,6 +861,7 @@ class OrderConfigurationPage(QWidget):
         # tseId must never reach a result row, so the symbol the user picked
         # is kept here in the UI layer only.
         self._order_symbols = {}
+        self._order_authorizer_factory = None
 
         # --- UI-5 Task 4 Stage 3 Task 3: matching-engine (trading core)
         # registration feedback state. The page binds to the EXISTING
@@ -2000,6 +2001,11 @@ class OrderConfigurationPage(QWidget):
             self._show_queue_status(QUEUE_STATUS_NO_ACCOUNT)
             return False
 
+        authorization = self._order_authorization(record.account_id, record.broker_name)
+        if not authorization.authorized:
+            self._show_queue_status(STRINGS.ORDER_AUTHORIZATION_REQUIRED)
+            return False
+
         instrument = self.config.selected_instrument
         if instrument is None:
             self._show_queue_status(QUEUE_STATUS_NO_SYMBOL)
@@ -2129,6 +2135,19 @@ class OrderConfigurationPage(QWidget):
         """
         self._test_runner_factory = factory
 
+    def set_order_authorizer_factory(self, factory):
+        self._order_authorizer_factory = factory
+
+    def _order_authorization(self, account_id, broker_name):
+        if self._order_authorizer_factory is None:
+            from ui.order_authorization import AuthorizationResult
+            return AuthorizationResult(False, "services_unavailable")
+        try:
+            return self._order_authorizer_factory()(account_id, broker_name)
+        except Exception:
+            from ui.order_authorization import AuthorizationResult
+            return AuthorizationResult(False, "authorization_error")
+
     def set_feedback_binder_factory(self, factory):
         """
         Provide the factory that binds this page to the EXISTING order
@@ -2194,6 +2213,15 @@ class OrderConfigurationPage(QWidget):
         if not self._test_mode:
             return
 
+        record = self._active_account_record()
+        if record is None:
+            self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ACCOUNT)
+            return
+        authorization = self._order_authorization(record.account_id, record.broker_name)
+        if not authorization.authorized:
+            self._show_queue_status(STRINGS.ORDER_AUTHORIZATION_REQUIRED)
+            return
+
         runner = self._test_runner()
         if runner is None:
             # No runner wired (tests, or UI-only usage): pure toggle.
@@ -2202,11 +2230,6 @@ class OrderConfigurationPage(QWidget):
         entries = list(self.order_queue.list_pending())
         if not entries:
             self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ORDERS)
-            return
-
-        record = self._active_account_record()
-        if record is None:
-            self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ACCOUNT)
             return
 
         account = record.account

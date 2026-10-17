@@ -119,7 +119,12 @@ def make_page(qapp):
     store = AccountStore()
     store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
-    return OrderConfigurationPage(store, order_queue=OrderQueue())
+    page = OrderConfigurationPage(store, order_queue=OrderQueue())
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
+    return page
 
 
 class _Entry:

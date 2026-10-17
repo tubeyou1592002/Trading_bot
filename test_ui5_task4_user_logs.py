@@ -132,11 +132,23 @@ def make_page(qapp, harness=None, queue=None):
     store.add("ACC-001", BROKER, "ACC-001")
     store.set_active("ACC-001")
     page = OrderConfigurationPage(store, order_queue=queue or OrderQueue())
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
     if harness is not None:
         page.set_test_runner_factory(
             lambda: TestRunner(dispatch_core=harness.dispatch_core)
         )
     return store, page
+
+
+def _allow_order_authorization_for_non_auth_test(page):
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
+    return page
 
 
 class NscSeam:

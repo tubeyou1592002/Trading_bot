@@ -227,7 +227,8 @@ def _make_valid_page(qapp, store, queue, runner_factory=None):
     """Build a page whose Test conditions are fully valid (enabled)."""
     store.add("ACC-001", "\u0622\u06af\u0627\u0647", "ACC-001")
     store.set_active("ACC-001")
-    page = OrderConfigurationPage(store, order_queue=queue)
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=queue))
+    _allow_order_authorization_for_non_auth_test(page)
     if runner_factory is not None:
         page.set_test_runner_factory(runner_factory)
     page.config.select_instrument(
@@ -238,6 +239,14 @@ def _make_valid_page(qapp, store, queue, runner_factory=None):
     page._refresh_test_button_state()
     assert page.test_button.isEnabled()
     return page, order
+
+
+def _allow_order_authorization_for_non_auth_test(page):
+    from ui.order_authorization import AuthorizationResult
+    page.set_order_authorizer_factory(
+        lambda: lambda account_id, broker_name: AuthorizationResult(True, "test")
+    )
+    return page
 
 
 # ===========================================================================
@@ -635,7 +644,7 @@ def test_14_page_empty_queue_never_reaches_the_runner(qapp, store):
     store.add("ACC-001", "\u0622\u06af\u0627\u0647", "ACC-001")
     store.set_active("ACC-001")
     runner = StubRunner()
-    page = OrderConfigurationPage(store, order_queue=OrderQueue())
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=OrderQueue()))
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -713,7 +722,7 @@ def test_16c_page_rejects_entries_mismatching_the_active_account(qapp, store):
     store.set_active("ACC-001")
     queue = OrderQueue()
     runner = StubRunner()
-    page = OrderConfigurationPage(store, order_queue=queue)
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=queue))
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -761,7 +770,7 @@ def test_16d_page_passes_the_explicitly_selected_account(qapp):
 
     queue = OrderQueue()
     runner = StubRunner()
-    page = OrderConfigurationPage(store, order_queue=queue)
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=queue))
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -810,7 +819,7 @@ def test_16e_page_never_executes_without_a_selected_account(qapp):
 
     queue = OrderQueue()
     runner = StubRunner()
-    page = OrderConfigurationPage(store, order_queue=queue)
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=queue))
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -847,7 +856,7 @@ def test_16f_switching_the_active_account_switches_the_pass_account(qapp):
 
     queue = OrderQueue()
     runner = StubRunner()
-    page = OrderConfigurationPage(store, order_queue=queue)
+    page = _allow_order_authorization_for_non_auth_test(OrderConfigurationPage(store, order_queue=queue))
     page.set_test_runner_factory(lambda: runner)
     page.config.select_instrument(
         Instrument(symbol="\u0622\u06a9\u0648", name="\u0622\u06a9\u0648", ins_code="1")
@@ -930,6 +939,8 @@ def test_17_full_test_action_offline_subprocess():
             "store.set_active('ACC-001')",
             "queue = OrderQueue()",
             "page = OrderConfigurationPage(store, order_queue=queue)",
+            "from ui.order_authorization import AuthorizationResult",
+            "page.set_order_authorizer_factory(lambda: lambda account_id, broker_name: AuthorizationResult(True, 'test'))",
             "",
             "fake = FakeDispatchCore()",
             "page.set_test_runner_factory(lambda: TestRunner(dispatch_core=fake))",

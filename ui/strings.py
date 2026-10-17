@@ -132,6 +132,7 @@ __all__ = [
     "QUEUE_STATUS_NO_IDENTITY",
     "QUEUE_STATUS_BROKER_STALE",
     "QUEUE_STATUS_QUEUED",
+    "ORDER_AUTHORIZATION_REQUIRED",
     # --- accounts page ---
     "GROUP_ADD_ACCOUNT",
     "GROUP_ACCOUNTS",
@@ -447,6 +448,7 @@ QUEUE_STATUS_INCOMPLETE = "امکان افزودن به صف نیست: نوع م
 QUEUE_STATUS_NO_IDENTITY = "امکان افزودن به صف نیست: شناسهٔ سفارش نماد هنوز تفکیک نشده - نماد را دوباره انتخاب کنید"
 QUEUE_STATUS_BROKER_STALE = "امکان افزودن به صف نیست: شناسهٔ سفارش به کارگزار دیگری تعلق دارد - نماد را دوباره انتخاب کنید"
 QUEUE_STATUS_QUEUED = "سفارش در صف قرار گرفت"
+ORDER_AUTHORIZATION_REQUIRED = "مجوز حساب برای این عملیات تأیید نشد. وضعیت ورود را بررسی کنید."
 
 
 # ============================================================
