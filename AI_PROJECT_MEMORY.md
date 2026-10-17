@@ -2867,4 +2867,24 @@ These 55 passing tests are the focused account-UI suites, not a full-repository 
 
 **Scope boundary:** no SQLite implementation, `MainWindow`, authentication/session services, order routing, or live-trading policy was changed in this commit. No commit or push was performed for application code beyond `f8d564f`; the local `.graphify/` artifact was excluded.
 
-**Next bounded task:** architect and test the active-account + logged-in + usable-session order-authorization gate. Account-aware order feedback remains a separate task. Keep live trading disabled, retain fail-closed behavior, and do not automatically replay `POST /order` after HTTP 401.
+**Status at this historical checkpoint (superseded 2026-10-17):** the order-authorization gate was next at the time; it is now complete in code commit `503f6f6`. Account-aware order feedback remains a separate next task. Live trading stays disabled; never automatically replay `POST /order` after HTTP 401.
+
+
+## Latest checkpoint — Block 9 Order Authorization Gate COMPLETE (2026-10-17)
+
+**Implementation commit pushed:** `503f6f6` — `feat(auth): enforce order authorization gate`.
+
+**Changed files (11):** `ui/order_authorization.py`, `ui/main_window.py`, `ui/order_configuration_page.py`, `ui/strings.py`, `test_block9_order_authorization_gate.py`, `test_ui4_queue_ui_integration.py`, `test_ui5_task2_dry_run_execution.py`, `test_ui5_task3_order_results.py`, `test_ui5_task4_user_logs.py`, `test_ui5_task4_stage3_task3_core_registration.py`, and `test_ui6_task1_diagnostic_mode.py`.
+
+**Behavior:** order authorization fails closed before queue insertion and before the Test/run path proceeds. It verifies the active account and account/broker identity; AuthenticationService login state; SessionManager `LOGGED_IN` state and non-empty local token; an existing authenticated adapter; matching adapter broker identity; and exact equality between the adapter's authenticated-session token and SessionManager token. Missing services, invalid state, inconsistent identity/token, or API exceptions return a controlled denial. Authorization does not initiate login, network access, token refresh, or session mutation. The UI composes this check lazily. The existing `DispatchCore → OrderEngine → M6-A…M6-E` path remains authoritative; Test remains dry-run (`live=False)); no real broker order was sent.
+
+**Verification reported for this checkpoint:**
+- `python3 -m pytest -q test_block9_order_authorization_gate.py` → **4 passed**.
+- `QT_QPA_PLATFORM=offscreen python3 -m pytest -q test_ui6_task1_diagnostic_mode.py` → **28 passed**.
+- Focused gate + UI-4/UI-5/UI-6 suite → **107 passed, 26 failed**. The 26 remaining failures reproduce on the baseline and are the `BrokerManager._account_lock` AttributeError reached when `core/simulation_harness.py` allocates `BrokerManager` via `__new__` without running `__init__`; this out-of-scope issue was not changed.
+- Full repository run after the UI-6 fixture adjustment → **1595 passed, 233 failed, 20 skipped, 4 errors**. This is not a green full-suite result; existing failures/errors include the missing `nats` dependency and platform-specific `ctypes.WinDLL` collection failure. The earlier run before the fixture adjustment recorded **1590 passed, 233 failed, 20 skipped, 4 errors**.
+- Relevant `py_compile` succeeded. The staged task diff passed `git -c core.whitespace=cr-at-eol diff --cached --check`; the agent environment's broad whole-worktree check still reports pre-existing line-ending noise across unrelated files.
+
+**Architect disposition:** the order authorization gate is complete within the approved scope. This does not mean the full repository test suite is green or that account-aware order feedback is complete.
+
+**Next bounded task:** account-aware order-feedback broker/listener lifecycle, separately scoped. Preserve per-account runtime ownership, existing dispatch/M6 gates and fail-closed behavior; keep live trading disabled and never automatically replay `POST /order` after HTTP 401.
