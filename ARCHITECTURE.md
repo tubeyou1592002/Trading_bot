@@ -1526,3 +1526,14 @@ Commit
 
 Every meaningful change should leave the repository in a known, testable state.
 
+---
+
+## Current Implementation Note — Block 9 Order Authorization Gate (2026-10-17)
+
+Code implementation pushed in `503f6f6` (`feat(auth): enforce order authorization gate`).
+
+The UI authorization boundary is implemented in `ui/order_authorization.py` and invoked by `ui/order_configuration_page.py` before queue insertion and before the Test/run path proceeds. `ui/main_window.py` supplies a lazy factory, so normal UI construction does not force authentication services, vault access, broker login, or network activity.
+
+The gate denies unless all of the following hold: the active account matches the requested account; stored account ID and broker identity match; AuthenticationService reports that account logged in; SessionManager reports `LOGGED_IN` and holds a non-empty local token; an adapter exists and reports authenticated; the adapter broker identity matches; and the adapter's authenticated-session access token exactly matches the SessionManager token. Missing dependencies, inconsistent values, and API exceptions fail closed with a controlled non-sensitive result. The gate itself does not login, refresh tokens, access the network, or mutate session state.
+
+This is a UI-level prerequisite, not a replacement for Core safeguards. Orders continue through `DispatchCore → OrderEngine → M6-A…M6-E`; Test remains dry-run (`live=False`); no live order was sent. The focused gate suite reported **4 passed**, UI-6 reported **28 passed**, and the combined focused gate/UI-4/UI-5/UI-6 selection reported **107 passed, 26 failed**. The 26 failures reproduce on baseline and concern the out-of-scope `BrokerManager._account_lock` initialization issue. The full repository run reported **1595 passed, 233 failed, 20 skipped, 4 errors** and remains not green. Account-aware order feedback/listener lifecycle remains separate work.
