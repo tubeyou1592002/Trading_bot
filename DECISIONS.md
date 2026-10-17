@@ -1575,3 +1575,19 @@ A CAPTCHA dialog is shown only when the public authentication contract returns a
 This is a UI/presentation decision and does not change SQLite persistence semantics in Decision 032, per-account session ownership, order authorization, the existing `DispatchCore → OrderEngine → M6-A…M6-E` chain, or live-trading policy.
 
 **Verification recorded:** the focused offline suites passed: `test_ui2_1_account_management.py` **49 passed**, `test_block9_phase3_accounts_ui_integration.py` **2 passed**, and `test_block9_phase2_service_composition.py` **4 passed** (55 total). `py_compile` and the relevant diff checks were reported successful. This is focused UI verification, not a claim that the full repository regression suite is green.
+
+---
+ 
+## Decision 034 — Fail-Closed UI Order Authorization Gate
+
+**Status:** Accepted and implemented (2026-10-17; code commit `503f6f6`).
+
+**Decision:**
+
+The order-configuration UI must deny queue insertion and Test/run execution unless the selected active account is valid and has a usable, account-matched authenticated session. The gate verifies the active account ID and broker, AuthenticationService's logged-in state, SessionManager's `LOGGED_IN` state and non-empty local token, the account's authenticated adapter, the adapter broker identity, and exact equality between the SessionManager token and the adapter's authenticated-session token. Missing services, inconsistent identity or token state, or exceptions deny the operation with a controlled non-sensitive result.
+
+Authorization is a local validation step only. It does not start login, perform network access, refresh tokens, or mutate authentication/session state. It must remain broker-independent and must not add a parallel execution path. The existing `DispatchCore → OrderEngine → M6-A…M6-E` chain stays authoritative; Test remains dry-run (`live=False`); live trading remains disabled. Never automatically replay `POST /order` after HTTP 401.
+
+**Implementation and verification:** commit `503f6f6` adds the authorization gate and focused offline tests. The standalone gate suite reported **4 passed**; UI-6 reported **28 passed**. The focused gate + UI-4/UI-5/UI-6 selection reported **107 passed, 26 failed**; all 26 remaining failures were reproduced on baseline and concern the out-of-scope `BrokerManager._account_lock` initialization issue. The full repository run reported **1595 passed, 233 failed, 20 skipped, 4 errors**; the repository-wide regression is not green, and existing errors include missing `nats` and a platform-specific `ctypes.WinDLL` collection failure. Relevant `py_compile` succeeded; the staged task diff's CR-at-EOL-aware whitespace check was clean.
+
+This decision records a UI authorization boundary; it does not claim that all repository regressions are fixed or that account-aware feedback is complete.
