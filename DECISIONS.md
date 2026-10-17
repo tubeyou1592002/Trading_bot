@@ -1556,3 +1556,22 @@ This decision supersedes only the in-memory-only persistence detail recorded in 
 **Verification recorded:** the owner ran the four focused repository/persistence/account-management/UI-foundation test files with `LOCALAPPDATA` and `XDG_DATA_HOME` directed to a temporary directory: **67 passed in 4.06s**. The real user database was not touched. This is focused verification, not a claim that the entire repository regression suite is green.
 
 **Reason:** account metadata and display order should survive application restarts without persisting secrets or authenticated runtime state, and the persistence implementation must remain testable without touching a user's real database.
+
+
+---
+
+## Decision 033 — Accounts Page Redesign and CAPTCHA Dialog
+
+**Status:** Accepted and implemented (2026-10-17; code commit `f8d564f`).
+
+**Decision:**
+
+The approved Accounts-page redesign uses a right-to-left account-management view with a unified add-account form. The application generates each internal account ID; users provide a display name, select an available broker, and enter credentials. Account metadata and ordering continue through `AccountStore`; credentials continue through `CredentialStore` and the operating-system credential vault. Credentials must not be written to SQLite or ordinary files.
+
+The page distinguishes active-account selection from login status and provides account-scoped row actions for activation, login/logout, editing, deletion, and manual ordering where available. The page delegates authentication to the existing `AuthenticationService`; it must not implement broker-specific login/token handling or introduce another order path.
+
+A CAPTCHA dialog is shown only when the public authentication contract returns a valid image challenge. The Base64 payload and image are validated before display. The challenge is presented in an RTL modal `QDialog`; when a returned challenge is invalid, the UI attempts to cancel that pending login and retains generic, non-sensitive error reporting. An unsuccessful cleanup attempt must not expose provider details.
+
+This is a UI/presentation decision and does not change SQLite persistence semantics in Decision 032, per-account session ownership, order authorization, the existing `DispatchCore → OrderEngine → M6-A…M6-E` chain, or live-trading policy.
+
+**Verification recorded:** the focused offline suites passed: `test_ui2_1_account_management.py` **49 passed**, `test_block9_phase3_accounts_ui_integration.py` **2 passed**, and `test_block9_phase2_service_composition.py` **4 passed** (55 total). `py_compile` and the relevant diff checks were reported successful. This is focused UI verification, not a claim that the full repository regression suite is green.
