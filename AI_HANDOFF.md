@@ -14,6 +14,15 @@
 **Account-integration foundation:** `39bd0d6` — `feat: add account-scoped broker registry`.  
 **Phase 1 logout:** `9efb88e` — `feat: add safe per-account logout`.
 
+### Remaining roadmap — current overview
+
+1. **Next implementation task:** account-aware order-feedback/listener lifecycle, using the same account-owned broker/runtime as the order.
+2. **Regression and acceptance closure:** triage/fix existing failures in separately scoped tasks and rerun focused plus broad regression. The full repository test suite is currently **not green** (last recorded: 1595 passed, 233 failed, 20 skipped, 4 errors); do not treat environment/baseline failures as proven product regressions without reproduction.
+3. **User Application readiness:** finish the above integration/acceptance work. UI-1 through UI-10 are recorded complete; this does not imply the full repository regression is green.
+4. **Future product phases, not yet broken into an exact numbered task count:** Central Server design/implementation → Admin Panel design/implementation → centralized License/Activation → multi-user testing → release preparation.
+
+**Count clarification:** within the current Block 9 account-integration work, one main implementation task (account-aware feedback) remains, plus regression/acceptance closure. The later five roadmap phases are high-level milestones; their detailed task counts have not yet been defined.
+
 ### Prior Owner-Directed Subtask — SQLite Account Metadata Persistence COMPLETE (2026-10-17)
 
 - **Code commit pushed:** `fa3e6ad` — `feat(ui): persist account metadata in SQLite`.
