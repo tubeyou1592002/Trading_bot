@@ -2847,3 +2847,24 @@ The NATS dependency `nats-py==2.16.0` was installed only in the temporary venv a
 **Architectural boundary:** this work changes local account-metadata persistence only. It does not redesign `AccountsPage`, change authentication/session/token persistence, or modify order dispatch/live-trading policy. See Decision 032 in `DECISIONS.md`.
 
 **Immediate follow-up:** finish review/approval of the Accounts-page UX mockup, then handle UI implementation as a separate bounded task. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain distinct pending work. Live trading remains disabled.
+
+
+## Latest checkpoint — Accounts-page redesign COMPLETE (2026-10-17)
+
+**Code commit pushed:** `f8d564f54b32eece0b776d9696bf7b454adb0043` — `feat(ui): redesign accounts page and captcha dialog`.
+
+**Changed files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`, and `test_block9_phase3_accounts_ui_integration.py`.
+
+**Behavior recorded:** the page now uses the approved RTL account-management design, generates the internal account ID, brings display name/broker/credentials into the add form, separates active-account state from login state, and exposes account-row actions. CAPTCHA appears only for a valid image challenge in a modal RTL `QDialog`; invalid challenge payloads/images trigger a best-effort `cancel_login(account_id)` and sanitized error reporting. Existing SQLite metadata persistence and OS-vault credential boundaries are unchanged.
+
+**Focused offline verification reported:**
+- `QT_QPA_PLATFORM=offscreen pytest -q test_ui2_1_account_management.py` → **49 passed**.
+- `QT_QPA_PLATFORM=offscreen pytest -q test_block9_phase3_accounts_ui_integration.py` → **2 passed**.
+- `QT_QPA_PLATFORM=offscreen pytest -q test_block9_phase2_service_composition.py` → **4 passed**.
+- `py_compile` and `git diff --check` reported successful; Git emitted LF/CRLF normalization warnings but no whitespace-check error.
+
+These 55 passing tests are the focused account-UI suites, not a full-repository regression result. The separately recorded Task 9A broader regression remains **9 failed, 155 passed** and must not be represented as fixed by this UI task.
+
+**Scope boundary:** no SQLite implementation, `MainWindow`, authentication/session services, order routing, or live-trading policy was changed in this commit. No commit or push was performed for application code beyond `f8d564f`; the local `.graphify/` artifact was excluded.
+
+**Next bounded task:** architect and test the active-account + logged-in + usable-session order-authorization gate. Account-aware order feedback remains a separate task. Keep live trading disabled, retain fail-closed behavior, and do not automatically replay `POST /order` after HTTP 401.
