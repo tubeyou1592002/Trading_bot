@@ -2,7 +2,7 @@
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-17.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
 
-## Current Status — Task 5 and Task 9A COMPLETE; SQLite Metadata Persistence COMPLETE; Order Gate Pending
+## Current Status — Task 5, Task 9A, SQLite Metadata Persistence, and Accounts-Page Redesign COMPLETE; Order Gate Pending
 
 **Repository:** `tubeyou1592002/Trading_bot`  
 **Branch:** `master`  
@@ -13,7 +13,7 @@
 **Account-integration foundation:** `39bd0d6` — `feat: add account-scoped broker registry`.  
 **Phase 1 logout:** `9efb88e` — `feat: add safe per-account logout`.
 
-### Latest Owner-Directed Subtask — SQLite Account Metadata Persistence COMPLETE (2026-10-17)
+### Prior Owner-Directed Subtask — SQLite Account Metadata Persistence COMPLETE (2026-10-17)
 
 - **Code commit pushed:** `fa3e6ad` — `feat(ui): persist account metadata in SQLite`.
 - **Changed files:** `ui/account_repository.py`, `ui/account_store.py`, `ui/main_window.py`, `test_account_repository.py`, `test_ui2_1_account_persistence.py`, `test_ui1_application_foundation.py`, and `test_ui2_1_account_management.py`.
@@ -21,7 +21,19 @@
 - SQLite stores only `account_id`, `broker_name`, `display_name`, and `position`. Username/password remain in the OS-backed `CredentialStore`; active selection, login state, sessions and tokens remain in memory and are not restored. Repository paths can be injected for isolated temporary-database tests.
 - **Focused owner-run verification:** repository + persistence + UI account-management + UI foundation → **67 passed in 4.06s**, with `LOCALAPPDATA` and `XDG_DATA_HOME` set to a temporary test directory. The real user database was not touched. This does not supersede the recorded broader Task 9A regression result of **9 failed, 155 passed**.
 - Decision 032 in `DECISIONS.md` supersedes only the historical in-memory-only detail in Decision 024. The broker/account isolation and order architecture are unchanged.
-- **Immediate owner-directed follow-up:** finish the Accounts-page UX mockup review and then implement the redesign in a separate bounded task. Do not mix UI changes into the SQLite persistence task. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain separate pending items. Live trading remains disabled.
+- **Follow-up status (updated 2026-10-17):** the approved Accounts-page redesign has since been implemented and pushed in `f8d564f`; see the latest owner-directed checkpoint below. The roadmap-level active-account + logged-in + usable-session order gate and account-aware feedback remain separate pending items. Live trading remains disabled.
+
+
+### Latest Owner-Directed Subtask — Accounts-page Redesign COMPLETE (2026-10-17)
+
+- **Code commit pushed:** `f8d564f54b32eece0b776d9696bf7b454adb0043` — `feat(ui): redesign accounts page and captcha dialog`.
+- **Changed files:** `ui/accounts_page.py`, `ui/strings.py`, `test_ui2_1_account_management.py`, and `test_block9_phase3_accounts_ui_integration.py`.
+- **Accepted UI behavior:** generated internal account IDs; unified add form for display name, broker, username and password; explicit account-row actions; active-account selection is distinct from login status; the existing account store/repository and OS-vault credential boundary remain unchanged.
+- **CAPTCHA behavior:** only valid image challenges are shown, using an RTL modal `QDialog`. Invalid challenge type, payload or image leads to a best-effort cancellation of the same account's pending login and a generic error; provider exception details are not surfaced.
+- **Focused offline verification:** account-management **49 passed**, Phase 3 Accounts integration **2 passed**, and Phase 2 service composition **4 passed** (55 total). `py_compile` and diff whitespace checks reported success. Git produced LF/CRLF normalization warnings; these were not whitespace-check errors.
+- **Scope boundary:** this commit changes only the two UI files and two UI test files above. SQLite persistence, `MainWindow` composition, authentication/session implementation, order routing and live-trading policy were not part of this task. No real broker login, network request, or order was performed.
+- **Broader regression caveat:** the separately recorded Task 9A regression remains **9 failed, 155 passed**; this task did not rerun or resolve that broader suite. Do not weaken fail-closed account-context checks to make missing-account fixtures pass.
+- **Next bounded task:** define the active-account + logged-in + usable-session order-authorization gate. Keep account-aware feedback separate, preserve `DispatchCore → OrderEngine → M6-A…M6-E`, keep live trading disabled, and never automatically replay `POST /order` after HTTP 401.
 
 ---
 
@@ -59,7 +71,7 @@ Task 9A is **COMPLETE and pushed** (`4aef682` adds the offline account-bound tes
 
 ### Approved Execution Roadmap — Block 9 Account Integration
 
-**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`), Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`), Phase 3 Tasks 3A/3B-1–3B-5, and Task 5 Stage 3 are complete within scope. **Task 9A is complete and pushed** (`4aef682`, `1123cd9`): trading-state and instrument-identity read paths now use the shared account-scoped runtime and reject stale results. The next roadmap-level task is the active-account + logged-in + usable-session order gate. The immediate owner-directed follow-up is to finalize the Accounts-page UX mockup, then implement the redesign as a separate approved task; do not merge it with the order gate. Account-aware feedback remains a separate task. Regression caveats are recorded in the current Block 9 boundary above. The accepted dark RTL direction remains.
+**Owner-approved direction:** 2026-10-15. Phase 1 Tasks 1A (`9efb88e`) and 1B (`39bd0d6`), Phase 2 Tasks 2A (`ccdd563`), 2B (`23802a7`) and 2C (`56a317b`), Phase 3 Tasks 3A/3B-1–3B-5, and Task 5 Stage 3 are complete within scope. **Task 9A is complete and pushed** (`4aef682`, `1123cd9`): trading-state and instrument-identity read paths now use the shared account-scoped runtime and reject stale results. The next roadmap-level task is the active-account + logged-in + usable-session order gate. The approved Accounts-page UX redesign is complete and pushed in `f8d564f`; it remains separate from the order gate. The next roadmap-level task is the active-account + logged-in + usable-session order-authorization gate. Account-aware feedback remains a separate task. Account-aware feedback remains a separate task. Regression caveats are recorded in the current Block 9 boundary above. The accepted dark RTL direction remains.
 
 | Phase | Scope | Status |
 |---|---|---|
