@@ -1616,4 +1616,6 @@ python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_s
 ```
 reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance is complete; do not require further Task 9B changes without a reproducible in-scope defect.
 
+**Owner-run manual local-app acceptance (2026-10-18):** two accounts on the same broker both logged in; activating either selected that account for current use while the other remained inactive; logging out one account did not disturb the other; logging the exited account back in succeeded and the other account remained normal. No issue was observed. This check covered account login/logout/re-login only; no order was submitted and live trading remains disabled.
+
 **Next gate:** broader regression and final acceptance of the local User Application. A prior coding-agent report recorded 57 passed / 9 failed, attributed to missing `nats`, and described one UI-7 failure as baseline; these remain reported historical observations until verified/classified in the broader run. This is not a claim that the full repository suite is green. Central Server remains outside the scope of this acceptance phase.
