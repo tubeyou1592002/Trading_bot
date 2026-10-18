@@ -3298,3 +3298,21 @@ without IRANSansX falls back through the chain.
 - **New strings:** `LABEL_CLOCK_STATUS`, `CLOCK_PROGRAM_TIME_SUFFIX` (Persian-only; the UI-9.5 English guard passes).
 - **Verified (bounded runner):** pre-edit baseline 677 passed (565+112), EXIT=0; post-edit full 31-file sweep **679 passed, 0 failed, 0 deselected, EXIT=0** (+2 = the guard test's own new assertions for the two new strings; **no existing test changed** — an initial eager clock-service creation broke 3 tests and was fixed lazy-safe in the page, not in tests); Block 8 pair 60 s cap EXIT=1, 2 failed (pre-existing, unchanged); `ui/test_runner.py` still 23+/10− (git diff --numstat).
 - **Screenshots:** `photos/ui10_order_buy_sell.png`, `photos/ui10_clock_schedule_rows.png` (offscreen, RTL production path, IRANSansX registered after QApplication).
+
+---
+
+# Current Handoff — Block 9 Task 9B (2026-10-18)
+
+**Current implementation checkpoint:** Task 9B — account-aware order feedback/runtime lifecycle — is implemented on `master` in commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80`. See `BLOCK9_TASK9B_HANDOFF.md` for its scope and acceptance contracts.
+
+Before further implementation, review the task diff and run:
+
+```powershell
+python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py
+```
+
+Also verify syntax/whitespace and run the relevant broader regression set. Record actual test output and classify any baseline failures separately. Do not claim the full suite is green based on earlier results: the last documented whole-repository result predates Task 9B and was **1595 passed, 233 failed, 20 skipped, 4 errors**. The exact focused Task 9B pass count has not been established by the repository evidence reviewed for this handoff.
+
+Architectural constraints remain: broker/runtime ownership is per `(account_id, broker_name)`; never fall back to name-only broker lookup; fail closed without a usable authenticated session; lifecycle actions must affect only the requested account; listener registration must be idempotent; unknown or cross-account feedback is a no-op; feedback never sends orders; keep the existing `DispatchCore → OrderEngine → M6-A…M6-E` path, dry-run `live=False`, and live trading disabled.
+
+**Next task:** independent regression/acceptance closure for Task 9B, not a duplicate reimplementation. Fix only reproducible in-scope regressions, document exact evidence, and update this handoff when verification has actually run.
