@@ -869,13 +869,20 @@ class OrderConfigurationPage(QWidget):
         # (never at construction — offline contracts preserved; no feedback
         # module is ever imported or named here).
         self._feedback_binder_factory = None  # set via set_feedback_binder_factory()
+        # Block 9 Task 9B: bindings are per account. The page connects to the
+        # feedback runtime of each exact (account_id, broker_name) it sends
+        # for; an event delivered on one account's runtime can only ever
+        # resolve a row of that same account.
+        self._feedback_binders = {}
+        # The most recently bound runtime (single-account compatibility).
         self._feedback_binder = None
         # decisionId correlation (the Stage 1 binding, filled at append time):
         # the exact sent Order object (by identity, like _order_symbols) ->
-        # its real decisionId, and the reverse map. Pure routing state —
-        # never rendered, never displayed.
+        # its real decisionId, and the ACCOUNT-SCOPED reverse map
+        # ``(account_id, broker_name, decision_id) -> order``. Pure routing
+        # state — never rendered, never displayed.
         self._decision_id_by_order = {}
-        self._order_by_decision_id = {}
+        self._order_by_decision_key = {}
         # Stage 3 Task 4 — the id() identities of the orders a REAL send
         # produced and correlated (mirrors the append loop). A queue-status
         # event is only ever routed to an order this set holds: an order
@@ -2153,14 +2160,17 @@ class OrderConfigurationPage(QWidget):
         Provide the factory that binds this page to the EXISTING order
         feedback path (UI-5 Task 4 Stage 3 Task 3).
 
-        Production MainWindow supplies ``page.set_feedback_binder_factory(
-        lambda: self.feedback_service)`` and the returned service object —
-        which already exposes ``order_registered`` — is connected here.
-        The factory is called lazily on the FIRST real send (never at
-        construction), so the page stays fully offline without it.
-        Tests inject a fake exposing the same ``order_registered`` signal.
-        The page only ever uses the signal's existence — it never imports,
-        names or starts any feedback/transport module itself.
+        Block 9 Task 9B: production MainWindow supplies an ACCOUNT-AWARE
+        factory ``(account_id, broker_name) -> service`` returning the
+        feedback runtime of exactly that account. The returned service
+        object — which already exposes ``order_registered`` — is connected
+        here, and the page remembers which account it belongs to so an event
+        can only ever resolve that account's row. The factory is called
+        lazily on the FIRST real send (never at construction), so the page
+        stays fully offline without it. A zero-arg factory (legacy/test
+        double) is also accepted and bound to the active account. The page
+        only ever uses the signals' existence — it never imports, names or
+        starts any feedback/transport module itself.
         """
         self._feedback_binder_factory = factory
 
@@ -2373,8 +2383,12 @@ class OrderConfigurationPage(QWidget):
                 # rendered in any table cell. ``Order`` is an unhashable
                 # dataclass, so the identity is ``id(order)`` — the same
                 # convention the page already uses for ``_order_symbols``.
+                # The reverse map is ACCOUNT-SCOPED (Block 9 Task 9B), so the
+                # same decision_id on two accounts can never collide.
                 self._decision_id_by_order[id(order)] = decision_id
-                self._order_by_decision_id[decision_id] = order
+                self._order_by_decision_key[
+                    (entry.account_id, entry.broker_name, decision_id)
+                ] = order
                 self._queued_order_ids.add(id(order))
         self._refresh_order_log_display()
 
@@ -2406,55 +2420,110 @@ class OrderConfigurationPage(QWidget):
                 decision_ids[index] = decision_id
         return decision_ids
 
-    def _ensure_feedback_binding(self):
+    @staticmethod
+    def _call_feedback_binder_factory(factory, account_id, broker_name):
         """
-        Bind the page to the EXISTING order-feedback signal exactly once.
+        Call the binder factory compatibly.
 
-        The factory returns an object that already exposes the existing
-        ``order_registered`` and ``queue_position`` signals (production
-        wires the shared feedback service object). It is called lazily at
-        the first real send — never at construction — so a page without a
-        factory simply never binds (fail-closed, the base Stage 3
-        behavior). The page only ever uses those signals' existence: it
+        Production factories are account-aware ``(account_id, broker_name)
+        -> binder``. A legacy/test zero-arg factory (``lambda: binder``) is
+        also supported and bound to the resolved account, so the offline
+        test doubles keep working. A factory failure yields ``None`` — the
+        caller treats it as a fail-closed no-op.
+        """
+        try:
+            inspect.signature(factory).bind(account_id, broker_name)
+        except (TypeError, ValueError):
+            return factory()
+        return factory(account_id, broker_name)
+
+    def _ensure_feedback_binding(self, account_id=None, broker_name=None):
+        """
+        Bind the page to one account's EXISTING order-feedback signals once.
+
+        Block 9 Task 9B: bindings are PER ACCOUNT. When no identity is given
+        the active account is used; when the account is unavailable nothing
+        is bound (fail-closed, the base Stage 3 behavior). The factory
+        returns an object exposing the existing ``order_registered`` and
+        ``queue_position`` signals for exactly that account (production wires
+        the account-scoped feedback runtime). It is called lazily at the
+        first real send — never at construction — so a page without a factory
+        simply never binds. Each account is connected exactly once: a second
+        call for the same account is a no-op, so listener duplication is
+        impossible. The page only ever uses those signals' existence: it
         never imports, names or starts any feedback/transport module and
-        implements no queue logic — it only consumes what the existing
-        path already computed. Any binding failure is swallowed as a
+        implements no queue logic. Any binding failure is swallowed as a
         no-op so the send path can never be disturbed by display wiring.
         """
-        if self._feedback_binder is not None:
+        if account_id is None or broker_name is None:
+            record = self._active_account_record()
+            if record is None:
+                return
+            account_id, broker_name = record.account_id, record.broker_name
+        key = (account_id, broker_name)
+        if key in self._feedback_binders:
             return
         factory = self._feedback_binder_factory
         if factory is None:
             return
         try:
-            binder = factory()
+            binder = self._call_feedback_binder_factory(
+                factory, account_id, broker_name
+            )
         except Exception:  # noqa: BLE001 — display wiring never breaks the send
+            return
+        if binder is None:
             return
         signal = getattr(binder, "order_registered", None)
         if signal is None:
             return
-        signal.connect(self._on_order_registered_from_feedback)
+        signal.connect(
+            self._make_order_registered_handler(account_id, broker_name)
+        )
         # Stage 3 Task 4 — the SAME bound object's EXISTING queue-position
         # signal, consumed only when it actually exists (an object that
         # carries no such signal simply binds the registration signal
         # alone — fail-closed, never an AttributeError).
         queue_signal = getattr(binder, "queue_position", None)
         if queue_signal is not None:
-            queue_signal.connect(self._on_queue_position_from_feedback)
+            queue_signal.connect(
+                self._make_queue_position_handler(account_id, broker_name)
+            )
+        self._feedback_binders[key] = binder
         self._feedback_binder = binder
 
-    def _on_queue_position_from_feedback(self, decision_id, position):
+    def _make_order_registered_handler(self, account_id, broker_name):
+        """A per-account registration slot that tags the account identity."""
+        def handler(decision_id, accepted_at_ts, order_info):
+            self._on_order_registered_from_feedback(
+                account_id, broker_name, decision_id, accepted_at_ts,
+                order_info,
+            )
+        return handler
+
+    def _make_queue_position_handler(self, account_id, broker_name):
+        """A per-account queue-position slot that tags the account identity."""
+        def handler(decision_id, position):
+            self._on_queue_position_from_feedback(
+                account_id, broker_name, decision_id, position
+            )
+        return handler
+
+    def _on_queue_position_from_feedback(
+        self, account_id, broker_name, decision_id, position
+    ):
         """
         The EXISTING Stage 2 queue-position feedback arrived.
 
-        ``decision_id`` resolves to the row of the EXACT sent order through
-        the page's own map, and the position value it already computed fills
-        that row's «وضعیت صف» cell. Guards (all fail-closed):
+        ``(account_id, broker_name, decision_id)`` resolves to the row of the
+        EXACT sent order of that account through the page's own account-scoped
+        map, and the position value it already computed fills that row's
+        «وضعیت صف» cell. Guards (all fail-closed):
 
           * a non-string / blank decisionId is ignored;
           * a non-integer position (bool included) is ignored — nothing
             is fabricated;
-          * an unknown decisionId never creates or changes any row;
+          * an unknown / other-account key never creates or changes any row;
           * an order without a real decisionId is never routed to;
           * a duplicate delivery of the same value overwrites it with the
             SAME value — a no-op, idempotent.
@@ -2473,9 +2542,11 @@ class OrderConfigurationPage(QWidget):
             return
         if isinstance(position, bool) or not isinstance(position, int):
             return
-        order = self._order_by_decision_id.get(decision_id)
+        order = self._order_by_decision_key.get(
+            (account_id, broker_name, decision_id)
+        )
         if order is None:
-            return  # unknown correlation key — the UI stays untouched
+            return  # unknown / other-account key — the UI stays untouched
         if id(order) not in self._queued_order_ids:
             return  # only orders a real send produced may be routed to
         # UI-layer display state only — the OrderLog model is untouched.
@@ -2483,20 +2554,23 @@ class OrderConfigurationPage(QWidget):
         self._refresh_order_log_display()
 
     def _on_order_registered_from_feedback(
-        self, decision_id, accepted_at_ts, order_info
+        self, account_id, broker_name, decision_id, accepted_at_ts, order_info
     ):
         """
         A real matching-engine registration event arrived.
 
-        ``decision_id`` is the Stage 1 correlation key. It is resolved to
-        the row of the EXACT sent order through the page's own map, and the
-        REAL event timestamp (``accepted_at_ts`` — the epoch-seconds moment
-        the event itself was received, carried through the existing feedback
-        path) is stamped on that row, which then renders highlighted
+        ``(account_id, broker_name, decision_id)`` is the account-scoped
+        Stage 1 correlation key. It is resolved to the row of the EXACT sent
+        order of that account through the page's own account-scoped map, and
+        the REAL event timestamp (``accepted_at_ts`` — the epoch-seconds
+        moment the event itself was received, carried through the existing
+        feedback path) is stamped on that row, which then renders highlighted
         (green). Guards (all fail-closed):
 
           * a non-string / blank decisionId is ignored;
-          * an unknown decisionId never creates or changes any row;
+          * an unknown / other-account key never creates or changes any row
+            (an event of one account can never alter another account's row,
+            even when the decision_id is identical);
           * an event without a real timestamp stamps nothing;
           * a duplicate event carrying the same timestamp is a no-op —
             idempotent.
@@ -2506,9 +2580,11 @@ class OrderConfigurationPage(QWidget):
         decision_id = decision_id.strip()
         if not decision_id:
             return
-        order = self._order_by_decision_id.get(decision_id)
+        order = self._order_by_decision_key.get(
+            (account_id, broker_name, decision_id)
+        )
         if order is None:
-            return  # unknown correlation key — the UI stays untouched
+            return  # unknown / other-account key — the UI stays untouched
         accepted_at = _epoch_to_local_datetime(accepted_at_ts)
         if accepted_at is None:
             return  # no real event timestamp — nothing may be invented

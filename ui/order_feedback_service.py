@@ -6,7 +6,7 @@ during program execution and can reach the UI. This is the boundary that
 makes the matching-engine registration (AcceptedByBourse) observable to
 the order-log UI without changing the existing Stage 2 plumbing.
 
-Architecture:
+Architecture (Block 9 Task 9B — account-aware):
 
     MainWindow (owns a single lazy BrokerManager)
         |
@@ -14,17 +14,26 @@ Architecture:
         |         |
         |         +----> DispatchCore(broker_manager=shared_manager)
         |                        |
-        |                        +----> shared AgaahBroker (on_order_placed etc.)
+        |                        +----> BrokerManager.get_for_account(
+        |                                   account_id, broker_name)
         |
-        +----> OrderFeedbackService
+        +----> OrderFeedbackService  (ONE per (account_id, broker_name))
                   |
-                  +----> shared AgaahBroker (add_*_listener + tracking)
+                  +----> the SAME account-scoped broker instance
+                         (add_*_listener + tracking)
 
-This guarantees that the ``AgaahBroker`` instance registered for OMS
-feedback (via ``add_order_registered_listener`` and
+This guarantees that the account-scoped broker instance registered for
+OMS feedback (via ``add_order_registered_listener`` and
 ``start_queue_position_tracking``) is the SAME instance used by the
-order execution path — so ``decisionId`` registration and
-``AcceptedByBourse`` feedback land on the same broker object.
+order execution path for that account — so ``decisionId`` registration
+and ``AcceptedByBourse`` feedback land on the same broker object.
+
+Two accounts on the same broker get two independent
+``OrderFeedbackService`` runtimes, each bound to its own
+``BrokerManager.get_for_account(account_id, broker_name)`` broker; an
+event received for one account can never reach the other account's
+runtime. The service is constructed lazily (never at ``MainWindow``
+construction) and the broker factory is resolved only inside ``run()``.
 
 Lifetime / async rules (mirroring UI-3.2A / UI-3.2B worker pattern):
 
@@ -87,13 +96,25 @@ class OrderFeedbackService(QThread):
     start_failed = Signal(str)
     stopped = Signal()
 
-    def __init__(self, broker_factory=None, parent=None):
+    def __init__(
+        self,
+        broker_factory=None,
+        *,
+        account_id: Optional[str] = None,
+        broker_name: Optional[str] = None,
+        parent=None,
+    ):
         """
         Args:
-            broker_factory: zero-arg callable returning the SHARED
-                AgaahBroker instance. Production: MainWindow supplies
-                ``lambda: shared_manager.get("آگاه")``. Tests inject a
-                fake. Must not create a new BrokerManager.
+            broker_factory: zero-arg callable returning the ACCOUNT-SCOPED
+                AgaahBroker instance. Production: MainWindow supplies a
+                factory closing over ``BrokerManager.get_for_account(
+                account_id, broker_name)``. Tests inject a fake. Must not
+                resolve a global/name-only broker.
+            account_id: the account this runtime is dedicated to. Routing
+                metadata only — never rendered, never sent to the broker.
+            broker_name: the account's broker association. Routing
+                metadata only.
         """
         super().__init__(parent)
         self._broker_factory = (
@@ -104,19 +125,36 @@ class OrderFeedbackService(QThread):
         self._broker: Any = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._running = False
+        self.account_id = account_id
+        self.broker_name = broker_name
+        # The exact broker instance whose listener lists already hold this
+        # service's callbacks. Installing listeners is idempotent per
+        # broker instance: starting the service again must never register
+        # a second copy of the same callbacks (no duplicate delivery).
+        self._listeners_broker: Any = None
+        self._stop_requested = False
 
-    @staticmethod
-    def _default_broker_factory():
+    def _default_broker_factory(self):
         """
-        Production fallback ONLY for isolated use.
+        Fallback ONLY for isolated use, and only when account identity is
+        known.
 
-        Builds the shared BrokerManager lazily and returns the Agah broker
-        from it. This creates a BrokerManager — the MainWindow wiring
-        supplies an explicit shared factory and does NOT use this.
+        Resolves the broker through ``BrokerManager.get_for_account`` for
+        exactly this service's ``(account_id, broker_name)`` — never a
+        name-only/global ``get(...)``. MainWindow always supplies an
+        explicit shared factory and does NOT use this. Without account
+        identity no broker can be resolved fail-closed.
         """
+        if not self.account_id or not self.broker_name:
+            raise ValueError(
+                "OrderFeedbackService requires an account-scoped "
+                "broker_factory (account_id/broker_name missing)"
+            )
         from brokers.manager import BrokerManager
 
-        return BrokerManager().get("آگاه")
+        return BrokerManager().get_for_account(
+            self.account_id, self.broker_name
+        )
 
     def run(self) -> None:
         """
@@ -133,17 +171,11 @@ class OrderFeedbackService(QThread):
 
             self._broker = self._broker_factory()
 
-            # Wire the green trigger: AcceptedByBourse -> order_registered signal
-            self._broker.add_order_registered_listener(
-                self._on_order_registered
-            )
-            # Wire queue-position and error forwarders
-            self._broker.add_queue_position_listener(
-                self._on_queue_position
-            )
-            self._broker.add_order_error_listener(
-                self._on_order_error
-            )
+            # Wire the green trigger: AcceptedByBourse -> order_registered
+            # signal, plus the queue-position and error forwarders. Installing
+            # is idempotent per broker instance, so a start/stop/restart of
+            # THIS service never registers duplicate callbacks.
+            self._install_listeners()
 
             # Ensure the provider exists (with callbacks wired) and start it
             self._ensure_provider()
@@ -153,6 +185,9 @@ class OrderFeedbackService(QThread):
 
             self._running = True
             self.started.emit()
+
+            if self._stop_requested:
+                return
 
             # Run the event loop until stop is requested. The NATS transport
             # callbacks fire within this loop, keeping feedback off the GUI
@@ -164,6 +199,24 @@ class OrderFeedbackService(QThread):
             self.start_failed.emit(str(exc))
         finally:
             self._cleanup()
+
+    def _install_listeners(self) -> None:
+        """
+        Register the forwarding callbacks on the account-scoped broker.
+
+        Idempotent per broker instance: the broker exposes no listener
+        removal API, so re-registering the same service on the same broker
+        would double every event. This guard installs the three callbacks
+        exactly once for the broker this runtime currently uses; a broker
+        change (a different account runtime) installs on the new broker.
+        """
+        broker = self._broker
+        if broker is None or broker is self._listeners_broker:
+            return
+        broker.add_order_registered_listener(self._on_order_registered)
+        broker.add_queue_position_listener(self._on_queue_position)
+        broker.add_order_error_listener(self._on_order_error)
+        self._listeners_broker = broker
 
     def _ensure_provider(self) -> None:
         """Ensure the lazy provider is created so callbacks are wired."""
@@ -205,29 +258,36 @@ class OrderFeedbackService(QThread):
         about to start, no second ``QThread.start()`` is issued. If a prior
         startup failed, the thread can be retried after recovery.
         """
-        if self._running:
+        if self._running or self.isRunning():
             return
-        if self.isRunning():
-            return
+        self._stop_requested = False
         self.start()
 
     def stop_service(self) -> None:
         """
-        Stop the feedback service (graceful, idempotent).
+        Stop the feedback service (graceful, idempotent, restart-safe).
 
-        Schedules the loop to stop from within its own context, then waits
-        for the thread to finish.
+        Requests the dedicated loop to stop from within its own context and
+        waits for the thread to finish. If the thread has not yet created
+        its loop, the stop request is remembered so ``run()`` returns
+        immediately after it starts. Restarting later reuses this same
+        service object (and thus the same broker listeners) — it never
+        creates a duplicate listener registration.
         """
-        if not self._running and self._loop is None:
-            return
+        self._stop_requested = True
+        loop = self._loop
+        try:
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError:
+            # The loop was closed between the check and the call.
+            pass
 
-        if self._loop is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-
-        if not self.wait(5000):
-            logger.warning(
-                "OrderFeedbackService thread did not stop within timeout"
-            )
+        if self.isRunning() or self._running:
+            if not self.wait(5000):
+                logger.warning(
+                    "OrderFeedbackService thread did not stop within timeout"
+                )
 
     def _cleanup(self) -> None:
         """Clean up async resources in the background thread."""

@@ -389,12 +389,14 @@ class TestQueueStatusFromExistingStage2Data:
         binder.emit_queue_position(None, 1)            # non-string id
 
         # Non-integer positions cannot travel over Signal(str, int) (Qt
-        # coerces them); the fail-closed guards are exercised directly.
+        # coerces them); the fail-closed guards are exercised directly with
+        # the account-scoped handler signature.
         handler = page._on_queue_position_from_feedback
-        handler("DEC-VALID?", True)                    # bool is not a position
-        handler("DEC-VALID?", "2")                     # non-int position
-        handler("DEC-VALID?", None)                    # None position
-        handler(12345, 1)                              # non-string id, direct
+        handler("ACC-001", BROKER, "DEC-VALID?", True)   # bool not a position
+        handler("ACC-001", BROKER, "DEC-VALID?", "2")    # non-int position
+        handler("ACC-001", BROKER, "DEC-VALID?", None)   # None position
+        handler("ACC-001", BROKER, 12345, 1)             # non-string id
+        handler("ACC-999", BROKER, "DEC-VALID?", 1)      # other account
 
         assert _table_rows(page.order_log_table) == before
         assert page.order_log.rows() == snapshot

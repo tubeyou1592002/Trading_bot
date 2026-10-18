@@ -454,9 +454,9 @@ class TestFeedbackBindingPrecedesTheSend:
         received_during_send = []
         page_handler = page._on_order_registered_from_feedback
 
-        def _recording_handler(decision_id, ts, info):
+        def _recording_handler(account_id, broker_name, decision_id, ts, info):
             received_during_send.append(decision_id)
-            page_handler(decision_id, ts, info)
+            page_handler(account_id, broker_name, decision_id, ts, info)
 
         page._on_order_registered_from_feedback = _recording_handler
 
@@ -515,7 +515,9 @@ class TestFeedbackBindingPrecedesTheSend:
         assert page.order_log.rows()[0].core_registered_at is None
         assert not row_is_green(page, 0)
         # 4) The send's own row was appended and correlated normally.
-        assert page._order_by_decision_id.get("DEC-RACE") is not None
+        assert page._order_by_decision_key.get(
+            ("ACC-001", BROKER, "DEC-RACE")
+        ) is not None
         # 5) The real event after the pass stamps/greens the row as ever.
         event_moment = RAW_TS_REDELIVERED
         binder.emit_registered("DEC-RACE", event_moment, object())
@@ -756,74 +758,65 @@ def make_window():
     return MainWindow()
 
 
-class TestMainWindowWiresTheSharedFeedbackService:
-    def test_page_has_a_feedback_binder_factory(self):
+class TestMainWindowWiresAccountAwareFeedback:
+    """
+    Contract C (Block 9 Task 9B): MainWindow wires the page to an
+    ACCOUNT-AWARE feedback runtime — one lazy service per
+    ``(account_id, broker_name)`` — without composing anything at
+    construction and without starting an unauthorized account's runtime.
+    """
+
+    def test_page_has_an_account_aware_feedback_binder_factory(self):
         window = make_window()
         try:
             page = window.order_configuration_page
             assert page._feedback_binder_factory is not None
             assert callable(page._feedback_binder_factory)
-            # Nothing is bound yet — the page binds lazily, on first use.
+            # Nothing is bound or built yet — fully lazy/offline.
             assert page._feedback_binder is None
-            assert window._feedback_service is None
+            assert page._feedback_binders == {}
+            assert window._feedback_services == {}
+            assert window._broker_manager_cache is None
         finally:
             window.close()
 
-    def test_factory_returns_the_shared_service_without_building_a_new_one(self):
+    def test_services_are_cached_per_account_without_building_a_manager(self):
         from ui.order_feedback_service import OrderFeedbackService
 
         window = make_window()
         try:
-            page = window.order_configuration_page
-            first = page._feedback_binder_factory()
-            second = page._feedback_binder_factory()
+            first = window.feedback_service_for_account("ACC-1", BROKER)
+            again = window.feedback_service_for_account("ACC-1", BROKER)
+            other = window.feedback_service_for_account("ACC-2", BROKER)
 
             assert isinstance(first, OrderFeedbackService)
-            assert first is second                       # one shared instance
-            assert first is window.feedback_service      # the MainWindow's
-            assert first is window._feedback_service     # cached, not rebuilt
-            assert not first.isRunning()                # wiring starts nothing
-            assert window._broker_manager_cache is None  # no BrokerManager made
+            assert first is again                        # cached per account
+            assert first is not other                    # isolated per account
+            assert first.account_id == "ACC-1"
+            assert other.account_id == "ACC-2"
+            assert first.broker_name == other.broker_name == BROKER
+            assert not first.isRunning()                 # just built, not started
+            # Building a service resolves no broker yet (the factory runs in run()).
+            assert window._broker_manager_cache is None
         finally:
             window.close()
 
-    def test_page_binding_uses_that_same_service_instance(self):
+    def test_invalid_identity_yields_no_service(self):
         window = make_window()
         try:
-            page = window.order_configuration_page
-            service = window.feedback_service
-
-            page._ensure_feedback_binding()
-
-            assert page._feedback_binder is service
-            assert window._feedback_service is service
-            assert not service.isRunning()
-
-            # Idempotent: binding again keeps the very same instance.
-            page._feedback_binder = None
-            page._ensure_feedback_binding()
-            assert page._feedback_binder is service
+            assert window.feedback_service_for_account("", BROKER) is None
+            assert window.feedback_service_for_account("ACC-1", "") is None
+            assert window.feedback_service_for_account(None, BROKER) is None
+            assert window._feedback_services == {}
         finally:
             window.close()
 
-    def test_shared_service_signal_updates_the_window_page_row(self):
-        """The wiring's purpose: the shared service drives the real page."""
+    def test_unauthorized_account_does_not_start_and_builds_nothing(self):
         window = make_window()
         try:
-            page = window.order_configuration_page
-            page._ensure_feedback_binding()
-            service = page._feedback_binder
-
-            send_one_order(page, decision_id="DEC-WIRE")
-            assert page.order_log.rows()[0].core_registered_at is None
-
-            service.order_registered.emit("DEC-WIRE", RAW_TS, object())
-
-            rows = page.order_log.rows()
-            assert len(rows) == 1
-            assert rows[0].registered_in_core is True
-            # The row carries the event's own stamp, converted for display.
-            assert rows[0].core_registered_at.timestamp() == RAW_TS
-            assert row_is_green(page, 0)
+            # No session/authorization has ever been composed here.
+            assert window.start_feedback_for_account("ACC-1", BROKER) is None
+            assert window._feedback_services == {}
+            assert window._broker_manager_cache is None
         finally:
             window.close()

@@ -23,13 +23,19 @@ _ID, _DISPLAY, _ACTIVE, _STATUS, _ACTIONS = range(5)
 class AccountsPage(QWidget):
     def __init__(self, account_store, parent=None, *,
                  authentication_service_factory=None,
-                 credential_store_factory=None, session_manager_factory=None):
+                 credential_store_factory=None, session_manager_factory=None,
+                 lifecycle_listener=None):
         super().__init__(parent)
         self.setLayoutDirection(Qt.RightToLeft)
         self.store = account_store
         self._authentication_service_factory = authentication_service_factory
         self._credential_store_factory = credential_store_factory
         self._session_manager_factory = session_manager_factory
+        # Block 9 Task 9B: optional observer notified of account lifecycle
+        # events ("logout" / "delete" / "broker_changed"). It lets the owner
+        # (MainWindow) stop only the affected account's feedback runtime.
+        # Absent for direct/offline construction — the page stays usable.
+        self._lifecycle_listener = lifecycle_listener
         self._pending_login_account_id = None
         self._pending_authentication_service = None
         self._login_status_by_account = {}
@@ -186,6 +192,18 @@ class AccountsPage(QWidget):
         self.login_message_label.setText(message)
         self.login_message_label.setProperty("role", "danger" if error else "success")
         self.login_message_label.setVisible(bool(message))
+
+    def _notify_lifecycle(self, event, account_id, broker_name=None):
+        """Report an account lifecycle event to the optional observer."""
+        listener = self._lifecycle_listener
+        if listener is None:
+            return
+        try:
+            listener(event, account_id, broker_name)
+        except Exception:
+            # The observer is best-effort: a failing listener must never
+            # disturb the account UI flow.
+            pass
 
     def _on_add_clicked(self):
         display = self.display_name_input.text().strip()
@@ -360,11 +378,13 @@ class AccountsPage(QWidget):
 
     def _logout(self, account_id):
         service = None
+        logged_out = False
         try:
             service = self._authentication_service_factory()
             service.logout(account_id)
             self._login_status_by_account[account_id] = False
             self._report(STRINGS.LOGOUT_COMPLETED)
+            logged_out = True
         except Exception:
             try:
                 if service is None:
@@ -374,7 +394,18 @@ class AccountsPage(QWidget):
             except Exception:
                 self._login_status_by_account[account_id] = None
             self._report(STRINGS.LOGIN_OPERATION_FAILED, True)
+        if logged_out:
+            self._notify_lifecycle(
+                "logout", account_id, self._broker_name_of(account_id)
+            )
         self._refresh_list()
+
+    def _broker_name_of(self, account_id):
+        """The account's current broker name, or None (fail-closed)."""
+        try:
+            return self.store.get(account_id).broker_name
+        except Exception:
+            return None
 
     def _on_logout_clicked(self):
         account_id = self._selected_account_id()
@@ -449,10 +480,15 @@ class AccountsPage(QWidget):
                 self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
                 return
         try:
-            self.store.update(account_id, broker_name=broker.currentText(), display_name=name.text())
+            updated = self.store.update(account_id, broker_name=broker.currentText(), display_name=name.text())
         except Exception:
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
             return
+        if record.broker_name != updated.broker_name:
+            # The account moved to another broker: stop the old runtime only.
+            self._notify_lifecycle(
+                "broker_changed", account_id, record.broker_name
+            )
         self._refresh_list()
 
     def _delete_account(self, account_id):
@@ -461,6 +497,7 @@ class AccountsPage(QWidget):
                                       STRINGS.DELETE_DIALOG_CONFIRM.format(record.display_name))
         if answer != QMessageBox.Yes:
             return
+        deleted = False
         try:
             if self._credential_store_factory is not None:
                 try:
@@ -469,8 +506,11 @@ class AccountsPage(QWidget):
                     pass
             self.store.delete(account_id)
             self._login_status_by_account.pop(account_id, None)
+            deleted = True
         except Exception:
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
+        if deleted:
+            self._notify_lifecycle("delete", account_id, record.broker_name)
         self._refresh_list()
 
     def _move(self, account_id, position):

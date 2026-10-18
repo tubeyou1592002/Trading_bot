@@ -136,12 +136,15 @@ class MainWindow(QMainWindow):
         # ---------------------------------------------
         # One BrokerManager per MainWindow instance, created only on first
         # actual request. Every lazy factory below returns the SAME manager
-        # instance (and thus the SAME AgaahBroker), so the broker that
-        # receives OMS feedback (via OrderFeedbackService) is the exact
-        # same instance used by the order execution path (via TestRunner ->
-        # DispatchCore -> broker_manager.get("آگاه")).
+        # instance, so the account-scoped broker that receives OMS feedback
+        # (via OrderFeedbackService) is the exact same instance used by the
+        # order execution path (via TestRunner -> DispatchCore ->
+        # broker_manager.get_for_account(account_id, broker_name)).
         self._broker_manager_cache = None
-        self._feedback_service = None
+        # Block 9 Task 9B: ONE feedback runtime per (account_id, broker_name),
+        # created lazily and cached. Constructed empty here — building the
+        # window composes no service (offline/lazy contract preserved).
+        self._feedback_services = {}
         self._authentication_service = None
         self._credential_store = None
         self._session_manager = None
@@ -246,6 +249,7 @@ class MainWindow(QMainWindow):
             authentication_service_factory=lambda: self.authentication_service,
             credential_store_factory=lambda: self.credential_store,
             session_manager_factory=lambda: self.session_manager,
+            lifecycle_listener=self._on_account_lifecycle,
         )
         self.pages["Accounts"] = self.accounts_page
         self.content_area.addWidget(self.accounts_page)
@@ -280,13 +284,15 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_test_runner_factory(
             self._real_test_runner
         )
-        # UI-5 Task 4 Stage 3 Task 3: bind the order log to the EXISTING
-        # order-feedback path (matching-engine registration / green row).
-        # The factory hands the page the already-existing shared feedback
-        # service object; the page connects lazily on the first real send
-        # and only uses the signal's existence — nothing is started here.
+        # UI-5 Task 4 Stage 3 Task 3 / Block 9 Task 9B: bind the order log to
+        # the EXISTING order-feedback path (matching-engine registration /
+        # green row), now ACCOUNT-AWARE. The factory resolves the feedback
+        # runtime of the exact (account_id, broker_name) the page is sending
+        # for; it is called lazily on the first real send and only returns a
+        # service when that account's session/authorization is valid, so the
+        # page stays fully offline and the order gate is never weakened.
         self.order_configuration_page.set_feedback_binder_factory(
-            lambda: self.feedback_service
+            self._feedback_binder_for_account
         )
         self.order_configuration_page.set_order_authorizer_factory(
             self._real_order_authorizer
@@ -500,33 +506,151 @@ class MainWindow(QMainWindow):
             self._session_manager = SessionManager()
         return self._session_manager
 
-    def _real_feedback_broker_factory(self):
-        """
-        Return the shared AgaahBroker for OrderFeedbackService.
+    # ---------------------------------------------------------
+    # Block 9 Task 9B — account-aware order feedback lifecycle
+    # ---------------------------------------------------------
 
-        The SAME BrokerManager.get("آگاه") instance that DispatchCore
-        will resolve — guaranteeing decisionId registration and
-        AcceptedByBourse feedback land on the same broker object.
+    def _feedback_broker_factory(self, account_id, broker_name):
         """
-        return self._shared_broker_manager().get("آگاه")
+        A zero-arg factory resolving the ACCOUNT-SCOPED broker.
 
-    @property
-    def feedback_service(self):
+        The broker is resolved through
+        ``BrokerManager.get_for_account(account_id, broker_name)`` at the
+        moment the service actually starts — never a name-only/global
+        ``get(...)``. Deferring the ``BrokerManager`` construction into the
+        closure keeps MainWindow construction fully offline.
         """
-        Lazily create and cache the OrderFeedbackService.
 
-        Built only on first access (never during construction), using the
-        shared AgaahBroker via ``_real_feedback_broker_factory``. The service
-        is NOT started here — callers start it when feedback needs to be
-        active (e.g. after authentication, or before order tracking).
+        def factory():
+            return self._shared_broker_manager().get_for_account(
+                account_id, broker_name
+            )
+
+        return factory
+
+    def feedback_service_for_account(self, account_id, broker_name):
         """
-        if self._feedback_service is None:
+        Lazily create and cache the feedback runtime of one account.
+
+        Exactly one ``OrderFeedbackService`` per ``(account_id,
+        broker_name)``: two accounts on the same broker get two independent
+        services (and, via the broker factory, two independent broker
+        runtimes). The service is created — but NOT started — here; nothing
+        is imported or composed at MainWindow construction. Returns ``None``
+        for an incomplete identity (fail-closed).
+        """
+        if not isinstance(account_id, str) or not account_id.strip():
+            return None
+        if not isinstance(broker_name, str) or not broker_name.strip():
+            return None
+        key = (account_id, broker_name)
+        service = self._feedback_services.get(key)
+        if service is None:
             from ui.order_feedback_service import OrderFeedbackService
 
-            self._feedback_service = OrderFeedbackService(
-                broker_factory=self._real_feedback_broker_factory,
+            service = OrderFeedbackService(
+                broker_factory=self._feedback_broker_factory(
+                    account_id, broker_name
+                ),
+                account_id=account_id,
+                broker_name=broker_name,
             )
-        return self._feedback_service
+            self._feedback_services[key] = service
+        return service
+
+    def _feedback_account_authorized(self, account_id, broker_name):
+        """
+        True only when the account has a usable session and a valid
+        authorization — the EXISTING ``authorize_order`` gate, reused
+        unchanged. Never raises; any failure is fail-closed (``False``) so a
+        broken/absent feedback path can never crash the UI or weaken the
+        order gate.
+        """
+        try:
+            from ui.order_authorization import authorize_order
+
+            result = authorize_order(
+                self.account_store,
+                self._authentication_service,
+                self._session_manager,
+                account_id,
+                broker_name,
+            )
+            return bool(result.authorized)
+        except Exception:
+            return False
+
+    def start_feedback_for_account(self, account_id, broker_name):
+        """
+        Start the feedback runtime for one account, but only when its
+        session/authorization is valid.
+
+        Returns the started service, or ``None`` when the account is not
+        authorized (no service is even created in that case). Idempotent:
+        starting an already-running account's service is a no-op. Starting
+        one account never stops another account's runtime.
+        """
+        if not self._feedback_account_authorized(account_id, broker_name):
+            return None
+        service = self.feedback_service_for_account(account_id, broker_name)
+        if service is None:
+            return None
+        try:
+            service.start_service()
+        except Exception:
+            return None
+        return service
+
+    def stop_feedback_for_account(self, account_id, broker_name):
+        """
+        Stop (but keep cached) the feedback runtime of one account.
+
+        Used on logout, account deletion and broker change. Only this
+        account's runtime is stopped; every other account's runtime keeps
+        running. Keeping the stopped service cached means a later re-login
+        restarts the SAME object — and therefore never registers a second
+        copy of its broker listeners.
+        """
+        service = self._feedback_services.get((account_id, broker_name))
+        if service is None:
+            return
+        try:
+            service.stop_service()
+        except Exception:
+            pass
+
+    def stop_all_feedback_services(self):
+        """Stop every feedback runtime built so far (window teardown)."""
+        for service in list(self._feedback_services.values()):
+            try:
+                service.stop_service()
+            except Exception:
+                pass
+
+    def _feedback_binder_for_account(self, account_id, broker_name):
+        """
+        The page's feedback-binder factory: the account-scoped runtime.
+
+        Returns ``None`` unless the account is authorized, so the page fails
+        closed (no listener, no green row) instead of ever binding to a
+        different account's runtime.
+        """
+        return self.start_feedback_for_account(account_id, broker_name)
+
+    def _on_account_lifecycle(self, event, account_id, broker_name):
+        """
+        React to AccountsPage lifecycle events (Block 9 Task 9B).
+
+        Logout, deletion and broker change STOP the affected account's
+        runtime only; other accounts are left untouched. Selecting an active
+        account does NOT stop the previous account's runtime (its open
+        orders may still receive feedback). Fail-safe: never raises.
+        """
+        try:
+            if event in ("logout", "delete", "broker_changed"):
+                self.stop_feedback_for_account(account_id, broker_name)
+        except Exception:
+            pass
 
     def select_page(self, name):
         """Show the page of a navigation entry (no-op if unknown)."""
@@ -539,19 +663,25 @@ class MainWindow(QMainWindow):
         # symbol or broker.
         if name == "Order Configuration":
             self.order_configuration_page.refresh_active_account()
-            self.feedback_service.start_service()
+            # Block 9 Task 9B: start the ACTIVE account's runtime only, and
+            # only when it has a usable session/authorization. Entering the
+            # page never stops another account's runtime.
+            record = self._active_account_record()
+            if record is not None:
+                self.start_feedback_for_account(
+                    record.account_id, record.broker_name
+                )
         self.content_area.setCurrentWidget(page)
         for entry_name, button in self.nav_buttons.items():
             button.setChecked(entry_name == name)
 
     def closeEvent(self, event):
         """
-        Stop the feedback service when the window is closing.
+        Stop every feedback runtime when the window is closing.
 
-        If the service was never created, closing is a no-op (no error).
+        If none was ever created, closing is a no-op (no error).
         """
-        if self._feedback_service is not None:
-            self._feedback_service.stop_service()
+        self.stop_all_feedback_services()
         event.accept()
 
     # ---------------------------------------------------------
