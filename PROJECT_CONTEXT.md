@@ -1,8 +1,8 @@
-\# Trading Bot — Project Context
+# Trading Bot — Project Context
 
 
 
-\## Project Overview
+## Project Overview
 
 
 
@@ -14,89 +14,89 @@ The application is designed to work with:
 
 
 
-\* TSETMC for market/instrument information.
+* TSETMC for market/instrument information.
 
-\* Multiple Iranian brokers through broker-specific adapters.
+* Multiple Iranian brokers through broker-specific adapters.
 
-\* A central, broker-independent order engine.
+* A central, broker-independent order engine.
 
-\* Multiple trading accounts.
+* Multiple trading accounts.
 
-\* Precise order scheduling and execution.
+* Precise order scheduling and execution.
 
-\* Safe testing and dry-run workflows.
-
-
-
-The project is currently under active development and is \*\*not considered production-ready\*\*.
+* Safe testing and dry-run workflows.
 
 
 
-\---
+The project is currently under active development and is **not considered production-ready**.
 
 
 
-\## Current Status
+---
 
 
 
-**Current Block 9 checkpoint (updated 2026-10-17):** Task 9A is complete and pushed (`4aef682`, `1123cd9`): trading-state and `nscId` reads use the shared account-scoped runtime and reject stale results. SQLite account-metadata persistence is complete (`fa3e6ad`), storing only account ID, broker, display name and position; credentials stay in the OS vault, and active selection/login/session/token state is not restored. The approved Accounts-page redesign is complete (`f8d564f`), including generated internal IDs, combined add form, separate active/login status, account-row actions and validated RTL CAPTCHA dialog. The **active-account + logged-in + usable-session order-authorization gate is also complete and pushed** (`503f6f6`). It fails closed before queue insertion and Test/run execution when account, broker, login, session or token consistency is invalid. Focused verification: gate **4 passed**, UI-6 **28 passed**, combined focused gate/UI-4/UI-5/UI-6 run **107 passed, 26 failed**; the 26 remaining `_account_lock` failures reproduce on baseline. Full repository result: **1595 passed, 233 failed, 20 skipped, 4 errors**, so the full suite is not green; reported environment errors include missing `nats` and platform-specific `ctypes.WinDLL`. Account-aware order feedback/listener lifecycle is the next separate task. Preserve fail-closed behavior, `DispatchCore → OrderEngine → M6-A…M6-E`, dry-run `live=False`, and disabled live trading.
+## Current Status
 
-**Roadmap position (2026-10-17):** UI-1 through UI-10 are recorded complete. The Block 9 order-authorization gate is complete and pushed (`503f6f6`). The next implementation task is account-aware order feedback/listener lifecycle; regression/acceptance closure remains open because the latest full-repository run is not green (**1595 passed, 233 failed, 20 skipped, 4 errors**). After User Application integration/acceptance, the high-level remaining phases are: Central Server, Admin Panel, centralized License/Activation, multi-user testing, and release preparation. Those five future phases are not yet decomposed into a definitive numbered task count.
+
+
+**Current Block 9 checkpoint (updated 2026-10-18):** Block 9 Task 9A is complete: trading-state and `nscId` reads use the account-scoped runtime and reject stale results. SQLite account-metadata persistence (`fa3e6ad`), the Accounts-page redesign (`f8d564f`), and the fail-closed UI order-authorization gate (`503f6f6`) remain complete. **Task 9B — account-aware order feedback/runtime lifecycle is implemented on `master`** in `9ad15d4` (`fix: scope order feedback to account runtime`), with focused coverage in `test_block9_account_aware_order_feedback.py`. Feedback runtimes are keyed by `(account_id, broker_name)`, resolve their broker only through `BrokerManager.get_for_account(...)`, install listeners idempotently, refuse to start without a usable authorized account session, and route registration/queue feedback only to that account's row. Logout, account deletion, and broker change stop only the affected account runtime; switching the active account does not stop another account's runtime. Feedback does not send orders. Preserve the existing `DispatchCore → OrderEngine → M6-A…M6-E` path, fail-closed authorization, dry-run `live=False`, and disabled live trading. The last documented full-repository run predates Task 9B and was **1595 passed, 233 failed, 20 skipped, 4 errors**; it was not green and must not be represented as a post-Task-9B result.
+
+**Roadmap position (updated 2026-10-18):** UI-1 through UI-10 are recorded complete. Block 9 Tasks 9A and 9B are implemented; the next gate is independent review/acceptance closure and an accurately recorded post-Task-9B verification result. Existing baseline failures must remain distinguished from any new regressions. After User Application integration/acceptance, the high-level remaining phases are Central Server, Admin Panel, centralized License/Activation, multi-user testing, and release preparation. These phases have not yet been decomposed into a definitive numbered task count.
 
 The project currently has:
 
 
 
-\* TSETMC symbol search and instrument resolution.
+* TSETMC symbol search and instrument resolution.
 
-\* Persian/Arabic symbol normalization.
+* Persian/Arabic symbol normalization.
 
-\* Windows Persian keyboard-layout handling.
+* Windows Persian keyboard-layout handling.
 
-\* Initial broker abstraction.
+* Initial broker abstraction.
 
-\* Initial Agah broker implementation.
+* Initial Agah broker implementation.
 
-\* Account, instrument, broker-instrument and order models.
+* Account, instrument, broker-instrument and order models.
 
-\* Order validation.
+* Order validation.
 
-\* Initial order engine.
+* Initial order engine.
 
-\* Agah API investigation and test scripts.
+* Agah API investigation and test scripts.
 
-\* Dry-run/testing infrastructure.
+* Dry-run/testing infrastructure.
 
-\* Local Git repository with an initial baseline commit.
+* Local Git repository with an initial baseline commit.
 
-\* `AgaahInstrumentProvider` for safe `TSETMC insCode → Agah nscId` mapping (Decision 018).
+* `AgaahInstrumentProvider` for safe `TSETMC insCode → Agah nscId` mapping (Decision 018).
 
-\* `InstrumentLookupError` as the official `InstrumentProvider` contract exception in `brokers/base.py` (Decision 019).
+* `InstrumentLookupError` as the official `InstrumentProvider` contract exception in `brokers/base.py` (Decision 019).
 
-\* `OrderEngine.execute_by_ins_code(...)` that resolves `ins_code` through an `InstrumentProvider` and delegates to the existing `execute(...)` (commit 91bd2b4).
+* `OrderEngine.execute_by_ins_code(...)` that resolves `ins_code` through an `InstrumentProvider` and delegates to the existing `execute(...)` (commit 91bd2b4).
 
-\* Integration tests covering the `Provider → OrderEngine` flow end-to-end (`test_engine_provider_integration.py`, 4/4 PASS).
+* Integration tests covering the `Provider → OrderEngine` flow end-to-end (`test_engine_provider_integration.py`, 4/4 PASS).
 
-\* Interactive scripts (`test_order_engine.py`, `test_order_dry_run.py`, `test_tsetmc_to_agah.py`) migrated to the new `InstrumentProvider` path; legacy `get_instrument_by_instrument_id(...)` no longer used in these scripts (commit 1a0d2d4).
+* Interactive scripts (`test_order_engine.py`, `test_order_dry_run.py`, `test_tsetmc_to_agah.py`) migrated to the new `InstrumentProvider` path; legacy `get_instrument_by_instrument_id(...)` no longer used in these scripts (commit 1a0d2d4).
 
-\* `BrokerManager.get_instrument_provider(name)` \u2014 lazy, per-broker cached provider wiring (M4-A). The `AgaahInstrumentProvider` instance reuses the existing `AgaahBroker` instance from `self.brokers[name]`. New unit tests `test_broker_manager.py` 6/6 PASS. COMMITTED as `bdd5a1d`.
+* `BrokerManager.get_instrument_provider(name)` \u2014 lazy, per-broker cached provider wiring (M4-A). The `AgaahInstrumentProvider` instance reuses the existing `AgaahBroker` instance from `self.brokers[name]`. New unit tests `test_broker_manager.py` 6/6 PASS. COMMITTED as `bdd5a1d`.
 
-\* Total unit-test regression (M1\u2013M4-B): 45/45 PASS (38 pre-existing + 7 new).
+* Total unit-test regression (M1\u2013M4-B): 45/45 PASS (38 pre-existing + 7 new).
 
-\* `main.py` order workflow (M4-B) \u2014 `current_provider` wired parallel to `current_broker` in `on_broker_changed`; `OrderEngine` instance added; `selected_instrument` stored in `select_symbol`; `send_order()` method added using `OrderEngine.execute_by_ins_code(live=False)`. New unit tests `test_main_order_workflow.py` 7/7 PASS. COMMITTED as `9713360`.
-
-
-
-\---
+* `main.py` order workflow (M4-B) \u2014 `current_provider` wired parallel to `current_broker` in `on_broker_changed`; `OrderEngine` instance added; `selected_instrument` stored in `select_symbol`; `send_order()` method added using `OrderEngine.execute_by_ins_code(live=False)`. New unit tests `test_main_order_workflow.py` 7/7 PASS. COMMITTED as `9713360`.
 
 
 
-\## Main Components
+---
 
 
 
-\### `market/`
+## Main Components
+
+
+
+### `market/`
 
 
 
@@ -112,13 +112,13 @@ Important files:
 
 market/tsetmc.py
 
-market/symbol\_resolver.py
+market/symbol_resolver.py
 
 ```
 
 
 
-\### `brokers/`
+### `brokers/`
 
 
 
@@ -150,13 +150,13 @@ brokers/agaah.py
 
 brokers/manager.py
 
-brokers/device\_info.py
+brokers/device_info.py
 
 ```
 
 
 
-\### `core/`
+### `core/`
 
 
 
@@ -170,13 +170,13 @@ Current file:
 
 ```text
 
-core/order\_engine.py
+core/order_engine.py
 
 ```
 
 
 
-\### `models/`
+### `models/`
 
 
 
@@ -188,19 +188,19 @@ Contains domain models:
 
 account.py
 
-broker\_instrument.py
+broker_instrument.py
 
 instrument.py
 
 order.py
 
-order\_validator.py
+order_validator.py
 
 ```
 
 
 
-\### `input/`
+### `input/`
 
 
 
@@ -208,7 +208,7 @@ Contains input and Windows keyboard-layout functionality.
 
 
 
-\### Tests
+### Tests
 
 
 
@@ -218,29 +218,29 @@ Current test scripts include:
 
 ```text
 
-test\_agah\_instrument.py
+test_agah_instrument.py
 
-test\_agah\_login.py
+test_agah_login.py
 
-test\_broker\_dry\_run.py
+test_broker_dry_run.py
 
-test\_order\_build.py
+test_order_build.py
 
-test\_order\_dry\_run.py
+test_order_dry_run.py
 
-test\_order\_engine.py
+test_order_engine.py
 
-test\_tsetmc\_to\_agah.py
+test_tsetmc_to_agah.py
 
 ```
 
 
 
-\---
+---
 
 
 
-\## Architecture Rule
+## Architecture Rule
 
 
 
@@ -256,15 +256,15 @@ Preferred structure:
 
 Order Engine
 
-&#x20;    ↓
+     ↓
 
 Broker Interface
 
-&#x20;    ↓
+     ↓
 
 Broker Adapter
 
-&#x20;    ↓
+     ↓
 
 Broker API
 
@@ -284,11 +284,11 @@ Avoid designs such as:
 
 if broker == "agah":
 
-&#x20;   ...
+    ...
 
-elif broker == "broker\_b":
+elif broker == "broker_b":
 
-&#x20;   ...
+    ...
 
 ```
 
@@ -298,11 +298,11 @@ unless there is a documented architectural reason.
 
 
 
-\---
+---
 
 
 
-\## Current Broker: Agah
+## Current Broker: Agah
 
 
 
@@ -314,17 +314,17 @@ However, several important details remain under investigation, including:
 
 
 
-\* TSETMC instrument ID to Agah instrument ID mapping.
+* TSETMC instrument ID to Agah instrument ID mapping.
 
-\* `categoryId`.
+* `categoryId`.
 
-\* `clientKey`.
+* `clientKey`.
 
-\* `deviceInfo`.
+* `deviceInfo`.
 
-\* Exact order-entry/tradability status.
+* Exact order-entry/tradability status.
 
-\* Production-safe order-status handling.
+* Production-safe order-status handling.
 
 
 
@@ -332,11 +332,11 @@ Unknown API behavior must be investigated rather than guessed.
 
 
 
-\---
+---
 
 
 
-\## TSETMC
+## TSETMC
 
 
 
@@ -366,11 +366,11 @@ Both should be treated as the same logical symbol where appropriate.
 
 
 
-\---
+---
 
 
 
-\## Trading Requirements
+## Trading Requirements
 
 
 
@@ -378,37 +378,37 @@ The long-term system is expected to support:
 
 
 
-\* Multiple broker accounts.
+* Multiple broker accounts.
 
-\* Configurable order timing.
+* Configurable order timing.
 
-\* Precise scheduling around market opening.
+* Precise scheduling around market opening.
 
-\* Configurable sending intervals.
+* Configurable sending intervals.
 
-\* Multiple simultaneous/batched order submissions.
+* Multiple simultaneous/batched order submissions.
 
-\* Countdown and time synchronization.
+* Countdown and time synchronization.
 
-\* Handling halted/not-yet-tradable symbols.
+* Handling halted/not-yet-tradable symbols.
 
-\* Available broker balance.
+* Available broker balance.
 
-\* Daily price limits.
+* Daily price limits.
 
-\* User-defined quantity.
+* User-defined quantity.
 
-\* Dry-run operation.
+* Dry-run operation.
 
-\* Strong separation between simulation and real order submission.
-
-
-
-\---
+* Strong separation between simulation and real order submission.
 
 
 
-\## Safety
+---
+
+
+
+## Safety
 
 
 
@@ -420,25 +420,25 @@ Therefore:
 
 
 
-\* Do not send real orders during ordinary development/testing.
+* Do not send real orders during ordinary development/testing.
 
-\* Prefer dry-run tests.
+* Prefer dry-run tests.
 
-\* Do not use real credentials in source code.
+* Do not use real credentials in source code.
 
-\* Never commit passwords, tokens, cookies or other secrets.
+* Never commit passwords, tokens, cookies or other secrets.
 
-\* Never assume an API behavior that has not been verified.
+* Never assume an API behavior that has not been verified.
 
-\* Production-order functionality requires deliberate testing and review.
-
-
-
-\---
+* Production-order functionality requires deliberate testing and review.
 
 
 
-\## Git
+---
+
+
+
+## Git
 
 
 
@@ -462,11 +462,11 @@ The Git repository and project documentation are the source of truth, not any in
 
 
 
-\---
+---
 
 
 
-\## Working With This Project
+## Working With This Project
 
 
 
@@ -474,21 +474,21 @@ Before changing code, an AI coding agent must:
 
 
 
-1\. Inspect the repository.
+1. Inspect the repository.
 
-2\. Read the project documentation.
+2. Read the project documentation.
 
-3\. Understand the existing implementation.
+3. Understand the existing implementation.
 
-4\. Check whether the requested capability already exists.
+4. Check whether the requested capability already exists.
 
-5\. Make the smallest appropriate change.
+5. Make the smallest appropriate change.
 
-6\. Run relevant tests.
+6. Run relevant tests.
 
-7\. Report what changed and why.
+7. Report what changed and why.
 
-8\. Record important architectural decisions.
+8. Record important architectural decisions.
 
 
 
@@ -498,29 +498,29 @@ Required project documentation:
 
 ```text
 
-AI\_PROJECT\_MEMORY.md
+AI_PROJECT_MEMORY.md
 
-PROJECT\_CONTEXT.md
+PROJECT_CONTEXT.md
 
 ARCHITECTURE.md
 
 DECISIONS.md
 
-AGENT\_RULES.md
+AGENT_RULES.md
 
-AI\_HANDOFF.md
+AI_HANDOFF.md
 
-BUG\_HISTORY.md
+BUG_HISTORY.md
 
 ```
 
 
 
-\---
+---
 
 
 
-\## Current Development Philosophy
+## Current Development Philosophy
 
 
 
@@ -544,27 +544,27 @@ The preferred cycle is:
 
 Inspect
 
-&#x20; ↓
+  ↓
 
 Understand
 
-&#x20; ↓
+  ↓
 
 Plan
 
-&#x20; ↓
+  ↓
 
 Implement
 
-&#x20; ↓
+  ↓
 
 Test
 
-&#x20; ↓
+  ↓
 
 Review
 
-&#x20; ↓
+  ↓
 
 Commit
 
@@ -572,11 +572,11 @@ Commit
 
 
 
-\---
+---
 
 
 
-\## Important
+## Important
 
 
 
@@ -590,17 +590,17 @@ For deeper technical details, read:
 
 ```text
 
-AI\_PROJECT\_MEMORY.md
+AI_PROJECT_MEMORY.md
 
 ARCHITECTURE.md
 
 DECISIONS.md
 
-AGENT\_RULES.md
+AGENT_RULES.md
 
-AI\_HANDOFF.md
+AI_HANDOFF.md
 
-BUG\_HISTORY.md
+BUG_HISTORY.md
 
 ```
 
