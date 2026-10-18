@@ -1537,3 +1537,17 @@ The UI authorization boundary is implemented in `ui/order_authorization.py` and 
 The gate denies unless all of the following hold: the active account matches the requested account; stored account ID and broker identity match; AuthenticationService reports that account logged in; SessionManager reports `LOGGED_IN` and holds a non-empty local token; an adapter exists and reports authenticated; the adapter broker identity matches; and the adapter's authenticated-session access token exactly matches the SessionManager token. Missing dependencies, inconsistent values, and API exceptions fail closed with a controlled non-sensitive result. The gate itself does not login, refresh tokens, access the network, or mutate session state.
 
 This is a UI-level prerequisite, not a replacement for Core safeguards. Orders continue through `DispatchCore → OrderEngine → M6-A…M6-E`; Test remains dry-run (`live=False`); no live order was sent. The focused gate suite reported **4 passed**, UI-6 reported **28 passed**, and the combined focused gate/UI-4/UI-5/UI-6 selection reported **107 passed, 26 failed**. The 26 failures reproduce on baseline and concern the out-of-scope `BrokerManager._account_lock` initialization issue. The full repository run reported **1595 passed, 233 failed, 20 skipped, 4 errors** and remains not green. Account-aware order feedback/listener lifecycle remains separate work.
+
+---
+
+# Current Implementation Note — Block 9 Task 9B: Account-Scoped Order Feedback (2026-10-18)
+
+Implementation commit: `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80`.
+
+The UI feedback runtime is owned by the account/broker identity tuple `(account_id, broker_name)`. `MainWindow` caches runtimes per tuple and resolves brokers through `BrokerManager.get_for_account(account_id, broker_name)`; a name-only broker lookup is not an acceptable fallback for this path. Construction remains lazy so opening the UI does not itself create feedback/authentication runtimes or initiate network activity.
+
+The feedback service installs broker listeners idempotently and supports stopping/restarting the same account runtime without duplicate registrations. Feedback events are bound to the originating account. Registration, queue position and order-error events for unknown/cross-account decisions must not update another account's rows. Logout, deletion and broker change stop only the affected account runtime; changing the active account alone does not stop the previous account runtime.
+
+Runtime start is not order authorization and never sends an order. The existing fail-closed UI authorization gate, `DispatchCore → OrderEngine → M6-A…M6-E` chain, dry-run `live=False`, and disabled live-trading policy remain authoritative.
+
+**Verification boundary:** the new focused acceptance test is `test_block9_account_aware_order_feedback.py`. The repository's last recorded full-suite result predates this task (1595 passed, 233 failed, 20 skipped, 4 errors); it must not be cited as a post-Task-9B result. Independent regression acceptance remains open pending fresh test output.
