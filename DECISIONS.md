@@ -1591,3 +1591,23 @@ Authorization is a local validation step only. It does not start login, perform 
 **Implementation and verification:** commit `503f6f6` adds the authorization gate and focused offline tests. The standalone gate suite reported **4 passed**; UI-6 reported **28 passed**. The focused gate + UI-4/UI-5/UI-6 selection reported **107 passed, 26 failed**; all 26 remaining failures were reproduced on baseline and concern the out-of-scope `BrokerManager._account_lock` initialization issue. The full repository run reported **1595 passed, 233 failed, 20 skipped, 4 errors**; the repository-wide regression is not green, and existing errors include missing `nats` and a platform-specific `ctypes.WinDLL` collection failure. Relevant `py_compile` succeeded; the staged task diff's CR-at-EOL-aware whitespace check was clean.
 
 This decision records a UI authorization boundary; it does not claim that all repository regressions are fixed or that account-aware feedback is complete.
+
+---
+
+## Decision 035 — Account-Scoped Order Feedback Runtime and Lifecycle
+
+**Status:** Implemented in code commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80` (2026-10-18); independent regression/acceptance closure pending.
+
+**Decision / contract:**
+
+- A feedback runtime is identified by `(account_id, broker_name)`, not broker name alone.
+- Resolve the broker through `BrokerManager.get_for_account(account_id, broker_name)`; do not use a name-only/global broker lookup for account feedback.
+- Runtime creation and startup fail closed when account identity or a usable authorized session is missing.
+- Broker listener installation is idempotent. A stop/start cycle reuses the cached runtime and must not duplicate listeners.
+- Feedback for `AcceptedByBourse`, queue position, or an order error may update only the originating account's matching order row. Identical decision IDs across accounts remain isolated; unknown and cross-account events are no-ops.
+- Logout, account deletion, and broker change stop only the affected account runtime. Merely switching the active account must not stop another account's runtime.
+- The feedback service is not an order dispatcher and must never send orders.
+
+This decision does not alter the existing order authorization gate or the `DispatchCore → OrderEngine → M6-A…M6-E` execution/preflight chain. Test remains dry-run (`live=False`); live trading stays disabled.
+
+**Verification boundary:** implementation includes `test_block9_account_aware_order_feedback.py` and adjacent UI regression-test updates. The repository evidence reviewed for this documentation update did not establish an exact focused pytest pass count. The last recorded full-repository result predates Task 9B (1595 passed, 233 failed, 20 skipped, 4 errors) and is not evidence of post-task acceptance. Record fresh commands and results before closing this decision's acceptance gate.
