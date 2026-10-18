@@ -35,6 +35,14 @@ Architectural review accepted Task 9B within the approved scope. Fresh focused a
 
 The focused acceptance result above is recorded. The next phase is **broader regression and final acceptance of the local User Application**, not another implementation pass for Task 9B. The prior agent-reported broader run had 57 passed and 9 failed (attributed to missing `nats`); `py_compile` was reported successful, and one UI-7 failure was reported as baseline. These broader-run details are reported evidence, not a result reproduced by the fresh 56-test focused run. Classify actual failures during local-app acceptance and distinguish baseline/environment issues from new regressions.
 
+## Manual local-application acceptance (owner-run, 2026-10-18)
+
+- Both accounts on the same broker logged in successfully.
+- Activating either account selected it for current use; the other account remained inactive.
+- Logging out of one account did not disturb the other account.
+- Re-logging the exited account succeeded; no issue was observed, and the other account remained normal.
+- This was a login/logout lifecycle check only; no order was submitted and live trading remains disabled.
+
 ## Next gate
 
-**Task 9B scoped acceptance: COMPLETE.** Next gate: broader regression and final acceptance of the local User Application. Do not reopen Task 9B without a reproducible, in-scope regression. Keep Central Server and later phases out of scope until local-app acceptance is complete.
+**Task 9B scoped acceptance: COMPLETE**, including the focused offline tests and owner-run account-isolation/re-login check. Next gate: broader regression and final acceptance of the local User Application. Do not reopen Task 9B without a reproducible, in-scope regression. Keep Central Server and later phases out of scope until local-app acceptance is complete.
