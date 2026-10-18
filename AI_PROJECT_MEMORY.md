@@ -2899,6 +2899,12 @@ Task 9B implementation covers account-keyed feedback runtime ownership `(account
 
 **Changed scope:** `ui/main_window.py`, `ui/order_feedback_service.py`, `ui/order_configuration_page.py`, `ui/accounts_page.py`, `test_block9_account_aware_order_feedback.py`, and adjacent UI regression tests.
 
-**Verification integrity:** the implementation was reported as implemented and verified, but an exact focused pytest count is not recorded in the repository evidence inspected for this update. Do not invent or infer a pass count. The latest documented full-repository result is historical and predates Task 9B: **1595 passed, 233 failed, 20 skipped, 4 errors**. It was not green and is not a post-Task-9B result. After pulling, run the dedicated Task 9B suite plus the two changed UI registration/table suites, then the appropriate broader regression. Record exact commands and results before claiming acceptance.
+**Scoped acceptance: COMPLETE.** After architectural review, the fresh focused test command
+```powershell
+python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py
+```
+reported **56 passed in 6.09s, exit 0**. No further Task 9B code change is requested at this point.
 
-**Next gate:** independent regression/acceptance closure. Keep baseline failures separate from regressions introduced by Task 9B. Preserve the fail-closed order-authorization gate, `DispatchCore → OrderEngine → M6-A…M6-E`, dry-run `live=False`, and disabled live trading. Feedback must never place or automatically replay an order.
+**Broader regression boundary:** the whole project is not being declared green. A prior broader run was reported by the coding agent as **57 passed, 9 failed**, with the nine failures attributed to missing `nats`; `py_compile` was reported successful, and one UI-7 failure was reported as baseline. These are prior reported observations, not independently reproduced by the current focused run. Next is broader regression and final acceptance of the local User Application. Distinguish baseline/environment failures from new regressions; do not reopen Task 9B without a reproducible in-scope defect.
+
+Preserve the fail-closed order-authorization gate, `DispatchCore → OrderEngine → M6-A…M6-E`, dry-run `live=False`, and disabled live trading. Feedback must never place or automatically replay an order. Central Server remains out of scope until local-app acceptance is complete.
