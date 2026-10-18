@@ -2905,6 +2905,8 @@ python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_s
 ```
 reported **56 passed in 6.09s, exit 0**. No further Task 9B code change is requested at this point.
 
+**Owner-run manual local-app acceptance (2026-10-18):** two accounts on the same broker both logged in; activating either selected that account for current use while the other remained inactive; logging out one account did not disturb the other; logging the exited account back in succeeded and the other account remained normal. No issue was observed. This check covered account login/logout/re-login only; no order was submitted and live trading remains disabled.
+
 **Broader regression boundary:** the whole project is not being declared green. A prior broader run was reported by the coding agent as **57 passed, 9 failed**, with the nine failures attributed to missing `nats`; `py_compile` was reported successful, and one UI-7 failure was reported as baseline. These are prior reported observations, not independently reproduced by the current focused run. Next is broader regression and final acceptance of the local User Application. Distinguish baseline/environment failures from new regressions; do not reopen Task 9B without a reproducible in-scope defect.
 
 Preserve the fail-closed order-authorization gate, `DispatchCore → OrderEngine → M6-A…M6-E`, dry-run `live=False`, and disabled live trading. Feedback must never place or automatically replay an order. Central Server remains out of scope until local-app acceptance is complete.
