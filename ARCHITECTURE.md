@@ -1550,4 +1550,6 @@ The feedback service installs broker listeners idempotently and supports stoppin
 
 Runtime start is not order authorization and never sends an order. The existing fail-closed UI authorization gate, `DispatchCore → OrderEngine → M6-A…M6-E` chain, dry-run `live=False`, and disabled live-trading policy remain authoritative.
 
-**Verification boundary:** the new focused acceptance test is `test_block9_account_aware_order_feedback.py`. The repository's last recorded full-suite result predates this task (1595 passed, 233 failed, 20 skipped, 4 errors); it must not be cited as a post-Task-9B result. Independent regression acceptance remains open pending fresh test output.
+**Scoped acceptance: COMPLETE.** The focused acceptance/regression command covering `test_block9_account_aware_order_feedback.py` and the two changed UI registration/table suites reported **56 passed in 6.09s, exit 0**. No additional Task 9B implementation is requested unless a reproducible in-scope regression is found.
+
+**Next architecture gate:** broader regression and final acceptance of the local User Application. The prior coding-agent report of 57 passed / 9 failed (failures attributed to missing `nats`) and one UI-7 baseline failure should be treated as reported historical evidence until reproduced/classified in that broader run. The focused 56-pass result does not establish that the entire repository suite is green.
