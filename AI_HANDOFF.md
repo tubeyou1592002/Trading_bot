@@ -3301,18 +3301,16 @@ without IRANSansX falls back through the chain.
 
 ---
 
-# Current Handoff — Block 9 Task 9B (2026-10-18)
+# Current Handoff — Local User Application Regression & Final Acceptance (2026-10-18)
 
-**Current implementation checkpoint:** Task 9B — account-aware order feedback/runtime lifecycle — is implemented on `master` in commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80`. See `BLOCK9_TASK9B_HANDOFF.md` for its scope and acceptance contracts.
-
-Before further implementation, review the task diff and run:
-
+**Completed checkpoint:** Block 9 Task 9B — account-aware order feedback/runtime lifecycle — is implemented in commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80`. Architectural review accepted the implementation within scope. The focused acceptance/regression run
 ```powershell
 python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py
 ```
+completed with **56 passed in 6.09s, exit 0**. Do not ask for further Task 9B code changes unless a reproducible in-scope regression appears.
 
-Also verify syntax/whitespace and run the relevant broader regression set. Record actual test output and classify any baseline failures separately. Do not claim the full suite is green based on earlier results: the last documented whole-repository result predates Task 9B and was **1595 passed, 233 failed, 20 skipped, 4 errors**. The exact focused Task 9B pass count has not been established by the repository evidence reviewed for this handoff.
+**Current task:** broader regression and final acceptance of the **local User Application**. Use the project's existing acceptance plan and separate reproducible new regressions from known baseline or environment-related failures. A prior coding-agent report recorded 57 passed / 9 failed, attributing the failures to missing `nats`; `py_compile` was reported successful and one UI-7 failure was described as baseline. Do not present those reported items as independently reproduced by the fresh 56-test focused run. Capture exact commands and results for any further checks.
 
-Architectural constraints remain: broker/runtime ownership is per `(account_id, broker_name)`; never fall back to name-only broker lookup; fail closed without a usable authenticated session; lifecycle actions must affect only the requested account; listener registration must be idempotent; unknown or cross-account feedback is a no-op; feedback never sends orders; keep the existing `DispatchCore → OrderEngine → M6-A…M6-E` path, dry-run `live=False`, and live trading disabled.
+**Non-negotiable architecture:** runtime ownership is per `(account_id, broker_name)`; never fall back to name-only broker lookup; fail closed without a usable authenticated session; lifecycle actions affect only the requested account; listener registration is idempotent; unknown/cross-account feedback is a no-op; feedback never sends orders. Keep the existing `DispatchCore → OrderEngine → M6-A…M6-E` path, dry-run `live=False`, and live trading disabled.
 
-**Next task:** independent regression/acceptance closure for Task 9B, not a duplicate reimplementation. Fix only reproducible in-scope regressions, document exact evidence, and update this handoff when verification has actually run.
+**Out of scope for this gate:** new Task 9B implementation and Central Server. Do not mark the entire application production-ready merely because the focused tests pass.
