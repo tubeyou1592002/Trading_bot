@@ -1596,7 +1596,7 @@ This decision records a UI authorization boundary; it does not claim that all re
 
 ## Decision 035 — Account-Scoped Order Feedback Runtime and Lifecycle
 
-**Status:** Implemented in code commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80` (2026-10-18); independent regression/acceptance closure pending.
+**Status:** Implemented and accepted at scoped level (2026-10-18; code commit `9ad15d435c2dc12eb3d95ba3f3ead071f6884e80`). Broader local-application regression/final acceptance remains the next phase.
 
 **Decision / contract:**
 
@@ -1610,4 +1610,10 @@ This decision records a UI authorization boundary; it does not claim that all re
 
 This decision does not alter the existing order authorization gate or the `DispatchCore → OrderEngine → M6-A…M6-E` execution/preflight chain. Test remains dry-run (`live=False`); live trading stays disabled.
 
-**Verification boundary:** implementation includes `test_block9_account_aware_order_feedback.py` and adjacent UI regression-test updates. The repository evidence reviewed for this documentation update did not establish an exact focused pytest pass count. The last recorded full-repository result predates Task 9B (1595 passed, 233 failed, 20 skipped, 4 errors) and is not evidence of post-task acceptance. Record fresh commands and results before closing this decision's acceptance gate.
+**Scoped verification:** the focused command
+```powershell
+python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py
+```
+reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance is complete; do not require further Task 9B changes without a reproducible in-scope defect.
+
+**Next gate:** broader regression and final acceptance of the local User Application. A prior coding-agent report recorded 57 passed / 9 failed, attributed to missing `nats`, and described one UI-7 failure as baseline; these remain reported historical observations until verified/classified in the broader run. This is not a claim that the full repository suite is green. Central Server remains outside the scope of this acceptance phase.
