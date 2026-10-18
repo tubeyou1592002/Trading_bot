@@ -1552,4 +1552,6 @@ Runtime start is not order authorization and never sends an order. The existing 
 
 **Scoped acceptance: COMPLETE.** The focused acceptance/regression command covering `test_block9_account_aware_order_feedback.py` and the two changed UI registration/table suites reported **56 passed in 6.09s, exit 0**. No additional Task 9B implementation is requested unless a reproducible in-scope regression is found.
 
+**Owner-run manual local-app acceptance (2026-10-18):** two accounts on the same broker both logged in; activating either selected that account for current use while the other remained inactive; logging out one account did not disturb the other; logging the exited account back in succeeded and the other account remained normal. No issue was observed. This check covered account login/logout/re-login only; no order was submitted and live trading remains disabled.
+
 **Next architecture gate:** broader regression and final acceptance of the local User Application. The prior coding-agent report of 57 passed / 9 failed (failures attributed to missing `nats`) and one UI-7 baseline failure should be treated as reported historical evidence until reproduced/classified in that broader run. The focused 56-pass result does not establish that the entire repository suite is green.
