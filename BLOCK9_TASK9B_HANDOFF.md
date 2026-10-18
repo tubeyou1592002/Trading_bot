@@ -26,21 +26,15 @@
 - Account ownership is keyed by `(account_id, broker_name)`.
 - The existing `DispatchCore → OrderEngine → M6-A…M6-E` execution/preflight chain is unchanged.
 - The fail-closed UI order-authorization gate remains in force.
-- Test execution remains dry-run (`live=False)); live trading remains disabled.
+- Test execution remains dry-run (`live=False`); live trading remains disabled.
 - No real order, live login, or network call is part of the offline acceptance tests.
 
 ## Verification record and limitation
 
-The Task 9B implementation was reported as implemented and verified. The source-of-truth commit history does not expose a durable transcript with an exact focused pytest pass count, so this handoff intentionally does not invent one. The last documented full-repository run **predates Task 9B** and reported **1595 passed, 233 failed, 20 skipped, 4 errors**; it was not green and is not a post-Task-9B result.
+Architectural review accepted Task 9B within the approved scope. Fresh focused acceptance run: `python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py` → **56 passed in 6.09s, exit 0**. This validates the scoped Task 9B contract and adjacent registration/table regressions; it does not establish that the entire repository suite is green.
 
-After pulling, record the actual result for:
-
-```powershell
-python -m pytest -q test_block9_account_aware_order_feedback.py test_ui5_task4_stage3_task3_core_registration.py test_ui5_task4_stage3_task4_ui_table.py
-```
-
-Then run the relevant broader UI/regression set and distinguish baseline failures from new regressions. Do not claim full-suite acceptance without a fresh full-suite run.
+The focused acceptance result above is recorded. The next phase is **broader regression and final acceptance of the local User Application**, not another implementation pass for Task 9B. The prior agent-reported broader run had 57 passed and 9 failed (attributed to missing `nats`); `py_compile` was reported successful, and one UI-7 failure was reported as baseline. These broader-run details are reported evidence, not a result reproduced by the fresh 56-test focused run. Classify actual failures during local-app acceptance and distinguish baseline/environment issues from new regressions.
 
 ## Next gate
 
-**Independent regression/acceptance closure**, not another implementation of Task 9B. Review any newly exposed regressions, keep fixes separately scoped, and update this record with exact commands/results after they have actually been run.
+**Task 9B scoped acceptance: COMPLETE.** Next gate: broader regression and final acceptance of the local User Application. Do not reopen Task 9B without a reproducible, in-scope regression. Keep Central Server and later phases out of scope until local-app acceptance is complete.
