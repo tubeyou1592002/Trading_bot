@@ -382,6 +382,14 @@ class AccountsPage(QWidget):
         self._add_dialog.close()
 
     def _activate(self, account_id):
+        # Activation is an authorization decision, not a visual affordance:
+        # only an account whose login was confirmed by a successful login (or
+        # an explicit status refresh) may become the active account. Unknown
+        # and logged-out states both fail closed without touching any other
+        # account's status or the current active selection.
+        if self._login_status_by_account.get(account_id) is not True:
+            self._report(STRINGS.ACTIVATION_REQUIRES_LOGIN, True)
+            return
         try:
             self.store.set_active(account_id)
             self._refresh_list()

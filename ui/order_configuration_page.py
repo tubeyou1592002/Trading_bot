@@ -93,7 +93,8 @@ Presentation of the order-configuration form:
 
 Stale-result protection (UI-3.2A): every search carries a monotonically
 increasing sequence number; only the result of the LATEST sequence may
-update the results list — an older, late-finishing result is discarded.
+update the symbol combo's popup — an older, late-finishing result is
+discarded.
 
 Stale-result protection (UI-4): a resolved nsc_id belongs to one
 (ins_code, broker_name) pair only — a symbol change or an account
@@ -239,6 +240,55 @@ RESULT_SEQUENCE_ROLE = Qt.UserRole + 1
 SEARCH_STATE_IDLE = ""
 SEARCH_STATE_SEARCHING = STRINGS.SEARCH_SEARCHING
 SEARCH_STATE_NO_RESULTS = STRINGS.SEARCH_NO_RESULTS
+
+
+class _SymbolSuggestionRow:
+    """Read-only row view over one suggestion in the symbol combo."""
+
+    def __init__(self, combo, index):
+        self._combo = combo
+        self._index = index
+
+    def data(self, role):
+        return self._combo.itemData(self._index, role)
+
+    def text(self):
+        return self._combo.itemText(self._index)
+
+    def setSelected(self, selected):  # noqa: N802 — Qt-style name
+        # Suggestions live in the combo popup and are selected through
+        # the combo itself; kept for compatibility with callers that used
+        # the old QListWidget item API.
+        return None
+
+
+class _SymbolSuggestionList:
+    """
+    Compatibility view over the symbol combo's suggestion rows.
+
+    The old standalone QListWidget is gone; suggestions now live in the
+    editable combo's popup. This view keeps the former row-level read API
+    available without creating a second visible results widget.
+    """
+
+    def __init__(self, combo):
+        self._combo = combo
+
+    def count(self):
+        return self._combo.count()
+
+    def item(self, index):
+        return _SymbolSuggestionRow(self._combo, index)
+
+    def clear(self):
+        self._combo.clear()
+
+    def setEnabled(self, enabled):  # noqa: N802 — Qt-style name
+        self._combo.setEnabled(enabled)
+
+    def isEnabled(self):  # noqa: N802 — Qt-style name
+        return self._combo.isEnabled()
+
 
 # UI-7 Task 2: how often the DISPLAY of the sync freshness line is
 # re-rendered while a reading ages. This is display-only — it never
@@ -602,6 +652,7 @@ class OrderConfigurationPage(QWidget):
         self._search_sequence = 0          # generation of the latest search
         self._active_search_threads = []   # live worker threads (tests wait on them)
         self._latest_results = []          # the real resolver result objects
+        self._updating_symbol_suggestions = False
         self._searching = False
         self._search_thread = None
         self._search_worker = None
@@ -735,19 +786,21 @@ class OrderConfigurationPage(QWidget):
         # --- Symbol ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_SYMBOL, form_group), 0, 0)
         self.symbol_input = QComboBox(form_group)
+        self.symbol_input.setObjectName("symbolInput")
         self.symbol_input.setEditable(True)
+        # Reuse the shared dark-theme chevron asset/property from
+        # ui/theme.py — no page-local icon path is introduced.
+        self.symbol_input.setProperty("chevron", True)
         self.symbol_input.lineEdit().setPlaceholderText(STRINGS.PLACEHOLDER_SYMBOL)
         self.symbol_input.lineEdit().textChanged.connect(self._on_symbol_edited)
+        # Suggestions are selected through the combo's own popup; the
+        # activated signal fires for mouse and keyboard selection.
+        self.symbol_input.activated.connect(self._on_symbol_activated)
         form_grid.addWidget(self.symbol_input, 0, 1)
 
-        # --- Real search results (UI-3.2A) ------------------------
+        # --- Search state (suggestions live in the combo popup) ---
         self.search_status_label = QLabel(SEARCH_STATE_IDLE, form_group)
-        self.results_list = QListWidget(form_group)
-        self.results_list.setMaximumHeight(120)
-        self.results_list.itemActivated.connect(self._on_result_selected)
-        self.results_list.itemClicked.connect(self._on_result_selected)
         form_grid.addWidget(self.search_status_label, 0, 2)
-        form_grid.addWidget(self.results_list, 0, 3)
 
         # --- Side ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_SIDE, form_group), 1, 0)
@@ -1408,6 +1461,84 @@ class OrderConfigurationPage(QWidget):
             self._default_queue = OrderQueue()
         return self._default_queue
 
+    @property
+    def results_list(self):
+        """
+        Row-level compatibility view over the combo popup suggestions.
+
+        There is no separate results QListWidget anymore: the visible
+        suggestions are the editable symbol QComboBox's own popup items.
+        """
+        return _SymbolSuggestionList(self.symbol_input)
+
+    def _symbol_text_is_suggestion(self, text):
+        """True when ``text`` is the label of the currently activated row."""
+        index = self.symbol_input.currentIndex()
+        if index < 0:
+            return False
+        if self.symbol_input.itemText(index) != text:
+            return False
+        return self.symbol_input.itemData(index, RESULT_DATA_ROLE) is not None
+
+    def _clear_symbol_suggestions(self, keep_text):
+        """
+        Remove popup suggestions without treating the programmatic text
+        update as user typing.
+        """
+        self._updating_symbol_suggestions = True
+        edit = self.symbol_input.lineEdit()
+        self.symbol_input.blockSignals(True)
+        edit.blockSignals(True)
+        try:
+            self.symbol_input.hidePopup()
+            self.symbol_input.clear()
+            self.symbol_input.setCurrentIndex(-1)
+            self.symbol_input.setEditText(keep_text)
+        finally:
+            edit.blockSignals(False)
+            self.symbol_input.blockSignals(False)
+            self._updating_symbol_suggestions = False
+
+    def _show_symbol_suggestions(self, sequence, results):
+        """
+        Put REAL resolver results into the editable combo's popup.
+
+        The identity of every row is the INDEX into ``_latest_results``
+        (the original resolver result objects); display text is never
+        parsed. The typed text is preserved while items are inserted,
+        then the popup is opened for selection.
+        """
+        self._latest_results = list(results)
+        typed = self.symbol_text
+        self._updating_symbol_suggestions = True
+        edit = self.symbol_input.lineEdit()
+        self.symbol_input.blockSignals(True)
+        edit.blockSignals(True)
+        try:
+            self.symbol_input.hidePopup()
+            self.symbol_input.clear()
+            for index, result in enumerate(self._latest_results):
+                self.symbol_input.addItem(
+                    f"{result.get('symbol') or ''} - {result.get('name') or ''}"
+                )
+                # Identity travels as an index, never as parsed text.
+                self.symbol_input.setItemData(index, index, RESULT_DATA_ROLE)
+                self.symbol_input.setItemData(
+                    index, sequence, RESULT_SEQUENCE_ROLE
+                )
+            # Keep the user's typed text; selecting a row later is what
+            # commits a suggestion.
+            self.symbol_input.setCurrentIndex(-1)
+            self.symbol_input.setEditText(typed)
+        finally:
+            edit.blockSignals(False)
+            self.symbol_input.blockSignals(False)
+            self._updating_symbol_suggestions = False
+
+        if self.symbol_input.isVisible():
+            # Results are ready: open the combo popup for selection.
+            self.symbol_input.showPopup()
+
     def _on_symbol_edited(self, text):
         """
         Mirror the typed symbol into the config as text only and (re)arm
@@ -1418,21 +1549,30 @@ class OrderConfigurationPage(QWidget):
         selected instrument (no longer matching the new text) is dropped
         explicitly and deterministically.
         """
-        symbol = (text or "").strip()
+        if self._updating_symbol_suggestions:
+            return
+        raw_text = text or ""
+        if self._symbol_text_is_suggestion(raw_text):
+            # The combo is committing a clicked/activated suggestion;
+            # this is not free-form typing. The activated handler will
+            # resolve the real result object.
+            self.symbol_text = raw_text.strip()
+            return
+
+        symbol = raw_text.strip()
         self.symbol_text = symbol
 
         # New text invalidates EVERY in-flight generation immediately:
         # any search/resolve result that arrives after this point belongs
-        # to a superseded request and may neither update the results list
-        # nor (re)store a selection — a late resolve for text the user
-        # has already replaced must never set selected_instrument.
+        # to a superseded request and may neither update the popup nor
+        # (re)store a selection — a late resolve for text the user has
+        # already replaced must never set selected_instrument.
         self._search_sequence += 1
 
-        # The previously displayed results belong to the superseded
-        # request: they are removed from the UI and their identity list
-        # is dropped, so an old row can never be clicked into a new
-        # selection ("typed text != selected instrument").
-        self.results_list.clear()
+        # The previously displayed suggestions belong to the superseded
+        # request: remove them from the popup and drop their identity
+        # list, so an old row can never become a new selection.
+        self._clear_symbol_suggestions(symbol)
         self._latest_results = []
 
         if not symbol:
@@ -1528,25 +1668,18 @@ class OrderConfigurationPage(QWidget):
             return  # stale generation — discarded deterministically
 
         self._searching = False
-        self.results_list.clear()
-        self._latest_results = list(results)
         if not results:
+            self._latest_results = []
+            self._clear_symbol_suggestions(self.symbol_text)
             self._set_search_status(SEARCH_STATE_NO_RESULTS)
             return
-        for index, result in enumerate(results):
-            item = QListWidgetItem(
-                f"{result.get('symbol') or ''} - {result.get('name') or ''}",
-                self.results_list,
-            )
-            # The result's identity travels as the INDEX into the page's
-            # shared list of the real resolver result objects — the
-            # object itself never passes through a Qt signal (signals
-            # marshall/copy payloads), and identity is never rebuilt by
-            # parsing the display text. The row is also tagged with its
-            # search generation so a superseded row can never resolve.
-            item.setData(RESULT_DATA_ROLE, index)
-            item.setData(RESULT_SEQUENCE_ROLE, sequence)
-            self.results_list.addItem(item)
+        # The result's identity travels as the INDEX into the page's
+        # shared list of the real resolver result objects — the object
+        # itself never passes through a Qt signal (signals marshall/copy
+        # payloads), and identity is never rebuilt by parsing the display
+        # text. Each popup row is tagged with its search generation so a
+        # superseded row can never resolve.
+        self._show_symbol_suggestions(sequence, results)
         self._set_search_status(SEARCH_STATE_IDLE)
 
     def _on_search_failed(self, sequence, message):
@@ -1557,8 +1690,28 @@ class OrderConfigurationPage(QWidget):
         if sequence != self._search_sequence:
             return  # a stale failure must not clobber the newer state
         self._searching = False
-        self.results_list.clear()
+        self._latest_results = []
+        self._clear_symbol_suggestions(self.symbol_text)
         self._set_search_status(f"Search failed: {message}")
+
+    def _on_symbol_activated(self, index):
+        """
+        Commit a suggestion picked from the combo popup.
+
+        The row's identity comes from the item data (an index into the
+        original resolver results), never from the display text. The
+        text-change suppression above keeps this activation from being
+        mistaken for a new typing session.
+        """
+        if self._updating_symbol_suggestions or index < 0:
+            return
+        row_sequence = self.symbol_input.itemData(index, RESULT_SEQUENCE_ROLE)
+        result_index = self.symbol_input.itemData(index, RESULT_DATA_ROLE)
+        if row_sequence != self._search_sequence or result_index is None:
+            return
+        self._debounce_timer.stop()
+        self.symbol_text = self.symbol_input.itemText(index).strip()
+        self._on_result_selected(self.results_list.item(index))
 
     def _on_result_selected(self, item):
         """
@@ -4241,12 +4394,18 @@ class OrderConfigurationPage(QWidget):
     # ---------------------------------------------------------
 
     def _active_account_text(self):
-        active_id = self.store.active_account_id()
-        if active_id is None:
+        record = self._active_account_record()
+        if record is None:
             # No fallback to accounts[0]/first/default — shown transparently.
             return STRINGS.NO_ACTIVE_ACCOUNT
-        record = self.store.get(active_id)
-        return f"{record.account_id} - {record.broker_name}"
+        # The user-chosen display name is the account's public identity in
+        # the UI; the internal account id is never substituted for it.
+        return record.display_name
+
+    def showEvent(self, event):
+        """Re-read the active account every time this page is entered."""
+        super().showEvent(event)
+        self.refresh_active_account()
 
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""

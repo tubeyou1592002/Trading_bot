@@ -41,7 +41,9 @@ import base64
 
 import pytest
 
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QLineEdit
+from PySide6.QtWidgets import (
+    QApplication, QDialog, QLabel, QLineEdit, QPushButton,
+)
 
 from models.account import Account, AccountValidationError
 
@@ -308,6 +310,7 @@ def test_12_accounts_page_performs_no_network_or_login():
             "store.add('ACC-002', 'آگاه', 'ACC-002')",
             "store.set_active('ACC-002')",
             "page.refresh()",
+            "page._login_status_by_account['ACC-001'] = True",
             # UI-9 Task 3: selectRow() is a no-op on a table whose effective
             # layout direction is RightToLeft (PySide6 6.11.2). setCurrentCell()
             # selects the same row correctly under RTL. Same assertion below
@@ -382,14 +385,82 @@ def test_extra_page_add_and_active_flow(store, qapp):
 
     ids = [r.account_id for r in store.all_accounts()]
     page._activate(ids[0])
+    assert store.active_account_id() is None
+    assert page.login_message_label.text() == STRINGS.ACTIVATION_REQUIRES_LOGIN
+
+    page._login_status_by_account[ids[0]] = True
+    page._activate(ids[0])
     assert store.active_account_id() == ids[0]
     assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_ACTIVE
     assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_INACTIVE
 
+    page._login_status_by_account[ids[1]] = True
     page._activate(ids[1])
     assert store.active_account_id() == ids[1]
     assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_INACTIVE
     assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_ACTIVE
+
+
+def _activation_button(page, row):
+    actions = page.accounts_table.cellWidget(row, 5)
+    return next(
+        button for button in actions.findChildren(QPushButton)
+        if button.text() == STRINGS.BUTTON_SET_ACTIVE
+    )
+
+
+def test_activation_click_requires_confirmed_login(store, qapp):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    page = AccountsPage(store)
+    page._login_status_by_account.update({"A": False, "B": None})
+    page.refresh()
+
+    for row in (0, 1):
+        _activation_button(page, row).click()
+        assert store.active_account_id() is None
+        assert page.login_message_label.text() == STRINGS.ACTIVATION_REQUIRES_LOGIN
+
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    page.close()
+
+
+def test_only_confirmed_login_account_can_be_activated(store, qapp):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    page = AccountsPage(store)
+    page._login_status_by_account.update({"A": False, "B": True})
+    page.refresh()
+
+    _activation_button(page, 1).click()
+
+    assert store.active_account_id() == "B"
+    assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_ACTIVE
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    page.close()
+
+
+def test_unauthorized_activation_keeps_current_active_account(store, qapp):
+    store.add("A", BROKER, "Account A")
+    store.add("B", BROKER, "Account B")
+    store.set_active("A")
+    page = AccountsPage(store)
+    page._login_status_by_account.update({"A": True, "B": False})
+    page.refresh()
+
+    page._activate("B")
+
+    assert store.active_account_id() == "A"
+    assert page.login_message_label.text() == STRINGS.ACTIVATION_REQUIRES_LOGIN
+    assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_ACTIVE
+    assert page.accounts_table.item(1, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    assert page.accounts_table.item(1, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_OUT
+    page.close()
 
 
 @pytest.mark.parametrize("display_name", ["", "   "])
