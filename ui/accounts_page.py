@@ -1,6 +1,7 @@
 """RTL account management page with isolated, explicitly triggered authentication."""
 
 import base64
+import math
 import uuid
 
 from PySide6.QtCore import Qt
@@ -17,7 +18,7 @@ from ui.credential_store import CredentialStoreError
 from ui import strings as STRINGS
 
 AVAILABLE_BROKERS = ("آگاه",)
-_ID, _DISPLAY, _ACTIVE, _STATUS, _ACTIONS = range(5)
+_ID, _DISPLAY, _ACTIVE, _STATUS, _PURCHASE_POWER, _ACTIONS = range(6)
 
 
 class AccountsPage(QWidget):
@@ -39,6 +40,10 @@ class AccountsPage(QWidget):
         self._pending_login_account_id = None
         self._pending_authentication_service = None
         self._login_status_by_account = {}
+        # account_id -> validated numeric tradable balance (purchase power).
+        # Fetched only on a successful login; table rebuilds/sorts read this
+        # cache and never call the broker API again.
+        self._purchase_power_by_account = {}
         self._captcha_dialog = None
         self._cancelled_login_account_id = None
 
@@ -51,7 +56,18 @@ class AccountsPage(QWidget):
         subtitle.setObjectName("pageSubtitle")
         root.addWidget(subtitle)
 
-        add_group = QGroupBox(STRINGS.GROUP_ADD_ACCOUNT, self)
+        # The add-account form lives inside a right-to-left popup, opened from
+        # the button under the accounts table. Nothing of it is rendered on the
+        # main view; its widgets still exist as page attributes so the existing
+        # validation / credential behavior is unchanged.
+        add_dialog = QDialog(self)
+        add_dialog.setWindowTitle(STRINGS.ADD_ACCOUNT_DIALOG_TITLE)
+        add_dialog.setLayoutDirection(Qt.RightToLeft)
+        add_dialog.setModal(True)
+        self._add_dialog = add_dialog
+        dialog_layout = QVBoxLayout(add_dialog)
+
+        add_group = QGroupBox(STRINGS.GROUP_ADD_ACCOUNT, add_dialog)
         form = QGridLayout(add_group)
         self.display_name_input = QLineEdit(add_group)
         self.display_name_input.setPlaceholderText(STRINGS.PLACEHOLDER_DISPLAY_NAME)
@@ -70,17 +86,20 @@ class AccountsPage(QWidget):
         )):
             form.addWidget(QLabel(label, add_group), 0, col)
             form.addWidget(widget, 1, col)
-        self.add_button = QPushButton(STRINGS.BUTTON_ADD, add_group)
+        self.add_button = QPushButton(STRINGS.BUTTON_REGISTER_ACCOUNT, add_group)
         self.add_button.clicked.connect(self._on_add_clicked)
         form.addWidget(self.add_button, 2, 0, 1, 2)
+        self.cancel_add_button = QPushButton(STRINGS.BUTTON_CANCEL, add_group)
+        self.cancel_add_button.clicked.connect(self._on_add_cancel_clicked)
+        form.addWidget(self.cancel_add_button, 2, 2, 1, 2)
         auto_id_note = QLabel(STRINGS.NOTE_AUTO_ACCOUNT_ID, add_group)
-        form.addWidget(auto_id_note, 2, 2, 1, 2)
+        form.addWidget(auto_id_note, 3, 0, 1, 4)
         self.validation_error_label = QLabel("", add_group)
         self.validation_error_label.setProperty("role", "danger")
         self.validation_error_label.setWordWrap(True)
         self.validation_error_label.hide()
-        form.addWidget(self.validation_error_label, 3, 0, 1, 4)
-        root.addWidget(add_group)
+        form.addWidget(self.validation_error_label, 4, 0, 1, 4)
+        dialog_layout.addWidget(add_group)
 
         group = QGroupBox(STRINGS.GROUP_ACCOUNTS, self)
         list_layout = QVBoxLayout(group)
@@ -100,11 +119,11 @@ class AccountsPage(QWidget):
         tools.addWidget(self.logout_button)
         tools.addStretch(1)
         list_layout.addLayout(tools)
-        self.accounts_table = QTableWidget(0, 5, group)
+        self.accounts_table = QTableWidget(0, 6, group)
         self.accounts_table.setHorizontalHeaderLabels([
             "شناسهٔ داخلی", STRINGS.TABLE_HEADER_ACCOUNT_BROKER,
             STRINGS.TABLE_HEADER_CURRENT_USE, STRINGS.TABLE_HEADER_LOGIN_STATUS,
-            STRINGS.TABLE_HEADER_ACTIONS,
+            STRINGS.TABLE_HEADER_PURCHASE_POWER, STRINGS.TABLE_HEADER_ACTIONS,
         ])
         self.accounts_table.setColumnHidden(_ID, True)
         self.accounts_table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -115,6 +134,22 @@ class AccountsPage(QWidget):
         self.accounts_table.horizontalHeader().setSectionResizeMode(_ACTIONS, QHeaderView.ResizeToContents)
         self.accounts_table.horizontalHeader().setStretchLastSection(True)
         list_layout.addWidget(self.accounts_table, 1)
+        self.accounts_table.itemSelectionChanged.connect(
+            self._update_selection_actions)
+        add_row = QHBoxLayout()
+        self.add_account_button = QPushButton(STRINGS.BUTTON_ADD_ACCOUNT, group)
+        self.add_account_button.clicked.connect(self._open_add_dialog)
+        add_row.addWidget(self.add_account_button)
+        self.edit_account_button = QPushButton(STRINGS.BUTTON_EDIT, group)
+        self.edit_account_button.clicked.connect(self._on_edit_clicked)
+        self.edit_account_button.setEnabled(False)
+        add_row.addWidget(self.edit_account_button)
+        self.delete_account_button = QPushButton(STRINGS.BUTTON_DELETE, group)
+        self.delete_account_button.clicked.connect(self._on_delete_clicked)
+        self.delete_account_button.setEnabled(False)
+        add_row.addWidget(self.delete_account_button)
+        add_row.addStretch(1)
+        list_layout.addLayout(add_row)
         self.login_message_label = QLabel("", group)
         self.login_message_label.setWordWrap(True)
         self.login_message_label.hide()
@@ -134,6 +169,7 @@ class AccountsPage(QWidget):
         active_id = self.store.active_account_id()
         selected_id = self._selected_account_id()
         self.accounts_table.setRowCount(len(records))
+        selection_restored = False
         for row, record in enumerate(records):
             identity = QTableWidgetItem(record.account_id)
             identity.setData(Qt.UserRole, record.account_id)
@@ -148,6 +184,14 @@ class AccountsPage(QWidget):
             self.accounts_table.setItem(row, _ACTIVE, QTableWidgetItem(
                 STRINGS.CURRENT_USE_ACTIVE if is_active else STRINGS.CURRENT_USE_INACTIVE))
             self.accounts_table.setItem(row, _STATUS, QTableWidgetItem(text))
+            power = self._purchase_power_by_account.get(record.account_id)
+            power_item = QTableWidgetItem(
+                STRINGS.PURCHASE_POWER_UNKNOWN
+                if power is None else STRINGS.format_grouped(power)
+            )
+            if power is not None:
+                power_item.setData(Qt.UserRole, power)
+            self.accounts_table.setItem(row, _PURCHASE_POWER, power_item)
             actions = QWidget(self.accounts_table)
             row_layout = QHBoxLayout(actions)
             row_layout.setContentsMargins(4, 3, 4, 3)
@@ -156,8 +200,6 @@ class AccountsPage(QWidget):
                          lambda _, i=record.account_id: self._begin_login(i), self._pending_login_account_id is None)
             if status:
                 self._button(row_layout, STRINGS.BUTTON_LOGOUT, lambda _, i=record.account_id: self._logout(i))
-            self._button(row_layout, STRINGS.BUTTON_EDIT, lambda _, i=record.account_id: self._edit_account(i))
-            self._button(row_layout, STRINGS.BUTTON_DELETE, lambda _, i=record.account_id: self._delete_account(i))
             if self.sort_selector.currentData() == "manual":
                 self._button(row_layout, "↑", lambda _, i=record.account_id, r=row: self._move(i, r-1), row > 0)
                 self._button(row_layout, "↓", lambda _, i=record.account_id, r=row: self._move(i, r+1), row < len(records)-1)
@@ -166,12 +208,20 @@ class AccountsPage(QWidget):
             self.accounts_table.setRowHeight(row, 58)
             if selected_id == record.account_id:
                 self.accounts_table.setCurrentCell(row, _DISPLAY)
+                selection_restored = True
+        if selected_id is not None and not selection_restored:
+            # The previously selected account no longer exists: drop the
+            # selection (Qt would otherwise keep pointing at a shifted row).
+            self.accounts_table.clearSelection()
+            self.accounts_table.setCurrentItem(None)
         self.accounts_table.setColumnHidden(_ID, True)
         self.accounts_table.setColumnHidden(_ID, True)
         self.accounts_table.setColumnWidth(_DISPLAY, 250)
         self.accounts_table.setColumnWidth(_ACTIVE, 130)
         self.accounts_table.setColumnWidth(_STATUS, 160)
+        self.accounts_table.setColumnWidth(_PURCHASE_POWER, 140)
         # Action widgets are deliberately placed in the visible last column.
+        self._update_selection_actions()
 
     def _button(self, layout, text, callback, enabled=True):
         button = QPushButton(text, self.accounts_table)
@@ -188,10 +238,80 @@ class AccountsPage(QWidget):
         account_id = self._selected_account_id()
         return next((r for r in self.store.all_accounts() if r.account_id == account_id), None)
 
+    def _update_selection_actions(self, *_):
+        """Edit/Delete stay disabled until a row (an existing account) is selected."""
+        has_selection = self._selected_account_id() is not None
+        self.edit_account_button.setEnabled(has_selection)
+        self.delete_account_button.setEnabled(has_selection)
+
+    def _on_edit_clicked(self):
+        account_id = self._selected_account_id()
+        if account_id is None:
+            return
+        self._edit_account(account_id)
+
+    def _on_delete_clicked(self):
+        account_id = self._selected_account_id()
+        if account_id is None:
+            return
+        self._delete_account(account_id)
+
     def _report(self, message, error=False):
         self.login_message_label.setText(message)
         self.login_message_label.setProperty("role", "danger" if error else "success")
         self.login_message_label.setVisible(bool(message))
+
+    @staticmethod
+    def _valid_purchase_power(value):
+        """Return a displayable account balance, or None when unusable."""
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+        return value
+
+    def _read_purchase_power(self, service, account_id):
+        """
+        Read this account's tradable balance through the generic contract.
+
+        The service/adapter owns broker-specific details and the
+        account-scoped runtime/session; the page never selects a broker or
+        builds an endpoint path itself. Missing support is treated exactly
+        like a failed read (unknown display), never guessed.
+        """
+        getter = getattr(service, "get_purchase_power", None)
+        if not callable(getter):
+            getter = getattr(service, "get_tradable_balance", None)
+        if callable(getter):
+            return getter(account_id)
+
+        adapter_getter = getattr(service, "get_adapter", None)
+        if callable(adapter_getter):
+            adapter = adapter_getter(account_id)
+            if adapter is not None:
+                for name in ("get_purchase_power", "get_tradable_balance"):
+                    method = getattr(adapter, name, None)
+                    if callable(method):
+                        return method()
+        raise AttributeError("purchase power is not available")
+
+    def _load_purchase_power(self, service, account_id):
+        """
+        Fetch once after a successful login and cache per account.
+
+        Any failure (unsupported broker, network/API error, invalid value)
+        resolves to the safe "unknown" state. Provider details are never
+        shown in the UI.
+        """
+        try:
+            value = self._valid_purchase_power(
+                self._read_purchase_power(service, account_id)
+            )
+        except Exception:
+            value = None
+        self._purchase_power_by_account.pop(account_id, None)
+        if value is not None:
+            self._purchase_power_by_account[account_id] = value
 
     def _notify_lifecycle(self, event, account_id, broker_name=None):
         """Report an account lifecycle event to the optional observer."""
@@ -234,7 +354,22 @@ class AccountsPage(QWidget):
             widget.clear()
         self._clear_validation_error()
         self._report(STRINGS.ACCOUNT_ADD_SUCCESS)
+        self._add_dialog.close()
         self._refresh_list()
+
+    def _open_add_dialog(self):
+        """Open the right-to-left add-account popup with a clean form."""
+        for widget in (self.display_name_input, self.username_input, self.password_input):
+            widget.clear()
+        self._clear_validation_error()
+        self._add_dialog.show()
+
+    def _on_add_cancel_clicked(self):
+        """Dismiss the add-account popup without creating any account."""
+        for widget in (self.display_name_input, self.username_input, self.password_input):
+            widget.clear()
+        self._clear_validation_error()
+        self._add_dialog.close()
 
     def _activate(self, account_id):
         try:
@@ -319,15 +454,19 @@ class AccountsPage(QWidget):
         if not response.strip():
             error.setText(STRINGS.CAPTCHA_RESPONSE_REQUIRED)
             return
+        service = self._pending_authentication_service
         try:
-            self._pending_authentication_service.complete_login(account_id, response)
+            service.complete_login(account_id, response)
         except Exception:
             self._login_status_by_account[account_id] = None
+            self._purchase_power_by_account.pop(account_id, None)
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
             self._finish_login(dialog)
             return
-        service = self._pending_authentication_service
         self._login_status_by_account[account_id] = True
+        # Fetch the account's tradable balance once, only after this exact
+        # account's login succeeded. Later table rebuilds/sorts use the cache.
+        self._load_purchase_power(service, account_id)
         self._report(STRINGS.LOGIN_COMPLETED)
         self._finish_login(dialog)
         self._refresh_list()
@@ -395,6 +534,7 @@ class AccountsPage(QWidget):
                 self._login_status_by_account[account_id] = None
             self._report(STRINGS.LOGIN_OPERATION_FAILED, True)
         if logged_out:
+            self._purchase_power_by_account.pop(account_id, None)
             self._notify_lifecycle(
                 "logout", account_id, self._broker_name_of(account_id)
             )
@@ -485,7 +625,9 @@ class AccountsPage(QWidget):
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
             return
         if record.broker_name != updated.broker_name:
-            # The account moved to another broker: stop the old runtime only.
+            # The account moved to another broker: stop the old runtime only
+            # and drop the previous broker's cached balance.
+            self._purchase_power_by_account.pop(account_id, None)
             self._notify_lifecycle(
                 "broker_changed", account_id, record.broker_name
             )
@@ -506,6 +648,7 @@ class AccountsPage(QWidget):
                     pass
             self.store.delete(account_id)
             self._login_status_by_account.pop(account_id, None)
+            self._purchase_power_by_account.pop(account_id, None)
             deleted = True
         except Exception:
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)

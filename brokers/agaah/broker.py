@@ -1,5 +1,6 @@
 import base64
 import logging
+import math
 import threading
 from typing import TYPE_CHECKING, Optional
 
@@ -918,6 +919,30 @@ class AgaahBroker(Broker):
                 "settlementDateT2"
             ),
         )
+
+    def get_tradable_balance(self):
+        """
+        موجودی قابل‌معاملهٔ سطح حساب آگاه (قدرت خرید).
+
+        همان endpoint مستند موجودی حساب را می‌خواند و فقط فیلد
+        ``tradableBalanceT1`` را برمی‌گرداند. این مقدار با ظرفیت خرید
+        نمادمحور (``trades/calculatedquantity``) یکی نیست و نباید
+        جایگزین آن شود.
+        """
+        account = self.get_account()
+        value = account.tradable_balance_t1
+
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or value < 0
+        ):
+            raise RuntimeError(
+                "tradableBalanceT1 در پاسخ موجودی معتبر نیست."
+            )
+
+        return value
 
     # =================================================
     # Instrument

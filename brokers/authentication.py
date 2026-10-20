@@ -290,6 +290,26 @@ class AuthenticationAdapter(ABC):
         """
         raise NotImplementedError
 
+    def get_tradable_balance(self):
+        """
+        موجودی قابل‌معاملهٔ سطح حساب (قدرت خرید) از API خود broker.
+
+        این قرارداد مستقل از نام و جزئیات broker است: هر پیاده‌سازی
+        باید از runtime و نشست اختصاصی همین حساب استفاده کند و مقدار
+        ``tradableBalanceT1`` را برگرداند؛ نه ظرفیت خرید نمادمحور
+        (``calculatedquantity``).
+
+        پیاده‌سازی پیش‌فرض **abstract نیست** تا آداپترهای brokerهایی که
+        API مستند/پیاده‌سازی‌شده‌ای برای این مقدار ندارند همچنان قابل
+        ساخت بمانند. چنین آداپتری صریحاً ``NotImplementedError`` پرتاب
+        می‌کند و هیچ رفتاری حدس زده نمی‌شود؛ لایهٔ UI مقدار را «نامشخص»
+        نمایش می‌دهد.
+        """
+        raise NotImplementedError(
+            "این آداپتر قابلیت دریافت موجودی قابل‌معامله را "
+            "پیاده‌سازی نکرده است."
+        )
+
     def refresh_authenticated_session(self) -> AuthenticatedSession:
         """
         نوسازی نشست احرازشدهٔ همین حساب و بازگرداندن یک

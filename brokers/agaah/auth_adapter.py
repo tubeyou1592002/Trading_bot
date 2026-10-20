@@ -421,6 +421,32 @@ class AgahAuthenticationAdapter(AuthenticationAdapter):
         """نشست احرازشده‌ی این حساب، یا None اگر وارد نشده است."""
         return self._authenticated
 
+    def get_tradable_balance(self):
+        """
+        موجودی قابل‌معاملهٔ همین حساب آگاه (قدرت خرید).
+
+        فقط روی نمونه‌ی بروکرِ همین حساب اجرا می‌شود تا نشست و runtime
+        حساب‌های دیگر دخالت نکنند. جزئیات endpoint و فیلد پاسخ داخل
+        ``AgaahBroker.get_tradable_balance`` باقی می‌ماند و هیچ پیام
+        حساسی به لایه‌ی بالاتر منتقل نمی‌شود.
+        """
+        if self._authenticated is None:
+            self._raise_clean(
+                AuthenticationUnavailableError(
+                    "این حساب هنوز احراز هویت نشده است؛ دریافت قدرت "
+                    "خرید ممکن نیست."
+                )
+            )
+
+        try:
+            return self._broker.get_tradable_balance()
+        except Exception:
+            self._raise_clean(
+                AuthenticationUnavailableError(
+                    "دریافت قدرت خرید از آگاه ناموفق بود"
+                )
+            )
+
     def set_request_recovery_handler(self, handler) -> None:
         # Forward to underlying broker if it supports setting recovery handler
         try:

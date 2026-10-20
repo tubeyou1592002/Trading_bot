@@ -918,6 +918,34 @@ class AuthenticationService:
         except SessionNotFoundError:
             return False
 
+    def get_tradable_balance(self, account_id: str):
+        """
+        موجودی قابل‌معاملهٔ همین حساب (قدرت خرید).
+
+        فقط برای حسابی که ورودش کامل و تأییدشده است و فقط از طریق
+        آداپتر/بروکرِ اختصاصی همان ``account_id`` انجام می‌شود؛ هیچ
+        broker مشترک یا مسیر بدون شناسهٔ حساب استفاده نمی‌شود.
+
+        جزئیات broker (endpoint، فیلد ``tradableBalanceT1`` و نشست)
+        پشت قرارداد ``AuthenticationAdapter.get_tradable_balance``
+        باقی می‌ماند. آداپترهای brokerهای بدون API مستند/پیاده‌سازی‌شده
+        ``NotImplementedError`` می‌دهند و هیچ رفتار حدسی انجام نمی‌شود.
+        """
+        if not self.is_logged_in(account_id):
+            raise AuthenticationServiceError(
+                "برای دریافت قدرت خرید، این حساب باید وارد شده باشد"
+            )
+        adapter = self._adapters.get(account_id)
+        if adapter is None:
+            raise AuthenticationServiceError(
+                "آداپتر احرازشده‌ی این حساب در دسترس نیست"
+            )
+        return adapter.get_tradable_balance()
+
+    def get_purchase_power(self, account_id: str):
+        """نام نمایشی/عمومی همان ``get_tradable_balance``."""
+        return self.get_tradable_balance(account_id)
+
     def get_adapter(self, account_id: str) -> Optional["AuthenticationAdapter"]:
         """
         آداپتر احرازشده‌ی این حساب، یا None.

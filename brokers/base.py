@@ -112,6 +112,24 @@ class Broker(ABC):
             "(get_sell_capacity) را پیاده‌سازی نکرده است."
         )
 
+    def get_tradable_balance(self):
+        """
+        موجودی قابل‌معاملهٔ سطح حساب (قدرت خرید) از API خود broker.
+
+        این مقدار حساب‌محور است و باید از همان runtime/nشست اختصاصی
+        حسابی که این broker به آن تعلق دارد خوانده شود. این متد
+        عمداً از ظرفیت خرید نمادمحور (calculatedquantity) جدا است و
+        نباید با آن جایگزین شود.
+
+        پیش‌فرض: ``NotImplementedError`` پرتاب می‌شود؛ یعنی brokerهایی
+        که API مستند/پیاده‌سازی‌شده‌ای برای این مقدار ندارند هیچ رفتار
+        حدسی ارائه نمی‌دهند و لایهٔ UI مقدار را «نامشخص» نمایش می‌دهد.
+        """
+        raise NotImplementedError(
+            "این Broker قابلیت دریافت موجودی قابل‌معامله "
+            "(get_tradable_balance) را پیاده‌سازی نکرده است."
+        )
+
 
 class InstrumentProvider(ABC):
 

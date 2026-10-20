@@ -140,6 +140,9 @@ __all__ = [
     "LABEL_DISPLAY_NAME",
     "LABEL_BROKER",
     "BUTTON_ADD",
+    "BUTTON_ADD_ACCOUNT",
+    "ADD_ACCOUNT_DIALOG_TITLE",
+    "BUTTON_REGISTER_ACCOUNT",
     "BUTTON_SET_ACTIVE",
     "DIALOG_INVALID_ACCOUNT",
     "DIALOG_NO_SELECTION",
@@ -507,6 +510,9 @@ LABEL_DISPLAY_NAME = "نام نمایشی:"
 LABEL_BROKER = "کارگزار:"
 
 BUTTON_ADD = "افزودن"
+BUTTON_ADD_ACCOUNT = "افزودن حساب"
+ADD_ACCOUNT_DIALOG_TITLE = "افزودن حساب"
+BUTTON_REGISTER_ACCOUNT = "ثبت"
 BUTTON_SET_ACTIVE = "فعال‌سازی"
 
 PLACEHOLDER_ACCOUNT_ID = "مثلاً ACC-001 - شناسهٔ صریح حساب"
@@ -541,7 +547,7 @@ LOGIN_OPERATION_FAILED = "انجام عملیات مربوط به حساب نا�
 LOGIN_CANCELLED = "تلاش ورود لغو شد."
 LOGIN_CHALLENGE_UNAVAILABLE = "چالش ورود قابل نمایش نیست؛ تلاش ورود لغو شد."
 BUTTON_COMPLETE_LOGIN = "تأیید پاسخ و ورود"
-BUTTON_LOGOUT = "خروج محلی از حساب"
+BUTTON_LOGOUT = "خروج"
 BUTTON_REFRESH_STATUS = "بررسی وضعیت ورود حساب‌ها"
 LABEL_CAPTCHA_RESPONSE = "پاسخ تصویر امنیتی:"
 LOGIN_RESPONSE_REQUIRED = "پاسخ تصویر امنیتی را وارد کنید."
@@ -574,9 +580,11 @@ BUTTON_MANUAL_REORDER = "جابه‌جایی دستی"
 TABLE_HEADER_ACCOUNT_BROKER = "حساب و کارگزاری"
 TABLE_HEADER_LOGIN_STATUS = "وضعیت ورود"
 TABLE_HEADER_CURRENT_USE = "استفاده جاری"
+TABLE_HEADER_PURCHASE_POWER = "قدرت خرید"
 TABLE_HEADER_ACTIONS = "عملیات"
-CURRENT_USE_ACTIVE = "برای استفاده جاری"
+CURRENT_USE_ACTIVE = "فعال"
 CURRENT_USE_INACTIVE = "غیرفعال"
+PURCHASE_POWER_UNKNOWN = "نامشخص"
 BUTTON_LOGIN = "ورود"
 BUTTON_LOGIN_PENDING = "در انتظار کپچا"
 BUTTON_EDIT = "ویرایش"
