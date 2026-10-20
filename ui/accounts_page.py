@@ -21,6 +21,12 @@ AVAILABLE_BROKERS = ("آگاه",)
 _ID, _DISPLAY, _ACTIVE, _STATUS, _PURCHASE_POWER, _ACTIONS = range(6)
 
 
+def _configure_chevron_combo(combo, object_name):
+    """Opt one account-page combo into the shared chevron-down icon."""
+    combo.setObjectName(object_name)
+    combo.setProperty("chevron", True)
+
+
 class AccountsPage(QWidget):
     def __init__(self, account_store, parent=None, *,
                  authentication_service_factory=None,
@@ -72,6 +78,9 @@ class AccountsPage(QWidget):
         self.display_name_input = QLineEdit(add_group)
         self.display_name_input.setPlaceholderText(STRINGS.PLACEHOLDER_DISPLAY_NAME)
         self.broker_selector = QComboBox(add_group)
+        _configure_chevron_combo(
+            self.broker_selector, "addAccountBrokerCombo"
+        )
         self.broker_selector.addItems(AVAILABLE_BROKERS)
         self.username_input = QLineEdit(add_group)
         self.username_input.setPlaceholderText(STRINGS.PLACEHOLDER_USERNAME)
@@ -107,6 +116,7 @@ class AccountsPage(QWidget):
         tools = QHBoxLayout()
         tools.addWidget(QLabel(STRINGS.LABEL_SORT, group))
         self.sort_selector = QComboBox(group)
+        _configure_chevron_combo(self.sort_selector, "sortAccountsCombo")
         self.sort_selector.addItem(STRINGS.SORT_MANUAL, "manual")
         self.sort_selector.addItem(STRINGS.SORT_BY_NAME_ASC, "name")
         self.sort_selector.currentIndexChanged.connect(self._refresh_list)
@@ -587,6 +597,7 @@ class AccountsPage(QWidget):
         layout = QFormLayout(dialog)
         name = QLineEdit(record.display_name, dialog)
         broker = QComboBox(dialog)
+        _configure_chevron_combo(broker, "editAccountBrokerCombo")
         broker.addItems(AVAILABLE_BROKERS)
         broker.setCurrentText(record.broker_name)
         username = QLineEdit(dialog)

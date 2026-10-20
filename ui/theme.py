@@ -16,14 +16,16 @@ the style on the QApplication alone would leave those windows unthemed, so
 ``apply_theme`` also works on a plain widget and the MainWindow applies it
 to itself.
 
-Import contract (UI-3.1 test_14 / C6): this module imports from PySide6
-only. It must never import ``main``, ``brokers``, ``core`` or ``market`` —
-not even lazily — so importing it can never pull the trading core into a
-UI-only import path.
+Import contract (UI-3.1 test_14 / C6): this module imports only from
+PySide6 and the Python standard library. It must never import ``main``,
+``brokers``, ``core`` or ``market`` — not even lazily — so importing it can
+never pull the trading core into a UI-only import path.
 
 No font file is bundled with the repository (licensing not verified); the
 font chain below simply names the families and lets Qt fall back.
 """
+
+from pathlib import Path
 
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import QApplication, QWidget
@@ -43,6 +45,17 @@ __all__ = [
     "apply_font",
     "primary_font",
 ]
+
+
+def _asset_url(*parts):
+    """Return a project-relative asset path with POSIX separators for QSS."""
+    path = Path(__file__).resolve().parent.joinpath(*parts)
+    return path.as_posix()
+
+
+#: Chevron used by the three Account-page combo boxes that opt in with the
+#: dynamic property ``chevron="true"``. Other pages keep their CSS arrow.
+CHEVRON_DOWN_ICON_URL = _asset_url("assets", "icons", "chevron-down.svg")
 
 
 # ============================================================
@@ -455,6 +468,23 @@ QComboBox::down-arrow {{
     border-right: 4px solid transparent;
     border-top: 5px solid {p["textMuted"]};
     margin-right: 6px;
+}}
+
+/* Account-page combos opt in with the dynamic property chevron="true". */
+QComboBox[chevron="true"]::drop-down {{
+    subcontrol-origin: padding;
+    subcontrol-position: center left;
+    width: 24px;
+    background-color: transparent;
+    border: none;
+}}
+
+QComboBox[chevron="true"]::down-arrow {{
+    image: url("{CHEVRON_DOWN_ICON_URL}");
+    width: 14px;
+    height: 14px;
+    border: none;
+    margin: 0px;
 }}
 
 QComboBox QAbstractItemView {{
