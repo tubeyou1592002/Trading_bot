@@ -770,8 +770,8 @@ from core.order_queue import OrderQueue
 from models.order import Order as CoreOrder
 
 # UI-9 Task 3: the button labels are Persian and centralized.
-TEST_BUTTON_LABEL_OFF = STRINGS.BUTTON_TEST
-TEST_BUTTON_LABEL_ON = STRINGS.BUTTON_TEST_ON
+TEST_BUTTON_LABEL_OFF = STRINGS.BUTTON_SEND_ONCE
+TEST_BUTTON_LABEL_ON = STRINGS.BUTTON_SEND_ONCE
 
 
 def _make_valid_page(qapp, store, queue):

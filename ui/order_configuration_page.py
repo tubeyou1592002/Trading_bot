@@ -1197,11 +1197,11 @@ class OrderConfigurationPage(QWidget):
         # Starts DISABLED: at construction there is nothing queued yet
         # (the lazy core.queue import must never run at construction).
         # The enable/disable refresh runs only on real UI flows.
-        self.test_button = QPushButton(STRINGS.BUTTON_TEST, form_group)
+        self.test_button = QPushButton(STRINGS.BUTTON_SEND_ONCE, self)
         self.test_button.setCheckable(True)
         self.test_button.setEnabled(False)
         self.test_button.clicked.connect(self._on_test_toggled)
-        form_grid.addWidget(self.test_button, 4, 2)
+        # The send-once action is placed below the queue table instead.
 
         # --- Inline validation error (UI-9.4) ------------------------
         # ONE message line for the whole order form, directly under it.
@@ -1417,6 +1417,7 @@ class OrderConfigurationPage(QWidget):
 
         self.queue_count_label = QLabel(STRINGS.QUEUE_COUNT_LABEL, queue_group)
         queue_layout.addWidget(self.queue_count_label)
+        queue_layout.addWidget(self.test_button)
 
         # UI-9 Task 2: the queue STATUS line moves to the scheduling
         # column (per the 2.2 layout table); the queue GROUP itself goes to
@@ -2927,22 +2928,69 @@ class OrderConfigurationPage(QWidget):
             order = entry.order
             side_label = dict(SIDE_LABELS).get(
                 getattr(order, "side", None),
-                str(getattr(order, "side", "")),
+                STRINGS.VALUE_NOT_AVAILABLE,
             )
+            # Resolve the display label through the identity captured on this
+            # immutable queue entry, never through the currently active row.
+            account_name = STRINGS.VALUE_NOT_AVAILABLE
+            account_id = getattr(entry, "account_id", None)
+            if isinstance(account_id, str) and account_id:
+                try:
+                    account_record = self.store.get(account_id)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    account_record = None
+                display_name = getattr(account_record, "display_name", None)
+                if isinstance(display_name, str) and display_name.strip():
+                    account_name = display_name
+            symbol = self._order_symbols.get(id(order)) or STRINGS.VALUE_NOT_AVAILABLE
+            quantity = getattr(order, "quantity", None)
+            price = getattr(order, "price", None)
             text = (
-                f"{getattr(order, 'nsc_id', '')} | {side_label} | "
-                f"{getattr(order, 'price', '')} | "
-                f"{getattr(order, 'quantity', '')} | "
-                f"{entry.account_id} - {entry.broker_name}"
+                f"{account_name} | {symbol} | {side_label} | "
+                f"{quantity if quantity is not None else STRINGS.VALUE_NOT_AVAILABLE} | "
+                f"{price if price is not None else STRINGS.VALUE_NOT_AVAILABLE}"
             )
             item = QListWidgetItem(text, self.queue_list)
             item.setData(QUEUE_ENTRY_ROLE, entry)
+            row_widget = QWidget(self.queue_list)
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_label = QLabel(text, row_widget)
+            row_layout.addWidget(row_label, 1)
+            remove_button = QPushButton(STRINGS.BUTTON_REMOVE_FROM_QUEUE, row_widget)
+            remove_button.clicked.connect(
+                lambda checked=False, queued_entry=entry: self._remove_queue_entry_by_id(
+                    id(queued_entry)
+                )
+            )
+            row_layout.addWidget(remove_button)
+            self.queue_list.setItemWidget(item, row_widget)
+            item.setSizeHint(row_widget.sizeHint())
         # UI-9 Task 3: the count uses PERSIAN digits via the ONE formatter.
         self.queue_count_label.setText(
             STRINGS.QUEUE_COUNT_FORMAT.format(
                 count=STRINGS.format_persian_digits(len(pending))
             )
         )
+
+    def _remove_queue_entry(self, entry):
+        """Remove exactly the selected queue entry; this never dispatches."""
+        try:
+            self.order_queue.remove(entry)
+        except ValueError:
+            return False
+        self._refresh_queue_display()
+        self._refresh_test_button_state()
+        return True
+
+    def _remove_queue_entry_by_id(self, entry_id):
+        """Resolve the current queue entry by stable object identity before removal."""
+        entry = next(
+            (candidate for candidate in self.order_queue.list_pending()
+             if id(candidate) == entry_id),
+            None,
+        )
+        return self._remove_queue_entry(entry) if entry is not None else False
 
     def _show_queue_status(self, text):
         self.queue_status_label.setText(text)
@@ -2965,7 +3013,7 @@ class OrderConfigurationPage(QWidget):
         """
         self._test_mode = bool(checked)
         self.test_button.setText(
-            STRINGS.BUTTON_TEST_ON if self._test_mode else STRINGS.BUTTON_TEST
+            STRINGS.BUTTON_SEND_ONCE
         )
         if self._test_mode:
             self._run_test_pass()

@@ -55,6 +55,8 @@ __all__ = [
     "BUTTON_ADD_TO_QUEUE",
     "BUTTON_TEST",
     "BUTTON_TEST_ON",
+    "BUTTON_SEND_ONCE",
+    "BUTTON_REMOVE_FROM_QUEUE",
     "TOOLTIP_PRICE_MAX",
     "TOOLTIP_PRICE_MIN",
     "TOOLTIP_QUANTITY_MAX",
@@ -315,6 +317,8 @@ PLACEHOLDER_QUANTITY = "عددی"
 BUTTON_ADD_TO_QUEUE = "افزودن به صف"
 BUTTON_TEST = "تست"
 BUTTON_TEST_ON = "تست (فعال)"
+BUTTON_SEND_ONCE = "ارسال یک‌بار سفارشات"
+BUTTON_REMOVE_FROM_QUEUE = "حذف"
 
 #: Limit arrows next to the price and quantity fields.
 TOOLTIP_PRICE_MAX = "قرار دادن سقف قیمت روز"

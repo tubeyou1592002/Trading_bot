@@ -436,12 +436,11 @@ def test_6_visible_list_reflects_list_pending(qapp):
     assert page._on_add_to_queue() is True
     assert page.queue_list.count() == 1
     row_one = page.queue_list.item(0).text()
-    assert NSC_AKOU in row_one
+    assert ACCOUNT_ONE in row_one
+    assert "آکو" in row_one
     assert "خرید" in row_one          # side label is rendered, not raw 1
     assert "15000" in row_one         # the int price
     assert "500" in row_one           # the int quantity
-    assert ACCOUNT_ONE in row_one
-    assert BROKER_ONE in row_one
     assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
         count=STRINGS.format_persian_digits(1)
     )
@@ -452,6 +451,49 @@ def test_6_visible_list_reflects_list_pending(qapp):
     assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
         count=STRINGS.format_persian_digits(1)
     )
+
+
+def test_queue_rows_keep_bound_account_and_remove_exact_entry(qapp):
+    queue = OrderQueue()
+    store = _store_with_active()
+    store.add(ACCOUNT_TWO, BROKER_ONE, "حساب دو")
+    page = OrderConfigurationPage(store, order_queue=queue)
+    page.set_order_identity_factory(lambda: StubNscSeam(NSC_AKOU))
+    _prepare_order(qapp, page, price=15000, quantity=500, side=BUY)
+    assert page._on_add_to_queue()
+    first = queue.list_pending()[0]
+
+    store.set_active(ACCOUNT_TWO)
+    _prepare_order(qapp, page, instrument=INSTRUMENT_FOLAD, price=12000,
+                   quantity=300, side=SELL)
+    page.set_order_identity_factory(lambda: StubNscSeam(NSC_FOLAD))
+    assert page._on_add_to_queue()
+    second = queue.list_pending()[1]
+
+    assert ACCOUNT_ONE in page.queue_list.item(0).text()
+    assert "حساب دو" in page.queue_list.item(1).text()
+    assert page.test_button.text() == STRINGS.BUTTON_SEND_ONCE
+    assert page.queue_list.parent().layout().indexOf(page.test_button) > page.queue_list.parent().layout().indexOf(page.queue_list)
+
+    # Simulate a reordered row: the callback retains stable entry identity,
+    # not a visual row number.
+    assert page._remove_queue_entry_by_id(id(second))
+    assert queue.list_pending() == [first]
+    assert page.queue_list.count() == 1
+    assert page.test_button.isEnabled()
+    assert page._remove_queue_entry_by_id(id(first))
+    assert queue.list_pending() == []
+    assert page.queue_list.count() == 0
+    assert not page.test_button.isEnabled()
+
+
+def test_legacy_incomplete_queue_entry_displays_safely(qapp):
+    queue = OrderQueue()
+    queue.enqueue(object(), account_id="missing-account", broker_name=BROKER_ONE)
+    page = OrderConfigurationPage(AccountStore(), order_queue=queue)
+    page._refresh_queue_display()
+    assert page.queue_list.count() == 1
+    assert STRINGS.VALUE_NOT_AVAILABLE in page.queue_list.item(0).text()
 
 
 # ============================================================
