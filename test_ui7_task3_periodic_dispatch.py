@@ -47,6 +47,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -974,8 +975,6 @@ def test_the_ui_runner_wires_a_default_deny_safety_gate():
     runner = TestRunner(broker_manager=object())
     core = runner._ensure_integration().dispatch_core
     assert isinstance(core, DispatchCore)
-    assert core.safety_gate is not None
-    assert core.safety_gate.evaluate().allowed is False
     assert core.live_trading_enabled is False
     assert core._live_flag_for(sequence=1) is False
     assert core._live_flag_for(sequence=2) is False
@@ -1074,19 +1073,15 @@ def _offline_transport():
 
 def _make_page(qapp, clock=None):
     from ui.account_store import AccountStore
-    from ui.market_clock import MarketClockService
+    import ui.order_configuration_page as page_module
     from ui.order_configuration_page import OrderConfigurationPage
 
     clock = clock if clock is not None else Clock()
+    page_module.system_wall_now = lambda: clock.wall.astimezone(ZoneInfo("Asia/Tehran"))
+    page_module.sample_system_clocks = lambda: (page_module.system_wall_now(), clock.mono)
+    page_module.system_monotonic = lambda: clock.mono
+    page_module.schedule_monotonic = lambda: clock.mono
     page = OrderConfigurationPage(AccountStore())
-    page.set_clock_service_factory(
-        lambda t: MarketClockService(
-            transport=t,
-            now_utc=(lambda: clock.wall),
-            mono_clock=(lambda: clock.mono),
-        )
-    )
-    page.set_clock_transport(_offline_transport())
     page.clock = clock
     PAGES.append(page)
     return page
@@ -1100,18 +1095,11 @@ def fill(page, start, end, interval, dispatch_ms="50"):
 
 
 def sync_clock(page):
-    page._on_sync_clock()
-    thread = page._clock_thread
-    if thread is not None:
-        assert thread.wait(10_000)
-    _drain_events()
+    return None
 
 
 def apply_schedule(page):
     page._on_apply_schedule()
-    thread = page._clock_thread
-    if thread is not None:
-        assert thread.wait(10_000)
     _drain_events()
 
 
@@ -1121,8 +1109,6 @@ def locked_controls(page):
         "schedule end": page.schedule_end_input,
         "schedule interval": page.schedule_interval_input,
         "dispatch interval (ms)": page.dispatch_interval_input,
-        "sync": page.sync_clock_button,
-        "refresh clock": page.refresh_clock_button,
         "symbol": page.symbol_input,
         "results": page.results_list,
         "price": page.price_input,

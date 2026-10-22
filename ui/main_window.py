@@ -34,7 +34,7 @@ Page architecture (since UI-2.1):
 
 from enum import Enum
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QFrame,
@@ -60,8 +60,6 @@ from ui.theme import apply_theme
 # and it must not fire inside a bare ``processEvents()`` that a test may
 # call right after ``show()``. Non-blocking: the request runs on a worker
 # thread.
-STARTUP_SYNC_DELAY_MS = 100
-
 
 class ApplicationMode(Enum):
     """
@@ -329,41 +327,6 @@ class MainWindow(QMainWindow):
         self._sync_mode_toggle()
 
         # ---------------------------------------------
-        # UI-7 Task 2 — startup clock sync (after show, once)
-        # ---------------------------------------------
-        # Construction performs NO network request; the single non-blocking
-        # TSETMC clock sync is scheduled by ``showEvent`` below, i.e. once
-        # the window is actually shown and the event loop is running. It is
-        # deliberately NOT tied to opening the Order Configuration page.
-        self._startup_sync_started = False
-        self.startup_sync_delay_ms = STARTUP_SYNC_DELAY_MS
-
-    # ---------------------------------------------------------
-    # UI-7 Task 2 — startup clock sync
-    # ---------------------------------------------------------
-
-    def showEvent(self, event):
-        """
-        Schedule the one-shot, non-blocking startup clock sync.
-
-        Fired only when the window is really shown (the application starts
-        on the Home page), on the first turn of the event loop. The sync
-        runs on a worker thread, so the GUI never blocks and no request is
-        made during construction or import.
-        """
-        super().showEvent(event)
-        if self._startup_sync_started:
-            return
-        self._startup_sync_started = True
-        QTimer.singleShot(self.startup_sync_delay_ms, self._startup_clock_sync)
-
-    def _startup_clock_sync(self):
-        """Start the page's one-shot startup sync (idempotent)."""
-        page = self.order_configuration_page
-        start = getattr(page, "start_startup_sync", None)
-        if callable(start):
-            start()
-
     # ---------------------------------------------------------
     # Navigation (single navigation mechanism, unchanged)
     # ---------------------------------------------------------

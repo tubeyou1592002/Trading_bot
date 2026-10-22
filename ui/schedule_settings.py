@@ -48,7 +48,9 @@ from enum import Enum
 from typing import List, Optional, Sequence
 
 from ui import strings as STRINGS
-from ui.market_clock import TEHRAN_TIMEZONE
+from zoneinfo import ZoneInfo
+
+TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
 
 
 # ---------------------------------------------------------------------------
@@ -73,12 +75,6 @@ TIMEZONE_NOTE = STRINGS.NOTE_TIMEZONE
 
 SCHEDULE_UNAVAILABLE = STRINGS.COUNTDOWN_UNAVAILABLE
 
-# UI-7 Task 2 — schedule lifecycle and freshness constants
-# --------------------------------------------------------
-#: Maximum age of a successful clock sync before it is considered stale
-#: for schedule Apply. Named, documented, never silently changed.
-SCHEDULE_SYNC_MAX_AGE_SECONDS = 30.0
-
 #: User-facing labels for the schedule state machine. The order below is
 #: the lifecycle: configuring -> waiting -> counting (or starting once) ->
 #: stopped / expired, after which the page returns to configuring.
@@ -95,21 +91,10 @@ SCHEDULE_STATE_EXPIRED = STRINGS.STATE_EXPIRED
 APPLY_BUTTON_LABEL = STRINGS.BUTTON_APPLY_SCHEDULE
 STOP_BUTTON_LABEL = STRINGS.BUTTON_STOP_SCHEDULE
 
-#: Button labels of the independent manual sync action.
-SYNC_BUTTON_LABEL = "همگام‌سازی ساعت"
-SYNC_BUTTON_LABEL_BUSY = "در حال همگام‌سازی…"
-SYNC_BUTTON_LABEL_FAILED = "ناموفق - دوباره تلاش کنید"
-
 #: Countdown texts (UI-7 Task 2).
 COUNTDOWN_LABEL_UNAVAILABLE = SCHEDULE_UNAVAILABLE
 COUNTDOWN_LABEL_NO_UPCOMING = STRINGS.COUNTDOWN_NO_UPCOMING
 COUNTDOWN_LABEL_STOPPED = STRINGS.COUNTDOWN_STOPPED
-
-#: Sync line states (UI-7 Task 2). Each one is shown explicitly; a stale
-#: or missing reading is never dressed up as a fresh market clock.
-SYNC_STATE_IN_PROGRESS = STRINGS.SYNC_IN_PROGRESS
-SYNC_STATE_NEVER = STRINGS.SYNC_NEVER
-SYNC_STATE_FAILED = STRINGS.SYNC_FAILED
 
 
 class ScheduleValidationError(ValueError):

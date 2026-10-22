@@ -29,6 +29,7 @@ import re
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -47,8 +48,8 @@ FIXED_NOW = datetime(2026, 10, 2, 9, 29, 0, tzinfo=UTC)
 TEHRAN = timezone(timedelta(hours=3, minutes=30))
 FIXED_TEHRAN = FIXED_NOW.astimezone(TEHRAN)
 
-# The documented market body, same instant as FIXED_NOW, as Tehran text.
-GOOD_BODY = "10/02/2026 12:59:00"
+# The documented UTC body, same instant as FIXED_NOW.
+GOOD_BODY = "10/02/2026 09:29:00"
 GOOD_DATE_HEADER = "Thu, 02 Oct 2026 09:29:00 GMT"
 
 
@@ -121,21 +122,41 @@ def make_page(qapp, now=FIXED_NOW, transport=None):
     longer be applied without one (UI-7 Task 3).
     """
     from ui.account_store import AccountStore
-    from ui.market_clock import MarketClockService
+    import ui.order_configuration_page as page_module
     from ui.order_configuration_page import OrderConfigurationPage
 
+    page_module.system_wall_now = lambda: now.astimezone(ZoneInfo("Asia/Tehran"))
+    page_module.sample_system_clocks = lambda: (page_module.system_wall_now(), 0.0)
+    page_module.system_monotonic = lambda: 0.0
     page = OrderConfigurationPage(AccountStore())
-    page.set_clock_service_factory(
-        lambda t: MarketClockService(
-            transport=t,
-            now_utc=(lambda: now),
-            mono_clock=(lambda: 0.0),
-        )
-    )
-    page.set_clock_transport(
-        offline_transport() if transport is None else transport
-    )
     return _with_valid_destination(page)
+
+
+def test_system_clock_tehran_display_and_no_gettime(qapp, monkeypatch):
+    import requests
+    from ui.order_configuration_page import OrderConfigurationPage
+    from ui.account_store import AccountStore
+
+    now = FIXED_NOW
+    import ui.order_configuration_page as page_module
+    monkeypatch.setattr(page_module, "system_wall_now", lambda: now.astimezone(ZoneInfo("Asia/Tehran")))
+    calls = []
+    monkeypatch.setattr(requests, "get", lambda url, *a, **k: calls.append(url))
+    page = OrderConfigurationPage(AccountStore())
+    page._refresh_market_clock_row()
+    assert page.schedule_timezone_label.text() == "12:59:00"
+    assert not hasattr(page, "sync_clock_button")
+    assert not hasattr(page, "refresh_clock_button")
+    assert not hasattr(page, "clock_status_label")
+    assert calls == []
+
+
+def test_apply_summary_names_external_system_time_source(qapp):
+    page = make_page(qapp)
+    fill(page, "13:00:00", "13:01:00", "15")
+    apply_schedule(page)
+    assert STRINGS.CLOCK_SOURCE_DESCRIPTION in page.schedule_summary_label.text()
+    assert "TSETMC" not in page.schedule_summary_label.text()
 
 
 def stepped_service(wall, mono):
@@ -195,23 +216,11 @@ def apply_schedule(page):
     and drains the event loop.
     """
     page._on_apply_schedule()
-    thread = page._clock_thread
-    if thread is not None:
-        assert thread.wait(10_000), "the clock refresh did not finish"
     _drain_events()
 
 
 def sync_clock(page):
-    """
-    Press the independent sync button and wait for its COMPLETED result.
-
-    This is the action that produces the reading Apply later consumes.
-    """
-    page._on_sync_clock()
-    thread = page._clock_thread
-    if thread is not None:
-        assert thread.wait(10_000), "the clock sync did not finish"
-    _drain_events()
+    return None
 
 
 def make_result(status=200, text=GOOD_BODY, headers=None):
@@ -243,7 +252,6 @@ def market_headers(extra=None):
     headers = {
         "Content-Type": "text/plain",
         "Date": GOOD_DATE_HEADER,
-        "Age": "0",
     }
     if extra:
         headers.update(extra)
@@ -397,7 +405,7 @@ def test_window_times_are_tehran_aware(qapp):
     assert timing.start_time.astimezone(TEHRAN).strftime("%H:%M:%S") == "13:00:00"
 
 
-def test_market_body_is_parsed_as_tehran_not_utc():
+def test_market_body_is_utc_converted_to_tehran_once():
     from ui.market_clock import parse_market_time
 
     parsed = parse_market_time(GOOD_BODY)
@@ -422,15 +430,10 @@ def test_http_date_header_is_never_returned_as_the_market_time():
     assert sample.market_time.utcoffset() == timedelta(hours=3, minutes=30)
 
 
-def test_wrong_utc_interpretation_would_be_detected():
-    """Reading the body as UTC instead of Tehran is a 3.5h error."""
-    body = GOOD_BODY
-    as_tehran = datetime.strptime(body, "%m/%d/%Y %H:%M:%S").replace(tzinfo=TEHRAN)
-    as_utc = datetime.strptime(body, "%m/%d/%Y %H:%M:%S").replace(tzinfo=UTC)
-
-    assert as_tehran.astimezone(UTC) == FIXED_NOW
-    error = abs(as_utc.astimezone(UTC) - FIXED_NOW)
-    assert error == timedelta(hours=3, minutes=30)
+def test_utc_body_does_not_create_a_false_3_5_hour_offset():
+    sample = build_sample(make_result(headers=market_headers()), FIXED_NOW, FIXED_NOW)
+    assert sample.offset == timedelta(0)
+    assert sample.market_time == FIXED_TEHRAN
 
 
 def test_schedule_is_assessed_against_tehran_now_not_utc_now(qapp):
@@ -849,6 +852,24 @@ def test_refresh_clock_uses_the_injected_transport(qapp):
     assert "TSETMC" in page.clock_status_label.text()
 
 
+def test_default_transport_sends_no_cache_headers(monkeypatch):
+    import requests
+    from ui.market_clock import default_transport
+
+    captured = {}
+    class Response:
+        status_code = 200
+        text = GOOD_BODY
+        headers = market_headers()
+    def fake_get(url, timeout, headers):
+        captured.update(headers)
+        return Response()
+    monkeypatch.setattr(requests, "get", fake_get)
+    default_transport()
+    assert captured["Cache-Control"] == "no-cache"
+    assert captured["Pragma"] == "no-cache"
+
+
 def _drain_events():
     from PySide6.QtWidgets import QApplication
 
@@ -966,7 +987,6 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
     from core.order_queue import OrderQueue
 
     from ui.account_store import AccountStore
-    from ui.market_clock import MarketClockService
     from ui.order_configuration_page import OrderConfigurationPage
 
     queue = OrderQueue()
@@ -974,9 +994,7 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
     store.add("ACC-001", "SIM", "ACC-001")
     store.set_active("ACC-001")
 
-    service = MarketClockService(now_utc=(lambda: FIXED_NOW))
     page = OrderConfigurationPage(store, order_queue=queue)
-    page.set_clock_service_factory(lambda _t: service)
     _with_valid_destination(page, account_id="ACC-QUEUED", broker_name="SIM")
 
     queued_before = list(queue.list_pending())
@@ -1375,7 +1393,7 @@ def test_a_rejected_input_never_starts_a_clock_refresh(qapp):
 def test_missing_content_type_is_rejected():
     with pytest.raises(MarketClockInvalidResponse):
         build_sample(
-            make_result(headers={"Date": GOOD_DATE_HEADER, "Age": "0"}),
+            make_result(headers={"Date": GOOD_DATE_HEADER}),
             FIXED_NOW,
             FIXED_NOW,
         )
@@ -1408,11 +1426,14 @@ def test_missing_date_header_is_rejected():
         build_sample(make_result(headers=headers), FIXED_NOW, FIXED_NOW)
 
 
-def test_missing_age_header_is_rejected():
-    headers = market_headers()
-    headers.pop("Age")
+def test_absent_cache_headers_are_accepted_and_age_is_none():
+    sample = build_sample(make_result(headers=market_headers()), FIXED_NOW, FIXED_NOW)
+    assert sample.cdn_age is None
+
+
+def test_invalid_date_header_is_rejected():
     with pytest.raises(MarketClockInvalidResponse):
-        build_sample(make_result(headers=headers), FIXED_NOW, FIXED_NOW)
+        build_sample(make_result(headers=market_headers({"Date": "not a date"})), FIXED_NOW, FIXED_NOW)
 
 
 def test_a_stale_date_header_is_rejected():

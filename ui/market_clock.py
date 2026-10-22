@@ -24,7 +24,7 @@ Market source contract (verified by the user, unofficial / no SLA):
     GET https://cdn.tsetmc.com/api/StaticData/GetTime
     -> 200, Content-Type: text/plain
     -> body: "MM/DD/YYYY HH:MM:SS", Gregorian, **second precision**
-    -> the body time is **Tehran time** (Asia/Tehran, UTC+03:30)
+    -> the body time is **UTC**; convert it to Asia/Tehran internally
     -> the HTTP `Date` header is **UTC** and is NOT the body timezone
 
 Because the body has one-second resolution the market time is only known
@@ -38,9 +38,8 @@ This endpoint is unofficial, undocumented, and served through a CDN, so a
 response is only accepted as "current market time" when it proves it is
 current. A response missing the evidence is REFUSED, not trusted:
 
-  * ``Content-Type``, ``Date`` and ``Age`` are all REQUIRED. A response
-    without them cannot be shown to be fresh, so it is refused rather
-    than treated as a valid market time.
+  * ``Content-Type`` and ``Date`` are REQUIRED. ``Age``, ``Cache-Control``
+    and ``Expires`` are optional and validated when present.
   * ``Content-Type`` must be ``text/plain`` with only allowed parameters
     (``charset`` of ``utf-8`` / ascii). A missing header is a refusal, not
     a pass.
@@ -50,9 +49,8 @@ current. A response missing the evidence is REFUSED, not trusted:
     ``no-cache`` / ``must-revalidate``) and ``Expires`` are applied as a
     cache policy; a response that its own policy marks as expired is
     refused.
-  * Freshness is judged THREE ways, never by body-vs-Date alone: the body
-    against the ``Date`` header, the body against the local receive time,
-    and the ``Age`` / cache-policy evidence.
+  * Freshness is judged against both ``Date`` and local receive time; any
+    present ``Age`` / cache-policy evidence is an additional constraint.
 
 Non-rewinding clock
 -------------------
@@ -154,7 +152,7 @@ MARKET_TIME_MAX_ABS_OFFSET_SECONDS = 300.0
 
 #: Headers without which a response cannot be proven fresh. All three are
 #: mandatory; see the fail-closed policy in the module docstring.
-MARKET_TIME_REQUIRED_HEADERS = ("content-type", "date", "age")
+MARKET_TIME_REQUIRED_HEADERS = ("content-type", "date")
 
 #: ``Content-Type`` values and parameters that are acceptable.
 MARKET_TIME_ALLOWED_MEDIA_TYPES = ("text/plain",)
@@ -222,7 +220,11 @@ def default_transport(
     response = requests.get(
         url,
         timeout=timeout,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        },
     )
     return TransportResult(
         status_code=response.status_code,
@@ -245,10 +247,9 @@ def _header(headers: Mapping[str, str], name: str) -> Optional[str]:
 
 def parse_market_time(body: str) -> datetime:
     """
-    Parse the documented body into an aware Tehran datetime.
+    Parse the documented UTC body into an aware Tehran datetime.
 
-    The value is interpreted as ``Asia/Tehran`` **because the body says
-    so** — never from the HTTP ``Date`` header, which is UTC.
+    The body is UTC and is converted to ``Asia/Tehran`` for application use.
 
     Raises:
         MarketClockInvalidResponse: the body does not match the contract.
@@ -278,7 +279,7 @@ def parse_market_time(body: str) -> datetime:
             f"market time body is not a zero-padded canonical time: {text!r}"
         )
 
-    return parsed.replace(tzinfo=TEHRAN_TIMEZONE)
+    return parsed.replace(tzinfo=UTC).astimezone(TEHRAN_TIMEZONE)
 
 
 def parse_http_date_utc(headers: Mapping[str, str]) -> Optional[datetime]:
@@ -466,11 +467,8 @@ def validate_response(
             f"{getattr(result, 'status_code', None)!r}, expected 200"
         )
 
-    missing = [
-        name
-        for name in MARKET_TIME_REQUIRED_HEADERS
-        if _header(headers, name) is None
-    ]
+    missing = [name for name in MARKET_TIME_REQUIRED_HEADERS
+               if _header(headers, name) is None]
     if missing:
         raise MarketClockInvalidResponse(
             "market time response is missing required header(s) "
@@ -481,7 +479,7 @@ def validate_response(
     _validate_content_type(headers)
 
     cdn_age = _parse_age_seconds(headers)
-    if cdn_age > MARKET_TIME_MAX_CDN_AGE_SECONDS:
+    if cdn_age is not None and cdn_age > MARKET_TIME_MAX_CDN_AGE_SECONDS:
         raise MarketClockStale(
             f"market time came from CDN cache (Age={cdn_age:.0f}s, "
             f"limit {MARKET_TIME_MAX_CDN_AGE_SECONDS:.0f}s)"
@@ -495,7 +493,8 @@ def validate_response(
             "established"
         )
 
-    if policy.max_age_seconds is not None and cdn_age >= policy.max_age_seconds:
+    if (policy.max_age_seconds is not None and cdn_age is not None
+            and cdn_age >= policy.max_age_seconds):
         raise MarketClockStale(
             f"market time exceeded its own Cache-Control lifetime "
             f"(Age={cdn_age:.0f}s, max-age={policy.max_age_seconds:.0f}s)"

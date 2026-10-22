@@ -121,6 +121,7 @@ quantity, resolved nsc_id and an active account nothing is queued.
 import math
 import threading
 import inspect
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -162,16 +163,7 @@ from PySide6.QtWidgets import (
 from ui import strings as STRINGS
 from ui.theme import GEOMETRY, PALETTE, SPACING
 
-from ui.market_clock import (
-    MarketClockService,
-    MarketClockWorker,
-    describe_clock,
-    format_offset,
-    format_uncertainty,
-    SCHEDULE_SYNC_MAX_AGE_SECONDS,
-    TEHRAN_TIMEZONE,
-    ClockSource,
-)
+from zoneinfo import ZoneInfo
 from ui.order_config_state import (
     SYMBOL_STATUS_NOT_AVAILABLE,
     OrderConfigError,
@@ -204,14 +196,8 @@ from ui.schedule_settings import (
     SCHEDULE_STATE_WAITING,
     START_INPUT_LABEL,
     STOP_BUTTON_LABEL,
-    SYNC_BUTTON_LABEL,
-    SYNC_BUTTON_LABEL_BUSY,
-    SYNC_BUTTON_LABEL_FAILED,
-    SYNC_STATE_FAILED,
-    SYNC_STATE_IN_PROGRESS,
-    SYNC_STATE_NEVER,
-    TIME_INPUT_PLACEHOLDER,
     TIMEZONE_NOTE,
+    TIME_INPUT_PLACEHOLDER,
     ScheduleState,
     ScheduleValidationError,
     assess_schedule_window,
@@ -320,11 +306,31 @@ class _SymbolSuggestionList:
         return self._combo.isEnabled()
 
 
-# UI-7 Task 2: how often the DISPLAY of the sync freshness line is
-# re-rendered while a reading ages. This is display-only — it never
-# starts a request — and it is deliberately shorter than the schedule
-# freshness limit so the "expired" wording appears promptly.
-SYNC_FRESHNESS_TICK_MS = 1000
+TEHRAN_TIMEZONE = ZoneInfo("Asia/Tehran")
+
+
+def sample_system_clocks():
+    """Take adjacent wall and monotonic readings for schedule anchoring."""
+    return make_system_clock()
+
+
+def system_wall_now():
+    return datetime.now().astimezone(TEHRAN_TIMEZONE)
+
+
+def system_monotonic():
+    return time.monotonic()
+
+
+def schedule_monotonic():
+    return system_monotonic()
+
+
+def make_system_clock():
+    """Injectable clock pair used by the schedule and its display."""
+    wall = system_wall_now()
+    monotonic = system_monotonic()
+    return wall, monotonic
 
 # UI-3.2B — user-facing trading-state labels, rendered ONLY from the
 # real ``TradingState`` the existing project path returned. The status
@@ -1293,16 +1299,7 @@ class OrderConfigurationPage(QWidget):
         # ``apply_mode`` on this page on every mode change).
         self._diagnostic_section_visible = False
 
-        # --- UI-7 Task 1: clock + schedule state ------------------------
-        # The clock service and its worker are created lazily so that
-        # constructing this page stays offline (no ``requests``, no market
-        # or core import until a clock refresh or an Apply actually runs).
-        self._clock_service = None
-        self._clock_service_factory = None
-        self._clock_transport = None
-        self._clock_worker = None
-        self._clock_thread = None
-        self._clock_status = None
+        # --- Schedule state: system wall clock + monotonic anchor ---------
         self._pending_schedule = None
         self._schedule_parsed = None
         self._schedule_timing = None
@@ -1314,11 +1311,6 @@ class OrderConfigurationPage(QWidget):
         # Once locked, subsequent syncs, system-clock steps and clock
         # service rebuilds do NOT affect the active schedule: the anchors
         # captured here are the ones the countdown advances from.
-        self._locked_clock_source: Optional[ClockSource] = None
-        self._locked_applied_offset: Optional[timedelta] = None
-        self._locked_uncertainty: Optional[timedelta] = None
-        self._locked_market_time: Optional[datetime] = None
-        self._locked_sync_time: Optional[datetime] = None
         self._locked_base_time: Optional[datetime] = None
         self._locked_mono_anchor: Optional[float] = None
         self._locked_last_now: Optional[datetime] = None
@@ -1326,6 +1318,10 @@ class OrderConfigurationPage(QWidget):
         # Schedule state machine (see ui.schedule_settings for labels)
         self._schedule_state: str = SCHEDULE_STATE_CONFIG
         self._countdown_timer: Optional[QTimer] = None
+        self._system_clock_timer = QTimer(self)
+        self._system_clock_timer.setInterval(1000)
+        self._system_clock_timer.timeout.connect(self._refresh_market_clock_row)
+        self._system_clock_timer.start()
         # --- UI-7 Task 3: periodic dispatch -------------------------------
         # The frozen send set + its destinations, fixed at Apply. Each due
         # moment the dispatcher fans one send out per destination broker.
@@ -1339,11 +1335,6 @@ class OrderConfigurationPage(QWidget):
         # send and no wait for a broker answer ever blocks the UI thread.
         self._dispatch_thread = None
         self._dispatch_stop_event = None
-        # UI-7 Task 2: a LIGHT display-only timer that re-renders the sync
-        # freshness line. It never syncs, never touches the locked time
-        # base and never moves the countdown — see
-        # ``_refresh_sync_freshness_display``.
-        self._sync_freshness_timer: Optional[QTimer] = None
         self._countdown_target: Optional[datetime] = None  # next run moment
         # The START_NOW state is a one-shot notice: shown once for a past
         # start, never re-entered by a later tick.
@@ -1352,11 +1343,6 @@ class OrderConfigurationPage(QWidget):
         # locked; only the Stop action (the Apply button, relabelled) is
         # active.
         self._schedule_locked: bool = False
-
-        # Startup sync is triggered by MainWindow AFTER the window is
-        # shown and the event loop is running — never by this page's own
-        # visibility, and never during construction (offline contract).
-        self._startup_sync_done: bool = False
 
         order_column_layout.addWidget(form_group)
 
@@ -1452,22 +1438,15 @@ class OrderConfigurationPage(QWidget):
         # ---------------------------------------------
         # Schedule configuration (UI-7 Task 1)
         # ---------------------------------------------
-        # Start Time / End Time / Interval inputs plus the Apply Schedule
-        # action, the clock-source status line, and the confirmation
-        # summary. Nothing here starts a schedule, counts down, or sends an
-        # order: the countdown lifecycle is UI-7 Task 2 and wiring due
-        # times to the send path is UI-7 Task 3.
+        # Start Time / End Time / Interval inputs plus system clock,
+        # schedule actions, state and countdown.
 
         self.schedule_group = QGroupBox(SCHEDULE_GROUP_TITLE, self)
         schedule_form = QFormLayout(self.schedule_group)
 
-        # UI-10: this row is the LIVE MARKET CLOCK. The attribute keeps its
-        # UI-7 name (C7: nothing renamed); it now renders the current
-        # market-synced Tehran time (HH:MM:SS, never milliseconds) instead
-        # of the timezone note. The timezone itself stays visible in the
-        # schedule summary (NOTE_TIMEZONE) and in the clock status row.
+        # Live system time rendered in Tehran's timezone.
         self.schedule_timezone_label = QLabel("", self.schedule_group)
-        schedule_form.addRow(STRINGS.LABEL_CLOCK, self.schedule_timezone_label)
+        schedule_form.addRow(STRINGS.LABEL_SYSTEM_CLOCK, self.schedule_timezone_label)
 
         self.schedule_start_input = QLineEdit(self.schedule_group)
         self.schedule_start_input.setPlaceholderText(TIME_INPUT_PLACEHOLDER)
@@ -1526,34 +1505,8 @@ class OrderConfigurationPage(QWidget):
         )
         schedule_buttons_layout.addWidget(self.apply_schedule_button)
 
-        self.refresh_clock_button = QPushButton(STRINGS.BUTTON_REFRESH_CLOCK, schedule_buttons)
-        self.refresh_clock_button.clicked.connect(self._on_refresh_clock)
-        schedule_buttons_layout.addWidget(self.refresh_clock_button)
-
-        # UI-7 Task 2 — manual sync button
-        self.sync_clock_button = QPushButton(SYNC_BUTTON_LABEL, schedule_buttons)
-        self.sync_clock_button.clicked.connect(self._on_sync_clock)
-        self.sync_clock_button.setToolTip(STRINGS.TOOLTIP_FORCE_SYNC)
-        schedule_buttons_layout.addWidget(self.sync_clock_button)
-
         schedule_form.addRow(schedule_buttons)
-
-        self.clock_status_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
-        self.clock_status_label.setWordWrap(True)
-        # UI-10: relabelled «وضعیت ساعت» so the form does not carry two rows
-        # called «ساعت». Attribute, value and behaviour are unchanged.
-        schedule_form.addRow(STRINGS.LABEL_CLOCK_STATUS, self.clock_status_label)
-
-        # UI-10: one initial render so the clock row shows a real time the
-        # moment the page is built (the 1-second display timer starts later,
-        # with the sync-freshness display after the first sync attempt).
         self._refresh_market_clock_row()
-
-        # UI-7 Task 2 — the RESULT of the last sync: source, estimated
-        # offset, uncertainty band and freshness. Never millisecond-precise.
-        self.sync_status_label = QLabel(SYNC_STATE_NEVER, self.schedule_group)
-        self.sync_status_label.setWordWrap(True)
-        schedule_form.addRow(STRINGS.LABEL_SYNC, self.sync_status_label)
 
         # UI-7 Task 2 — lifecycle state (configuring / waiting / counting /
         # starting once / stopped / expired).
@@ -4363,271 +4316,14 @@ class OrderConfigurationPage(QWidget):
     # ``DispatchTiming`` contract, generates the moments with the existing
     # ``TimedDispatchScheduler``, and shows the result before anything runs.
 
-    def set_clock_service_factory(self, factory):
-        """
-        Inject the clock-service seam (production and tests).
-
-        The factory receives the injectable transport and returns a
-        ``MarketClockService``. Leaving it ``None`` keeps the default
-        lazily-created service, which still performs no network call until
-        a refresh is requested.
-        """
-        self._clock_service_factory = factory
-
-    def set_clock_transport(self, transport):
-        """
-        Inject the HTTP transport used by the default clock service.
-
-        Replacing the transport rebuilds the clock service, so a new
-        transport can never be silently ignored by an already-built
-        service. The displayed clock status is cleared with it: a reading
-        taken through the previous transport does not describe the new one.
-        """
-        self._clock_transport = transport
-        self._clock_service = None
-        self._clock_status = None
-
-    def clock_service(self):
-        """Return the page's clock service, creating it on first use."""
-        if self._clock_service is None:
-            factory = self._clock_service_factory
-            if factory is not None:
-                self._clock_service = factory(self._clock_transport)
-            else:
-                self._clock_service = MarketClockService(
-                    transport=self._clock_transport
-                )
-            self._clock_transport = self._clock_service.transport
-        return self._clock_service
-
-    def _refresh_clock_display(self):
-        status = self._clock_status
-        if status is None:
-            status = self.clock_service().status()
-            self._clock_status = status
-        self.clock_status_label.setText(describe_clock(status))
-        self.sync_status_label.setText(self._sync_state_text())
-        self._refresh_market_clock_row()
-
     def _refresh_market_clock_row(self):
-        """
-        UI-10: render the live clock row (the attribute named
-        ``schedule_timezone_label``). The value is the current
-        application time on the clock service's own time base —
-        ``now_utc + applied_offset``, expressed in Tehran, exactly the
-        time the schedule inputs and the countdown use. Shown as
-        ``HH:MM:SS`` only: the market source is second-resolution by
-        contract (MARKET_PRECISION_NOTE) and no sub-second precision is
-        ever claimed. Until a market sync has completed (or before the
-        service even exists) the row shows the program time and says so
-        explicitly — the program clock is never dressed up as a market
-        clock. This is a pure DISPLAY read: it never STARTS the service
-        (construction stays offline — tests inject their own factory
-        after the page is built), it starts no request and it does not
-        touch the locked schedule time base.
-        """
-        time_text = datetime.now().astimezone(TEHRAN_TIMEZONE).strftime(
-            "%H:%M:%S"
+        """Render the Windows system clock as Tehran wall time."""
+        self.schedule_timezone_label.setText(
+            system_wall_now().strftime("%H:%M:%S")
         )
-        status = self._clock_status
-        service = self._clock_service  # deliberately NOT clock_service()
-        if service is not None:
-            try:
-                time_text = service.now_tehran().strftime("%H:%M:%S")
-            except Exception:  # pragma: no cover — never raise on display
-                pass
-        if (
-            service is None
-            or status is None
-            or status.source is not ClockSource.MARKET
-            or not service.is_sync_fresh()
-        ):
-            time_text = f"{time_text} {STRINGS.CLOCK_PROGRAM_TIME_SUFFIX}"
-        self.schedule_timezone_label.setText(time_text)
-
-    def _sync_state_text(self) -> str:
-        """
-        One line describing the RESULT of the last clock sync.
-
-        Shows the source, the estimated offset, the uncertainty band and
-        the freshness of the reading. Freshness comes from the service's
-        MONOTONIC measurement, so a system-clock step can neither renew a
-        stale reading nor expire a fresh one. A stale, failed or missing
-        reading is never dressed up as a market clock, and no
-        millisecond precision is ever claimed for a second-resolution
-        TSETMC answer.
-        """
-        service = self.clock_service()
-        status = (
-            self._clock_status
-            if self._clock_status is not None
-            else service.status()
-        )
-        # Freshness is always read from the LIVE service, measured on its
-        # monotonic clock, so the line ages honestly between two syncs and
-        # a system-clock step can neither renew a stale reading nor expire
-        # a fresh one.
-        age = service.sync_age_seconds()
-        if age is None:
-            return SYNC_STATE_FAILED if service.last_sync_attempt else SYNC_STATE_NEVER
-        if age > SCHEDULE_SYNC_MAX_AGE_SECONDS:
-            return (
-                STRINGS.SYNC_STALE.format(
-                age=STRINGS.format_technical(age),
-                limit=STRINGS.format_technical(SCHEDULE_SYNC_MAX_AGE_SECONDS),
-                button=SYNC_BUTTON_LABEL,
-            )
-            )
-        text = (
-            f"{STRINGS.SYNC_OK_PREFIX.format(age=STRINGS.format_technical(age), source=status.source.value)}"
-            f"{STRINGS.SYNC_OK_OFFSET.format(offset=format_offset(status.applied_offset))}"
-            f"{STRINGS.SYNC_OK_UNCERTAINTY.format(uncertainty=format_uncertainty(status.uncertainty))}"
-            f"{status.precision_note}"
-        )
-        if not service.last_sync_ok:
-            text += STRINGS.SYNC_OK_FAILED_SUFFIX
-        return text
-
-    def _on_clock_succeeded(self, sample):
-        self._clock_status = self.clock_service().observe(sample)
-        self._refresh_clock_display()
-        self._on_clock_sync_finished(True)
-        self._apply_pending_schedule_if_any()
-
-    def _on_clock_failed(self, reason):
-        self._clock_status = self.clock_service().mark_market_unavailable(reason)
-        self._refresh_clock_display()
-        self._on_clock_sync_finished(False)
-        self._apply_pending_schedule_if_any()
-
-    def _start_clock_refresh(self):
-        """
-        Begin one non-blocking clock refresh; ``False`` if already running.
-
-        The network call always happens on a worker thread, never on the
-        GUI thread, so Apply and Refresh both stay responsive.
-        """
-        service = self.clock_service()
-        if self._clock_thread is not None and self._clock_thread.isRunning():
-            return False
-        worker = MarketClockWorker(
-            transport=service.transport,
-            now_utc=service.now_utc,
-            parent=self,
-        )
-        self._clock_worker = worker
-        worker.clock_succeeded.connect(self._on_clock_succeeded)
-        worker.clock_failed.connect(self._on_clock_failed)
-        worker.finished.connect(self._on_clock_worker_finished)
-        self._clock_thread = worker
-        self.sync_status_label.setText(SYNC_STATE_IN_PROGRESS)
-        worker.start()
-        return True
-
-    def _on_refresh_clock(self):
-        """Fetch market time off the GUI thread; never blocks the UI."""
-        self._start_clock_refresh()
-
-    def _on_clock_worker_finished(self):
-        worker = self._clock_worker
-        self._clock_worker = None
-        self._clock_thread = None
-        if worker is not None:
-            worker.deleteLater()
-
-    # --- UI-7 Task 2: manual sync & startup sync --------------------------
-
-    def _clock_sync_in_progress(self) -> bool:
-        """True while a clock refresh worker is still running."""
-        thread = self._clock_thread
-        return thread is not None and thread.isRunning()
-
-    def _on_sync_clock(self):
-        """
-        Manual sync button handler. Starts a non-blocking clock refresh.
-
-        The button reads "busy" while the request is in flight and the
-        result (source, estimated offset, uncertainty, freshness) is shown
-        on the Sync line when it lands — success or failure.
-        """
-        if self._start_clock_refresh():
-            self.sync_clock_button.setText(SYNC_BUTTON_LABEL_BUSY)
-            self.sync_clock_button.setEnabled(False)
-
-    def start_startup_sync(self) -> bool:
-        """
-        Start the ONE-SHOT, non-blocking startup clock sync.
-
-        Called by ``MainWindow`` only after the window has been shown and
-        the event loop is running, so importing or constructing the UI
-        stays offline and the sync never depends on the Order
-        Configuration page being opened.
-        """
-        if self._startup_sync_done:
-            return False
-        self._startup_sync_done = True
-        return self._start_clock_refresh()
-
-    def _on_clock_sync_finished(self, success: bool):
-        """
-        Called when a clock refresh (manual, startup or Refresh Clock)
-        completes.
-
-        Restores the sync button — unless a schedule is active, in which
-        case the button stays locked and only Stop remains active.
-        """
-        if not self._schedule_locked:
-            self.sync_clock_button.setEnabled(True)
-        self.sync_clock_button.setText(
-            SYNC_BUTTON_LABEL if success else SYNC_BUTTON_LABEL_FAILED
-        )
-        self._start_sync_freshness_display()
-        self._refresh_clock_display()
-
-    # --- UI-7 Task 2: sync freshness display timer ------------------------
-
-    def _start_sync_freshness_display(self):
-        """
-        Keep the sync freshness line honest between two syncs.
-
-        The line says how long ago the last completed sync was, measured
-        on the monotonic clock. Without a timer it would keep claiming
-        "fresh" long after the reading has actually expired. This timer
-        only RE-RENDERS that text: it starts no request, never reads the
-        clock service's time base and never touches the locked schedule
-        or its countdown.
-        """
-        if self._sync_freshness_timer is None:
-            self._sync_freshness_timer = QTimer(self)
-            self._sync_freshness_timer.setInterval(SYNC_FRESHNESS_TICK_MS)
-            self._sync_freshness_timer.timeout.connect(
-                self._refresh_sync_freshness_display
-            )
-        self._sync_freshness_timer.start()
-
-    def _stop_sync_freshness_display(self):
-        """Stop the freshness timer (the timer object is reused)."""
-        if self._sync_freshness_timer is not None:
-            self._sync_freshness_timer.stop()
-
-    def _refresh_sync_freshness_display(self):
-        """
-        Re-render the sync line from the LIVE monotonic age, nothing else.
-
-        Deliberately does NOT start a sync, does not re-lock or re-freeze
-        any schedule time base and does not touch the countdown — the
-        active schedule's locked clock is completely independent of how
-        fresh the displayed sync reading is.
-        """
-        # While a request is in flight the line already says so; leave
-        # that honest message alone instead of overwriting it.
-        if self._clock_sync_in_progress():
-            return
-        self._refresh_clock_display()
 
     def closeEvent(self, event):
         """Stop the display timers when the page is closed/destroyed."""
-        self._stop_sync_freshness_display()
         # Task 3: closing the page stops STARTING new dispatch turns and
         # wakes the worker, so no send is ever started after the page goes.
         self._stop_dispatcher()
@@ -4755,7 +4451,7 @@ class OrderConfigurationPage(QWidget):
         targets = self._frozen_dispatch_targets()
         dispatcher = PeriodicScheduleDispatcher(
             runner_factory=self._new_send_runner,
-            mono_clock=self.clock_service()._mono,
+            mono_clock=schedule_monotonic,
         )
         timing = self._schedule_timing
         window = (
@@ -4944,50 +4640,15 @@ class OrderConfigurationPage(QWidget):
 
     def _clear_locked_time_base(self):
         """Drop every value the countdown advances from."""
-        self._locked_clock_source = None
-        self._locked_applied_offset = None
-        self._locked_uncertainty = None
-        self._locked_market_time = None
-        self._locked_sync_time = None
         self._locked_base_time = None
         self._locked_mono_anchor = None
         self._locked_last_now = None
 
     def _lock_schedule_time_base(self):
         """
-        Freeze the CURRENT clock state as the time base of the schedule.
-
-        The base is the clock service's EFFECTIVE ``now()`` at Apply —
-        the very value the countdown is measured against — plus the
-        monotonic reading taken at that same instant. Both are COPIED
-        here rather than read back from the service later, so a
-        subsequent sync — which may even rebuild the clock service —
-        can never move the accepted target or restart, rewind or shift
-        the countdown.
-
-        ``now()`` is sampled on purpose instead of re-deriving
-        ``wall_anchor + applied_offset`` here: when a gradual correction
-        has walked the applied offset down, ``now()`` HOLDS at its
-        previous value (the non-rewinding guarantee) while the raw terms
-        already sit behind it. Reconstructing from the raw terms would
-        therefore start the countdown in the past.
+        Sample system wall time and monotonic time together at Apply.
         """
-        service = self.clock_service()
-        status = (
-            self._clock_status
-            if self._clock_status is not None
-            else service.status()
-        )
-        self._locked_clock_source = status.source
-        self._locked_applied_offset = status.applied_offset
-        self._locked_uncertainty = status.uncertainty
-        self._locked_market_time = status.market_time
-        self._locked_sync_time = status.last_successful_sync
-        # Monotonic FIRST, then now(): the elapsed time measured from
-        # this reading can then only be >= 0, so the locked clock can
-        # never start behind the effective time it was locked at.
-        self._locked_mono_anchor = service._mono()
-        self._locked_base_time = service.now()
+        self._locked_base_time, self._locked_mono_anchor = sample_system_clocks()
         self._locked_last_now = None
 
     def _get_locked_now_tehran(self) -> datetime:
@@ -5003,9 +4664,9 @@ class OrderConfigurationPage(QWidget):
             self._locked_base_time is None
             or self._locked_mono_anchor is None
         ):
-            return self.clock_service().now_tehran()
+            return system_wall_now()
 
-        elapsed = self.clock_service()._mono() - self._locked_mono_anchor
+        elapsed = system_monotonic() - self._locked_mono_anchor
         if elapsed < 0:
             elapsed = 0.0
         candidate = self._locked_base_time + timedelta(seconds=elapsed)
@@ -5123,7 +4784,7 @@ class OrderConfigurationPage(QWidget):
             self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
 
         self._set_schedule_state(state)
-        self._refresh_clock_display()
+        self._refresh_market_clock_row()
 
     def _on_schedule_button_clicked(self):
         """The single schedule button: Apply before, Stop afterwards."""
@@ -5144,18 +4805,7 @@ class OrderConfigurationPage(QWidget):
 
     def _on_apply_schedule(self):
         """
-        Validate the inputs, then accept them using the LAST COMPLETED
-        clock sync.
-
-        Apply never starts a network request of its own. Three cases:
-
-          * a sync is still in flight -> Apply waits for that very result;
-          * the last completed sync is fresh (monotonic age inside
-            ``SCHEDULE_SYNC_MAX_AGE_SECONDS``) -> it is consumed as-is;
-          * nothing fresh is available -> the page says so explicitly and
-            falls back to the system clock with a soft notice. Stale or
-            missing market data is never used as if it were current, and
-            no reading is ever invented.
+        Validate inputs and accept them using only system wall time.
 
         Fail-closed: an incomplete or malformed input produces a visible
         rejection immediately, never reaches the network, and leaves no
@@ -5202,55 +4852,11 @@ class OrderConfigurationPage(QWidget):
             return
 
         self._pending_schedule = parsed
-        if self._clock_sync_in_progress():
-            # Wait for the result already in flight instead of starting a
-            # second request; the worker's completion handler finishes
-            # this Apply.
-            #
-            # The controls are locked IMMEDIATELY, not when the sync
-            # lands: from this moment the user has a schedule pending,
-            # so every order/queue/schedule control is frozen and the
-            # button becomes Stop. Stop drops ``_pending_schedule`` and
-            # frees the controls, and the landing sync result then finds
-            # nothing pending and can never revive a cancelled plan.
-            self.sync_status_label.setText(SYNC_STATE_IN_PROGRESS)
-            self._set_schedule_locked(True)
-            return
         self._apply_pending_schedule_if_any()
-
-    def _ensure_usable_clock_for_apply(self, service):
-        """
-        Refuse to schedule against a stale or missing market clock.
-
-        A successful sync whose MONOTONIC age is inside the schedule limit
-        is used unchanged. Otherwise the page states the problem explicitly
-        and falls back to the system clock with a soft notice — the
-        confirmed fallback behaviour. It never fabricates a TSETMC reading
-        and never silently reuses an old one.
-        """
-        if service.is_sync_fresh():
-            return
-        age = service.sync_age_seconds()
-        status = service.status()
-        age_text = f"{age:.0f}s" if age is not None else "no recorded age"
-        if status.source is ClockSource.MARKET:
-            service.note_unavailable(
-                f"the last market clock sync is {age_text} old, older than "
-                f"the {SCHEDULE_SYNC_MAX_AGE_SECONDS:.0f}s schedule limit"
-            )
-        elif status.last_sync_attempt is None:
-            service.note_unavailable(
-                "no market clock sync has completed yet - press the sync "
-                "button before applying"
-            )
-        # A sync that already failed keeps its own, more specific reason.
 
     def _apply_pending_schedule_if_any(self):
         """
-        Accept the pending inputs once a clock refresh has landed.
-
-        Does nothing until a refresh has actually landed, so the window is
-        always evaluated against a real, completed sync result.
+        Accept pending inputs against the Windows system clock.
 
         On success this LOCKS the time base, locks every order/queue/
         schedule control (Stop stays active) and starts the countdown.
@@ -5259,13 +4865,9 @@ class OrderConfigurationPage(QWidget):
         if parsed is None:
             return
 
-        service = self.clock_service()
-        self._ensure_usable_clock_for_apply(service)
-        status = service.status()
-        self._clock_status = status
-
         try:
-            now_tehran = service.now_tehran()
+            self._lock_schedule_time_base()
+            now_tehran = self._locked_base_time
             timing = build_dispatch_timing(parsed, now_tehran)
             times = generate_schedule_times(timing)
             assessment = assess_schedule_window(timing, now_tehran, times)
@@ -5286,8 +4888,6 @@ class OrderConfigurationPage(QWidget):
         self._schedule_state = SCHEDULE_STATE_CONFIG
         self._start_now_shown = False
         self._countdown_target = None
-        self._clear_locked_time_base()
-        self._lock_schedule_time_base()
         # The queue/account set may have changed while Apply waited for a
         # clock sync. Freezing repeats destination validation; if it fails,
         # the helper clears the accepted state and we must not continue by
@@ -5299,7 +4899,7 @@ class OrderConfigurationPage(QWidget):
             parsed,
             timing,
             assessment,
-            describe_clock(status),
+            STRINGS.CLOCK_SOURCE_DESCRIPTION,
             moments=times,
         )
         self.schedule_summary_label.setText(describe_summary(summary))
@@ -5320,7 +4920,7 @@ class OrderConfigurationPage(QWidget):
             self._start_now_shown = True
             self._set_schedule_state(SCHEDULE_STATE_START_NOW)
 
-        self._refresh_clock_display()
+        self._refresh_market_clock_row()
 
     def _clear_accepted_schedule(self):
         """Forget the accepted schedule entirely and free every control."""
@@ -5354,8 +4954,6 @@ class OrderConfigurationPage(QWidget):
         self.schedule_end_input.setEnabled(unlocked)
         self.schedule_interval_input.setEnabled(unlocked)
         self.dispatch_interval_input.setEnabled(unlocked)
-        self.sync_clock_button.setEnabled(unlocked)
-        self.refresh_clock_button.setEnabled(unlocked)
         self.apply_schedule_button.setText(
             STOP_BUTTON_LABEL if self._schedule_locked else APPLY_BUTTON_LABEL
         )
@@ -5396,12 +4994,6 @@ class OrderConfigurationPage(QWidget):
     def schedule_times(self):
         """Public read-only access to the accepted run moments."""
         return self._schedule_times
-
-    def clock_status(self):
-        """Public read-only access to the current clock status."""
-        if self._clock_status is None:
-            self._clock_status = self.clock_service().status()
-        return self._clock_status
 
     # ---------------------------------------------------------
     # Amounts

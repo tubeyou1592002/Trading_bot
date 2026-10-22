@@ -366,11 +366,8 @@ LABEL_START_TIME = "زمان شروع:"
 LABEL_END_TIME = "زمان پایان:"
 LABEL_INTERVAL_SECONDS = "فاصله (ثانیه):"
 LABEL_DISPATCH_INTERVAL_MS = "فاصله ارسال (میلی‌ثانیه):"
-LABEL_CLOCK = "ساعت:"
-# UI-10: the former "منطقه زمانی" row becomes the live clock row, so the
-# source/sync row (LABEL_CLOCK, now «وضعیت ساعت») must not share its label.
-LABEL_CLOCK_STATUS = "وضعیت ساعت:"
-LABEL_SYNC = "همگام‌سازی:"
+LABEL_SYSTEM_CLOCK = "ساعت سیستم:"
+CLOCK_SOURCE_DESCRIPTION = "ساعت سیستم ویندوز؛ همگام‌سازی بیرون از برنامه با NetTime/NTP"
 LABEL_STATE = "وضعیت:"
 LABEL_COUNTDOWN = "شمارش معکوس:"
 LABEL_SUMMARY = "خلاصه:"
@@ -387,7 +384,6 @@ NOTE_TIMEZONE = "به وقت تهران (Asia/Tehran, UTC+03:30)"
 # completed the row shows the program time and says so explicitly (a
 # program clock is never dressed up as a market clock). The suffix is
 # pure Persian; the page concatenates the time in front of it.
-CLOCK_PROGRAM_TIME_SUFFIX = "(ساعت برنامه)"
 
 # --- schedule summary lines (see schedule_settings.describe_summary) ---------
 # Clock/moment times inside these lines are technical and stay Latin; the
