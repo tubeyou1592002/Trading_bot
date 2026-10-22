@@ -44,3 +44,7 @@ class SymbolResolver:
         instrument = self.tsetmc.get_info(ins_code)
 
         return instrument
+
+    def get_price_limits(self, ins_code):
+        """Return the TSETMC daily allowed price range for an InsCode."""
+        return self.tsetmc.get_price_limits(ins_code)

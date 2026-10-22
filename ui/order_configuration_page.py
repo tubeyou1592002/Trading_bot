@@ -114,9 +114,11 @@ always fail-closed: without a selected Instrument, side, price,
 quantity, resolved nsc_id and an active account nothing is queued.
 """
 
+import math
 import threading
 import inspect
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from models.order import BUY, SELL, Order
 from models.trading_state import (
@@ -124,8 +126,8 @@ from models.trading_state import (
     TradingStateUnavailable,
 )
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal, QDateTime
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QThread, QTimer, Qt, Signal, QDateTime, QSize
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -236,6 +238,15 @@ RESULT_DATA_ROLE = Qt.UserRole
 # generation (the user already retyped) can never be resolved into a
 # selection, even if the caller keeps a reference to the old item.
 RESULT_SEQUENCE_ROLE = Qt.UserRole + 1
+
+# Limit-arrow assets. Each arrow is its own SVG under ui/assets/icons —
+# the up arrow is the theme success green, the down arrow the danger red.
+_ICONS_DIR = Path(__file__).resolve().parent / "assets" / "icons"
+_ARROW_UP_ICON = _ICONS_DIR / "arrow-up.svg"
+_ARROW_DOWN_ICON = _ICONS_DIR / "arrow-down.svg"
+
+PRICE_LIMIT_MAX = "max"
+PRICE_LIMIT_MIN = "min"
 
 # The three explicit, separated search states.
 SEARCH_STATE_IDLE = ""
@@ -626,6 +637,113 @@ class _OrderIdentityWorker(QThread):
         self.identity_succeeded.emit(self.identity, self.ins_code, nsc_id)
 
 
+def _parse_exact_integral_text(text):
+    """Parse an ASCII integer or integral decimal string without truncating."""
+    text = text.strip()
+    if not text or not text.isascii():
+        return None
+    whole, dot, fraction = text.partition(".")
+    if dot:
+        if not fraction or not fraction.isdigit():
+            return None
+        if any(char != "0" for char in fraction):
+            return None
+    if not whole or not whole.isdigit():
+        return None
+    return int(whole)
+
+
+def _valid_limit(value, *, allow_zero=True):
+    """An exact integer limit, or ``None`` (never rounded or guessed).
+
+    The market layer normalizes the Loader's values to ``int``, but this
+    guard accepts the raw forms too so a valid response is not rejected
+    twice by two different validators: integral ``float`` values such as
+    ``7630.0`` and integral-decimal strings such as ``"7630.0"`` are exact;
+    fractional numbers, negatives, empty/unknown strings and booleans are
+    invalid. Price limits must be strictly positive; quantity minimums may
+    legitimately be zero.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return None
+        number = int(value)
+    elif isinstance(value, str):
+        number = _parse_exact_integral_text(value)
+        if number is None:
+            return None
+    else:
+        return None
+    if number < 0 or (number == 0 and not allow_zero):
+        return None
+    return number
+
+
+class _PriceLimitsWorker(QThread):
+    """Fetch the TSETMC daily allowed price range off the GUI thread."""
+
+    limits_succeeded = Signal(object, str, object)
+    limits_failed = Signal(object, str, str)
+
+    def __init__(self, ins_code, limits_factory, request_id, parent=None):
+        super().__init__(parent)
+        self.ins_code = ins_code
+        self._limits_factory = limits_factory
+        self.request_id = request_id
+
+    def run(self):
+        try:
+            client = self._limits_factory()
+            if client is None:
+                raise RuntimeError("price limits client is unavailable")
+            limits = client.get_price_limits(self.ins_code)
+        except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
+            self.limits_failed.emit(self.request_id, self.ins_code, str(exc))
+            return
+        self.limits_succeeded.emit(self.request_id, self.ins_code, limits)
+
+
+class _QuantityLimitsWorker(QThread):
+    """Fetch account-scoped BrokerInstrument quantity limits off the GUI thread."""
+
+    limits_succeeded = Signal(object, str, object)
+    limits_failed = Signal(object, str, str)
+
+    def __init__(
+        self, ins_code, provider_factory, request_id, parent=None
+    ):
+        super().__init__(parent)
+        self.ins_code = ins_code
+        self._provider_factory = provider_factory
+        self.request_id = request_id
+
+    def run(self):
+        try:
+            provider = self._provider_factory()
+            if provider is None:
+                raise RuntimeError("account instrument provider is unavailable")
+            result = provider.get_instrument(self.ins_code)
+        except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
+            self.limits_failed.emit(self.request_id, self.ins_code, str(exc))
+            return
+        if isinstance(result, (tuple, list)) and len(result) == 2:
+            broker_instrument = result[1]
+        else:
+            broker_instrument = result
+        if broker_instrument is None:
+            self.limits_failed.emit(
+                self.request_id, self.ins_code, "broker instrument is unavailable"
+            )
+            return
+        self.limits_succeeded.emit(
+            self.request_id, self.ins_code, broker_instrument
+        )
+
+
 class OrderConfigurationPage(QWidget):
     """
     Order Configuration page (form and state only — no execution).
@@ -686,6 +804,18 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_account = None
         self._order_identity_scope = None
         self._order_nsc_id = None               # the resolved broker nscId
+
+        # --- Limit arrows: TSETMC price bounds + broker quantity bounds ---
+        self._price_limits_factory = None
+        self._price_limits_thread = None
+        self._price_limits_worker = None
+        self._price_limits_request_id = 0
+        self._price_limits_scope = None
+        self._quantity_limits_factory = None
+        self._quantity_limits_thread = None
+        self._quantity_limits_worker = None
+        self._quantity_limits_request_id = 0
+        self._quantity_limits_scope = None
 
         # ---------------------------------------------
         # UI-9 Task 2 — page shell: scroll + two columns + bottom tables
@@ -846,12 +976,60 @@ class OrderConfigurationPage(QWidget):
         self.price_input.editingFinished.connect(self._on_price_changed)
         form_grid.addWidget(self.price_input, 2, 1)
 
+        price_limit_row = QWidget(form_group)
+        price_limit_layout = QHBoxLayout(price_limit_row)
+        price_limit_layout.setContentsMargins(0, 0, 0, 0)
+        price_limit_layout.setSpacing(SPACING["xs"])
+        self.price_max_button = self._make_limit_arrow(
+            _ARROW_UP_ICON,
+            STRINGS.TOOLTIP_PRICE_MAX,
+            "priceMaxButton",
+        )
+        self.price_max_button.clicked.connect(
+            lambda checked=False: self._request_price_limit(PRICE_LIMIT_MAX)
+        )
+        self.price_min_button = self._make_limit_arrow(
+            _ARROW_DOWN_ICON,
+            STRINGS.TOOLTIP_PRICE_MIN,
+            "priceMinButton",
+        )
+        self.price_min_button.clicked.connect(
+            lambda checked=False: self._request_price_limit(PRICE_LIMIT_MIN)
+        )
+        price_limit_layout.addWidget(self.price_max_button)
+        price_limit_layout.addWidget(self.price_min_button)
+        form_grid.addWidget(price_limit_row, 2, 2)
+
         # --- Quantity ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_QUANTITY, form_group), 3, 0)
         self.quantity_input = QLineEdit(form_group)
         self.quantity_input.setPlaceholderText(STRINGS.PLACEHOLDER_QUANTITY)
         self.quantity_input.editingFinished.connect(self._on_quantity_changed)
         form_grid.addWidget(self.quantity_input, 3, 1)
+
+        quantity_limit_row = QWidget(form_group)
+        quantity_limit_layout = QHBoxLayout(quantity_limit_row)
+        quantity_limit_layout.setContentsMargins(0, 0, 0, 0)
+        quantity_limit_layout.setSpacing(SPACING["xs"])
+        self.quantity_max_button = self._make_limit_arrow(
+            _ARROW_UP_ICON,
+            STRINGS.TOOLTIP_QUANTITY_MAX,
+            "quantityMaxButton",
+        )
+        self.quantity_max_button.clicked.connect(
+            lambda checked=False: self._request_quantity_limit(PRICE_LIMIT_MAX)
+        )
+        self.quantity_min_button = self._make_limit_arrow(
+            _ARROW_DOWN_ICON,
+            STRINGS.TOOLTIP_QUANTITY_MIN,
+            "quantityMinButton",
+        )
+        self.quantity_min_button.clicked.connect(
+            lambda checked=False: self._request_quantity_limit(PRICE_LIMIT_MIN)
+        )
+        quantity_limit_layout.addWidget(self.quantity_max_button)
+        quantity_limit_layout.addWidget(self.quantity_min_button)
+        form_grid.addWidget(quantity_limit_row, 3, 2)
 
         # --- Add to Queue (UI-4) --------------------------------
         # Prepares ONE real Order (via the resolved nsc_id + the active
@@ -1441,6 +1619,34 @@ class OrderConfigurationPage(QWidget):
         """
         self._order_identity_factory = factory
 
+    def set_price_limits_factory(self, factory):
+        """Inject the TSETMC price-limits client factory (tests use a stub).
+
+        The factory is called on the background worker, never during page
+        construction, so the UI stays offline until an arrow is pressed.
+        """
+        self._price_limits_factory = factory
+
+    def set_quantity_limits_factory(self, factory):
+        """Inject an account-scoped BrokerInstrument provider factory.
+
+        The factory is called on the background worker with the exact
+        ``(account_id, broker_name)`` captured at request time. When it is
+        not supplied, the existing order-identity factory is used so the
+        provider remains the one owned by the active account's broker.
+        """
+        self._quantity_limits_factory = factory
+
+    def _make_limit_arrow(self, icon_path, tooltip, object_name):
+        button = QPushButton(self.form_group)
+        button.setObjectName(object_name)
+        button.setIcon(QIcon(str(icon_path)))
+        button.setIconSize(QSize(SPACING["lg"], SPACING["lg"]))
+        button.setFixedSize(GEOMETRY["rowHeight"], GEOMETRY["rowHeight"])
+        button.setToolTip(tooltip)
+        button.setFlat(True)
+        return button
+
     # ---------------------------------------------------------
     # UI-4: the existing core OrderQueue (lazy, never at construction)
     # ---------------------------------------------------------
@@ -2004,6 +2210,7 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_account = None
         self._order_identity_scope = None
         self._order_nsc_id = None
+        self._invalidate_limit_requests()
 
     def _start_order_identity_resolution(self, instrument):
         """
@@ -3298,6 +3505,9 @@ class OrderConfigurationPage(QWidget):
         else:
             self._clear_validation_error()
             self._apply_order_panel_halo(side)
+            # A quantity ceiling depends on the side; an in-flight response
+            # for the previous side must never land on the new side.
+            self._invalidate_limit_requests()
 
     def _apply_order_panel_halo(self, side):
         """Give the order panel a soft side-keyed halo and inner tint.
@@ -3377,6 +3587,231 @@ class OrderConfigurationPage(QWidget):
         else:
             self._clear_validation_error()
         self._refresh_amounts()
+
+    # ---------------------------------------------------------
+    # Daily price / broker quantity limit arrows
+    # ---------------------------------------------------------
+
+    def _invalidate_limit_requests(self):
+        """Discard every in-flight limit response (symbol/account/side change)."""
+        self._price_limits_request_id += 1
+        self._quantity_limits_request_id += 1
+        self._price_limits_scope = None
+        self._quantity_limits_scope = None
+
+    def _request_price_limit(self, kind):
+        """Fetch and place one TSETMC daily price bound for the selected symbol."""
+        if kind not in (PRICE_LIMIT_MAX, PRICE_LIMIT_MIN):
+            return
+        instrument = self.config.selected_instrument
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code:
+            self._show_validation_error(STRINGS.LIMIT_PRICE_NO_SYMBOL)
+            return
+
+        self._price_limits_request_id += 1
+        request_id = self._price_limits_request_id
+        identity = self._current_read_identity(ins_code)
+        self._price_limits_scope = (request_id, ins_code, identity, kind)
+        self._clear_validation_error()
+
+        injected_factory = self._price_limits_factory
+
+        def limits_factory():
+            if injected_factory is not None:
+                return injected_factory()
+            # Reuse the EXISTING market seam (SymbolResolver owns the
+            # TSETMC client) instead of importing market.tsetmc from ui/.
+            if self._resolver_factory is not None:
+                return self._resolver_factory()
+            from market.symbol_resolver import SymbolResolver
+
+            return SymbolResolver()
+
+        worker = _PriceLimitsWorker(
+            ins_code, limits_factory, request_id, parent=self
+        )
+        self._price_limits_worker = worker
+        self._price_limits_thread = worker
+        worker.limits_succeeded.connect(self._on_price_limits_succeeded)
+        worker.limits_failed.connect(self._on_price_limits_failed)
+        worker.finished.connect(
+            lambda w=worker: self._forget_price_limits_worker(w)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _forget_price_limits_worker(self, worker):
+        if self._price_limits_thread is worker:
+            self._price_limits_thread = None
+            self._price_limits_worker = None
+
+    def wait_for_limit_workers(self, timeout_ms=5000):
+        """Wait (bounded) for any price/quantity limit worker to finish."""
+        for thread in (self._price_limits_thread, self._quantity_limits_thread):
+            if thread is not None and not thread.wait(timeout_ms):
+                raise TimeoutError("limit worker thread did not finish")
+
+    def _on_price_limits_succeeded(self, request_id, ins_code, limits):
+        scope = self._price_limits_scope
+        if (request_id != self._price_limits_request_id or scope is None):
+            return  # stale request — discarded deterministically
+        _, scope_ins_code, scope_identity, kind = scope
+        current_ins_code = getattr(
+            self.config.selected_instrument, "ins_code", None
+        )
+        if (
+            ins_code != scope_ins_code
+            or current_ins_code != scope_ins_code
+            or self._current_read_identity(scope_ins_code) != scope_identity
+        ):
+            return  # symbol/account changed mid-flight — never apply
+
+        if kind == PRICE_LIMIT_MAX:
+            value = getattr(limits, "price_max", None)
+        else:
+            value = getattr(limits, "price_min", None)
+        value = _valid_limit(value, allow_zero=False)
+        if value is None:
+            self._show_validation_error(STRINGS.LIMIT_PRICE_INVALID)
+            return
+
+        # Go through the existing input validation path so
+        # OrderConfiguration and the visible field stay in sync.
+        self.price_input.setText(str(value))
+        self._on_price_changed()
+
+    def _on_price_limits_failed(self, request_id, ins_code, message):
+        scope = self._price_limits_scope
+        if (request_id != self._price_limits_request_id or scope is None):
+            return  # stale failure — never shown
+        _, scope_ins_code, scope_identity, _kind = scope
+        current_ins_code = getattr(
+            self.config.selected_instrument, "ins_code", None
+        )
+        if (
+            ins_code != scope_ins_code
+            or current_ins_code != scope_ins_code
+            or self._current_read_identity(scope_ins_code) != scope_identity
+        ):
+            return
+        self._show_validation_error(STRINGS.LIMIT_PRICE_UNAVAILABLE)
+
+    def _request_quantity_limit(self, kind):
+        """Fetch and place one account-scoped broker quantity bound."""
+        if kind not in (PRICE_LIMIT_MAX, PRICE_LIMIT_MIN):
+            return
+        record = self._active_account_record()
+        if record is None:
+            self._show_validation_error(STRINGS.LIMIT_QUANTITY_NO_ACCOUNT)
+            return
+        instrument = self.config.selected_instrument
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code:
+            self._show_validation_error(STRINGS.LIMIT_PRICE_NO_SYMBOL)
+            return
+        side = self.config.side
+        if side not in (BUY, SELL):
+            self._show_validation_error(STRINGS.DIALOG_INVALID_SIDE)
+            return
+
+        identity = (record.account_id, record.broker_name, ins_code)
+        if self._current_read_identity(ins_code) != identity:
+            self._show_validation_error(STRINGS.LIMIT_QUANTITY_NO_ACCOUNT)
+            return
+
+        self._quantity_limits_request_id += 1
+        request_id = self._quantity_limits_request_id
+        self._quantity_limits_scope = (
+            request_id, ins_code, identity, side, kind
+        )
+        self._clear_validation_error()
+
+        injected_factory = (
+            self._quantity_limits_factory or self._order_identity_factory
+        )
+
+        def provider_factory():
+            if injected_factory is None:
+                return None
+            try:
+                signature = inspect.signature(injected_factory)
+                signature.bind(record.account_id, record.broker_name)
+            except (TypeError, ValueError):
+                return injected_factory()
+            return injected_factory(
+                record.account_id, record.broker_name
+            )
+
+        worker = _QuantityLimitsWorker(
+            ins_code, provider_factory, request_id, parent=self
+        )
+        self._quantity_limits_worker = worker
+        self._quantity_limits_thread = worker
+        worker.limits_succeeded.connect(self._on_quantity_limits_succeeded)
+        worker.limits_failed.connect(self._on_quantity_limits_failed)
+        worker.finished.connect(
+            lambda w=worker: self._forget_quantity_limits_worker(w)
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _forget_quantity_limits_worker(self, worker):
+        if self._quantity_limits_thread is worker:
+            self._quantity_limits_thread = None
+            self._quantity_limits_worker = None
+
+    def _on_quantity_limits_succeeded(
+        self, request_id, ins_code, broker_instrument
+    ):
+        scope = self._quantity_limits_scope
+        if (request_id != self._quantity_limits_request_id or scope is None):
+            return  # stale request — discarded deterministically
+        _, scope_ins_code, scope_identity, scope_side, kind = scope
+        current_ins_code = getattr(
+            self.config.selected_instrument, "ins_code", None
+        )
+        if (
+            ins_code != scope_ins_code
+            or current_ins_code != scope_ins_code
+            or self._current_read_identity(scope_ins_code) != scope_identity
+            or self.config.side != scope_side
+        ):
+            return  # symbol/account/side changed mid-flight — never apply
+
+        if kind == PRICE_LIMIT_MAX:
+            field = (
+                "maximum_order_quantity_for_buy"
+                if scope_side == BUY
+                else "maximum_order_quantity_for_sell"
+            )
+        else:
+            field = "minimum_order_quantity"
+        value = _valid_limit(getattr(broker_instrument, field, None))
+        if value is None:
+            self._show_validation_error(STRINGS.LIMIT_QUANTITY_INVALID)
+            return
+
+        # Same validation path as manual entry, keeping state and text aligned.
+        self.quantity_input.setText(str(value))
+        self._on_quantity_changed()
+
+    def _on_quantity_limits_failed(self, request_id, ins_code, message):
+        scope = self._quantity_limits_scope
+        if (request_id != self._quantity_limits_request_id or scope is None):
+            return  # stale failure — never shown
+        _, scope_ins_code, scope_identity, scope_side, _kind = scope
+        current_ins_code = getattr(
+            self.config.selected_instrument, "ins_code", None
+        )
+        if (
+            ins_code != scope_ins_code
+            or current_ins_code != scope_ins_code
+            or self._current_read_identity(scope_ins_code) != scope_identity
+            or self.config.side != scope_side
+        ):
+            return
+        self._show_validation_error(STRINGS.LIMIT_QUANTITY_UNAVAILABLE)
 
     # ---------------------------------------------------------
     # Schedule & clock (UI-7 Tasks 1 and 2)
@@ -4393,6 +4828,10 @@ class OrderConfigurationPage(QWidget):
             button.setEnabled(enabled)
         self.price_input.setEnabled(enabled)
         self.quantity_input.setEnabled(enabled)
+        self.price_max_button.setEnabled(enabled)
+        self.price_min_button.setEnabled(enabled)
+        self.quantity_max_button.setEnabled(enabled)
+        self.quantity_min_button.setEnabled(enabled)
         self.add_to_queue_button.setEnabled(enabled)
         self.queue_list.setEnabled(enabled)
         if enabled:

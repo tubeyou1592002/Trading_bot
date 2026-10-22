@@ -55,6 +55,16 @@ __all__ = [
     "BUTTON_ADD_TO_QUEUE",
     "BUTTON_TEST",
     "BUTTON_TEST_ON",
+    "TOOLTIP_PRICE_MAX",
+    "TOOLTIP_PRICE_MIN",
+    "TOOLTIP_QUANTITY_MAX",
+    "TOOLTIP_QUANTITY_MIN",
+    "LIMIT_PRICE_NO_SYMBOL",
+    "LIMIT_PRICE_UNAVAILABLE",
+    "LIMIT_PRICE_INVALID",
+    "LIMIT_QUANTITY_NO_ACCOUNT",
+    "LIMIT_QUANTITY_UNAVAILABLE",
+    "LIMIT_QUANTITY_INVALID",
     # --- symbol information ---
     "LABEL_NAME",
     "LABEL_STATUS",
@@ -305,6 +315,19 @@ PLACEHOLDER_QUANTITY = "عددی"
 BUTTON_ADD_TO_QUEUE = "افزودن به صف"
 BUTTON_TEST = "تست"
 BUTTON_TEST_ON = "تست (فعال)"
+
+#: Limit arrows next to the price and quantity fields.
+TOOLTIP_PRICE_MAX = "قرار دادن سقف قیمت روز"
+TOOLTIP_PRICE_MIN = "قرار دادن کف قیمت روز"
+TOOLTIP_QUANTITY_MAX = "قرار دادن حداکثر تعداد مجاز"
+TOOLTIP_QUANTITY_MIN = "قرار دادن حداقل تعداد مجاز"
+
+LIMIT_PRICE_NO_SYMBOL = "برای دریافت کف/سقف قیمت، ابتدا نماد را انتخاب کنید"
+LIMIT_PRICE_UNAVAILABLE = "دریافت حدود قیمت ناموفق بود"
+LIMIT_PRICE_INVALID = "مقادیر دریافتی نامعتبر است"
+LIMIT_QUANTITY_NO_ACCOUNT = "برای دریافت محدودیت تعداد، حساب فعال لازم است"
+LIMIT_QUANTITY_UNAVAILABLE = "محدودیت تعداد از اطلاعات نماد کارگزاری در دسترس نیست"
+LIMIT_QUANTITY_INVALID = "محدودیت تعداد دریافتی معتبر نیست"
 
 
 # ============================================================
