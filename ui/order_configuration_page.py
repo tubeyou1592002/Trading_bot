@@ -130,6 +130,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGraphicsDropShadowEffect,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -781,6 +782,11 @@ class OrderConfigurationPage(QWidget):
         # ---------------------------------------------
 
         form_group = QGroupBox(STRINGS.GROUP_ORDER_CONFIGURATION, self)
+        # The order panel is the only widget carrying the side-keyed halo;
+        # the object name scopes the local stylesheet below to this panel.
+        form_group.setObjectName("orderConfigPanel")
+        self.form_group = form_group
+        self._order_panel_glow = None
         form_grid = QGridLayout(form_group)
 
         # --- Symbol ---------------------------------------------
@@ -830,6 +836,8 @@ class OrderConfigurationPage(QWidget):
         # after construction.
         self.side_buttons[BUY].setChecked(True)
         self.config.set_side(BUY)
+        # BUY is the default side, so the panel starts with its green halo.
+        self._apply_order_panel_halo(BUY)
 
         # --- Price ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_PRICE, form_group), 2, 0)
@@ -3289,6 +3297,50 @@ class OrderConfigurationPage(QWidget):
             self._show_validation_error(STRINGS.DIALOG_INVALID_SIDE)
         else:
             self._clear_validation_error()
+            self._apply_order_panel_halo(side)
+
+    def _apply_order_panel_halo(self, side):
+        """Give the order panel a soft side-keyed halo and inner tint.
+
+        The glow is a blurred, translucent drop shadow around the panel; the
+        inner tint is the panel surface blended with the same theme colour.
+        Both are scoped to this panel's object name, so the global theme and
+        every other group box keep their existing styling. Only the theme's
+        success/danger tokens are used — no new colour is invented.
+        """
+        color = PALETTE["success"] if side == BUY else PALETTE["danger"]
+        center_tint = self._blend_with_surface(color, 0.03)
+        middle_tint = self._blend_with_surface(color, 0.10)
+        edge_tint = self._blend_with_surface(color, 0.22)
+        self.form_group.setStyleSheet(
+            "QGroupBox#orderConfigPanel {"
+            f" border: 1px solid {color};"
+            " background-color: qradialgradient("
+            "cx:0.5, cy:0.5, radius:0.6, fx:0.5, fy:0.5,"
+            f" stop:0 {center_tint}, stop:0.55 {middle_tint},"
+            f" stop:1 {edge_tint});"
+            "}"
+        )
+
+        glow = QColor(color)
+        glow.setAlpha(130)
+        if self._order_panel_glow is None:
+            self._order_panel_glow = QGraphicsDropShadowEffect(self.form_group)
+            self._order_panel_glow.setOffset(0, 0)
+            self._order_panel_glow.setBlurRadius(40)
+            self.form_group.setGraphicsEffect(self._order_panel_glow)
+        self._order_panel_glow.setColor(glow)
+
+    @staticmethod
+    def _blend_with_surface(color, ratio=0.12):
+        """Blend a theme accent into the panel surface for a faint inner tint."""
+        surface = QColor(PALETTE["surface"])
+        accent = QColor(color)
+        return QColor(
+            round(surface.red() * (1 - ratio) + accent.red() * ratio),
+            round(surface.green() * (1 - ratio) + accent.green() * ratio),
+            round(surface.blue() * (1 - ratio) + accent.blue() * ratio),
+        ).name()
 
     def _on_price_changed(self):
         text = self.price_input.text().strip()
