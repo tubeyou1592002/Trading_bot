@@ -31,7 +31,11 @@ Presentation of the order-configuration form:
                      broker status mapping is never duplicated in the UI;
                      the state is never guessed from the symbol text,
                      and a changed/cleared symbol always drops the
-                     previous instrument's state.
+                     previous instrument's state. A colour-coded status
+                     circle is shown next to the symbol field; the full
+                     Persian market status is available only through its
+                     tooltip, rendered from the normalized MarketStatus
+                     carried by that same TradingState.
     * Side         — Buy / Sell radio pair bound to the real project
                      constants models.order.BUY / models.order.SELL
     * Price        — numeric input (basic input-level validation only)
@@ -122,12 +126,15 @@ from pathlib import Path
 
 from models.order import BUY, SELL, Order
 from models.trading_state import (
+    MARKET_STATUS_GREEN,
+    MarketStatus,
     TradingState,
     TradingStateUnavailable,
+    market_status_label,
 )
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal, QDateTime, QSize
-from PySide6.QtGui import QColor, QIcon
+from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -245,6 +252,16 @@ _ICONS_DIR = Path(__file__).resolve().parent / "assets" / "icons"
 _ARROW_UP_ICON = _ICONS_DIR / "arrow-up.svg"
 _ARROW_DOWN_ICON = _ICONS_DIR / "arrow-down.svg"
 
+_TRADING_STATUS_GREEN_ICON = _ICONS_DIR / "trading-status-green.svg"
+_TRADING_STATUS_RED_ICON = _ICONS_DIR / "trading-status-red.svg"
+_TRADING_STATUS_NEUTRAL_ICON = _ICONS_DIR / "trading-status-neutral.svg"
+_MARKET_STATUS_ICONS = {
+    PALETTE["success"]: _TRADING_STATUS_GREEN_ICON,
+    PALETTE["danger"]: _TRADING_STATUS_RED_ICON,
+    PALETTE["textMuted"]: _TRADING_STATUS_NEUTRAL_ICON,
+}
+_TRADING_STATUS_ICON_SIZE = SPACING["lg"]
+
 PRICE_LIMIT_MAX = "max"
 PRICE_LIMIT_MIN = "min"
 
@@ -320,6 +337,49 @@ STATUS_LABEL_UNKNOWN = "نامشخص"
 
 # The status display before any query ran for the current selection.
 STATUS_PENDING_LABEL = "در حال دریافت…"
+
+
+def _market_status_color(status):
+    if status in MARKET_STATUS_GREEN:
+        return PALETTE["success"]
+    if isinstance(status, MarketStatus):
+        return PALETTE["danger"]
+    return PALETTE["textMuted"]
+
+
+def _market_status_icon_path(status):
+    return _MARKET_STATUS_ICONS[_market_status_color(status)]
+
+
+def _market_status_pixmap(status):
+    color = QColor(_market_status_color(status))
+    source = QIcon(str(_market_status_icon_path(status))).pixmap(
+        QSize(_TRADING_STATUS_ICON_SIZE, _TRADING_STATUS_ICON_SIZE)
+    )
+    image = source.toImage().convertToFormat(QImage.Format_ARGB32)
+    for y in range(image.height()):
+        for x in range(image.width()):
+            pixel = image.pixelColor(x, y)
+            if pixel.alpha() == 0:
+                continue
+            image.setPixelColor(
+                x,
+                y,
+                QColor(color.red(), color.green(), color.blue(), pixel.alpha()),
+            )
+    return QPixmap.fromImage(image)
+
+
+def _market_status_title(state):
+    if isinstance(state, TradingState):
+        title = state.market_status_title
+        if isinstance(title, str) and title.strip():
+            return title.strip()
+        label = market_status_label(state.market_status)
+        if label:
+            return label
+    return STATUS_LABEL_UNKNOWN
+
 
 # UI-4 — the visible queue row's data role carries the EXACT
 # QueueEntry object; the display is never parsed back into an identity
@@ -934,9 +994,20 @@ class OrderConfigurationPage(QWidget):
         self.symbol_input.activated.connect(self._on_symbol_activated)
         form_grid.addWidget(self.symbol_input, 0, 1)
 
+        # --- Trading-state icon next to the selected symbol ---
+        self.trading_state_icon = QLabel(form_group)
+        self.trading_state_icon.setObjectName("tradingStateIcon")
+        self.trading_state_icon.setFixedSize(
+            _TRADING_STATUS_ICON_SIZE, _TRADING_STATUS_ICON_SIZE
+        )
+        self.trading_state_icon.setAlignment(Qt.AlignCenter)
+        self.trading_state_icon.hide()
+        self.market_status_icon = self.trading_state_icon
+        form_grid.addWidget(self.trading_state_icon, 0, 2)
+
         # --- Search state (suggestions live in the combo popup) ---
         self.search_status_label = QLabel(SEARCH_STATE_IDLE, form_group)
-        form_grid.addWidget(self.search_status_label, 0, 2)
+        form_grid.addWidget(self.search_status_label, 0, 3)
 
         # --- Side ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_SIDE, form_group), 1, 0)
@@ -2034,6 +2105,7 @@ class OrderConfigurationPage(QWidget):
         self._trading_state_shown = None
         self._cancel_trading_state_query()
         self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
+        self._hide_market_status_icon()
 
     def _cancel_trading_state_query(self):
         """
@@ -2045,6 +2117,32 @@ class OrderConfigurationPage(QWidget):
         """
         self._trading_state_worker = None
         self._trading_state_thread = None
+
+    def _hide_market_status_icon(self):
+        self.trading_state_icon.clear()
+        self.trading_state_icon.setToolTip("")
+        self.trading_state_icon.setAccessibleName("")
+        self.trading_state_icon.setProperty("marketStatus", None)
+        self.trading_state_icon.setProperty("stateColor", None)
+        self.trading_state_icon.setProperty("iconPath", None)
+        self.trading_state_icon.hide()
+
+    def _render_market_status(self, state=None, tooltip=None):
+        status = state.market_status if isinstance(state, TradingState) else None
+        if tooltip is None:
+            tooltip = _market_status_title(state)
+        color = _market_status_color(status)
+        icon_path = _market_status_icon_path(status)
+        self.trading_state_icon.setPixmap(_market_status_pixmap(status))
+        self.trading_state_icon.setToolTip(tooltip)
+        self.trading_state_icon.setAccessibleName(tooltip)
+        self.trading_state_icon.setProperty(
+            "marketStatus",
+            status.value if isinstance(status, MarketStatus) else None,
+        )
+        self.trading_state_icon.setProperty("stateColor", color)
+        self.trading_state_icon.setProperty("iconPath", str(icon_path))
+        self.trading_state_icon.show()
 
     def _start_trading_state_query(self, instrument):
         """
@@ -2070,30 +2168,29 @@ class OrderConfigurationPage(QWidget):
         if not ins_code:
             # No real identity → nothing to query; fail-closed display.
             self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
+            self._render_market_status(tooltip=STATUS_LABEL_UNKNOWN)
             return
 
-        record = self._active_account_record()
-        if record is None:
-            self.trading_state_label.setText(STATUS_LABEL_UNKNOWN)
-            return
-        identity = (record.account_id, record.broker_name, ins_code)
+        # Display status is sourced directly from TSETMC by ins_code and
+        # is intentionally independent of account selection.
+        identity = (self._search_sequence, ins_code)
         self._trading_state_instrument = ins_code
         self._trading_state_account_scope = identity
         self.trading_state_label.setText(STATUS_PENDING_LABEL)
+        self._render_market_status(tooltip=STATUS_PENDING_LABEL)
 
         def query_factory():
             if self._trading_state_factory is None:
                 from ui.trading_state_worker import _default_trading_state_query
-                return _default_trading_state_query(
-                    self.store, account_id=record.account_id,
-                    broker_name=record.broker_name,
-                )
+                return _default_trading_state_query()
             try:
                 signature = inspect.signature(self._trading_state_factory)
-                signature.bind(record.account_id, record.broker_name)
+                signature.bind()
             except (TypeError, ValueError):
-                return self._trading_state_factory()
-            return self._trading_state_factory(record.account_id, record.broker_name)
+                # Keep compatibility with existing callers that accept the
+                # former account arguments; status retrieval itself is direct.
+                return self._trading_state_factory(None, None)
+            return self._trading_state_factory()
 
         worker = TradingStateWorker(
             ins_code,
@@ -2140,15 +2237,16 @@ class OrderConfigurationPage(QWidget):
         """
         if (ins_code != self._trading_state_instrument
                 or identity != self._trading_state_account_scope
-                or (identity is not None
-                    and identity != self._current_read_identity(ins_code))):
+                or identity != (self._search_sequence, ins_code)):
             return  # stale query — discarded deterministically
         if not isinstance(state, TradingState):
             # Anything unexpected from the seam is unknown (fail-closed).
             self._render_trading_state(STATUS_LABEL_UNKNOWN)
+            self._render_market_status(tooltip=STATUS_LABEL_UNKNOWN)
             return
         self._trading_state_shown = state
         self._render_trading_state(self._trading_state_text(state))
+        self._render_market_status(state)
 
     def _on_trading_state_failed(self, identity, ins_code, message):
         """
@@ -2158,11 +2256,11 @@ class OrderConfigurationPage(QWidget):
         """
         if (ins_code != self._trading_state_instrument
                 or identity != self._trading_state_account_scope
-                or (identity is not None
-                    and identity != self._current_read_identity(ins_code))):
+                or identity != (self._search_sequence, ins_code)):
             return  # stale query — discarded deterministically
         self._trading_state_shown = None
         self._render_trading_state(STATUS_LABEL_UNKNOWN)
+        self._render_market_status(tooltip=STATUS_LABEL_UNKNOWN)
 
     @staticmethod
     def _trading_state_text(state):
@@ -4901,11 +4999,8 @@ class OrderConfigurationPage(QWidget):
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""
         self.active_account_label.setText(self._active_account_text())
-        self._clear_trading_state()
         self._clear_order_identity()
         instrument = self.config.selected_instrument
-        if instrument is not None:
-            self._start_trading_state_query(instrument)
         self._restart_order_identity_if_stale()
         self._refresh_test_button_state()
 
@@ -4930,7 +5025,7 @@ class OrderConfigurationPage(QWidget):
         return record.broker_name
 
     def _current_read_identity(self, expected_ins_code=None):
-        """Current account/broker/instrument binding, or None fail-closed."""
+        """Current account/broker/instrument binding for order reads."""
         record = self._active_account_record()
         instrument = self.config.selected_instrument
         ins_code = getattr(instrument, "ins_code", None)

@@ -49,31 +49,10 @@ from PySide6.QtCore import QThread, Signal
 
 def _default_trading_state_query(account_store=None, broker_manager=None,
                                 account_id=None, broker_name=None):
-    """
-    Lazily build the REAL project query seam.
+    """Lazily build the account-independent direct TSETMC query."""
+    from core.trading_state_query import TsetmcTradingStateQuery
 
-    This indirection keeps every ``import ui`` and page construction
-    fully offline (``brokers``/``core`` are imported only when a real
-    status query is actually about to run), while guaranteeing the UI
-    uses the existing repository path — never a copy or a re-write.
-
-    Built exactly like the real dispatch path does:
-        BrokerManager → get_instrument_provider(name) → TradingStateQuery
-    """
-    from core.trading_state_query import TradingStateQuery
-
-    if account_store is None or broker_manager is None:
-        raise ValueError("account-bound runtime is unavailable")
-    if account_id is None or broker_name is None:
-        raise ValueError("account identity is required")
-    record = account_store.get(account_id)
-    if record.account_id != account_id or record.broker_name != broker_name:
-        raise ValueError("account binding does not match the account store")
-    broker = broker_manager.get_for_account(account_id, broker_name)
-    provider = broker_manager.get_instrument_provider_for_account(
-        account_id, broker_name
-    )
-    return TradingStateQuery(broker, provider)
+    return TsetmcTradingStateQuery()
 
 
 class TradingStateWorker(QThread):

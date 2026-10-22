@@ -9,7 +9,14 @@ import requests
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
 from models.order import Order
-from models.trading_state import UNVERIFIED, TradingState, TradingStateUnavailable
+from models.trading_state import (
+    CETAVAL_ALLOWED,
+    CETAVAL_BLOCKED,
+    UNVERIFIED,
+    TradingState,
+    TradingStateUnavailable,
+    market_status_from_code,
+)
 from market.tsetmc import TSETMC
 
 from ..base import Broker
@@ -18,19 +25,6 @@ from ..device_info import ExternalDeviceInfoProvider
 if TYPE_CHECKING:
     from .nats_transport import AgahQueuePositionService
     from .queue_position import AgahQueuePositionProvider
-
-
-CETAVAL_ALLOWED = {"A ", "A", "AR"}
-
-CETAVAL_BLOCKED = {
-    "I ",
-    "I",
-    "AG",
-    "AS",
-    "IG",
-    "IS",
-    "IR",
-}
 
 
 BASE_URL = "https://tseonlineapi.agah.com/api/v1"
@@ -187,12 +181,24 @@ class AgaahBroker(Broker):
             else c_etaval
         )
 
+        c_etaval_title = latest.get("cEtavalTitle")
+        c_etaval_title = (
+            c_etaval_title.strip()
+            if isinstance(c_etaval_title, str)
+            and c_etaval_title.strip()
+            else None
+        )
+
+        market_status = market_status_from_code(c_etaval)
+
         if c_etaval in CETAVAL_ALLOWED:
             return TradingState(
                 is_order_entry_allowed=True,
                 is_verified=True,
                 source="tsetmc:cEtaval",
                 reason=f"cEtaval={c_etaval}",
+                market_status=market_status,
+                market_status_title=c_etaval_title,
             )
 
         if c_etaval in CETAVAL_BLOCKED:
@@ -201,6 +207,8 @@ class AgaahBroker(Broker):
                 is_verified=True,
                 source="tsetmc:cEtaval",
                 reason=f"cEtaval={c_etaval}",
+                market_status=market_status,
+                market_status_title=c_etaval_title,
             )
 
         return TradingState(
@@ -211,6 +219,8 @@ class AgaahBroker(Broker):
                 f"cEtaval ناشناخته: "
                 f"({c_etaval!r})"
             ),
+            market_status=market_status,
+            market_status_title=c_etaval_title,
         )
 
     # =================================================

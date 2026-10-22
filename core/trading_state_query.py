@@ -1,23 +1,31 @@
 """
-core/trading_state_query.py — Read-only TradingState query seam.
+core/trading_state_query.py — Read-only TradingState query seams.
 
-Provides a minimal, read-only path to fetch TradingState for a given
-TSETMC ins_code without requiring an Order, Account, or execution context.
+``TradingStateQuery`` resolves an instrument through an account-owned
+broker/provider and is kept for callers that already use that path.
 
-Call chain:
-    ins_code
-        -> InstrumentProvider.get_instrument(ins_code)
-        -> BrokerInstrument.nsc_id
-        -> Broker.get_trading_state(nsc_id)
-        -> TradingState
+``TsetmcTradingStateQuery`` reads the market status DIRECTLY from TSETMC
+using only the TSETMC ``ins_code``. It needs no Account, BrokerManager or
+InstrumentProvider, so the UI status display is independent of the active
+account and of the order-entry path.
 
-Fail-closed: expected runtime failures (InstrumentLookupError, TradingStateUnavailable) return UNVERIFIED.
-Programming errors (TypeError, AttributeError, NotImplementedError, ValueError, etc.) propagate.
+Fail-closed: expected runtime failures return UNVERIFIED (or raise
+TradingStateUnavailable for the direct source), and programming errors
+propagate.
 """
 
 from typing import TYPE_CHECKING
 
-from models.trading_state import TradingState, TradingStateUnavailable, UNVERIFIED
+import requests
+
+from models.trading_state import (
+    CETAVAL_ALLOWED,
+    CETAVAL_BLOCKED,
+    TradingState,
+    TradingStateUnavailable,
+    UNVERIFIED,
+    market_status_from_code,
+)
 from brokers.base import InstrumentLookupError
 
 if TYPE_CHECKING:
@@ -96,3 +104,97 @@ class TradingStateQuery:
             return UNVERIFIED
 
         return state
+
+class TsetmcTradingStateQuery:
+    """
+    Read-only TSETMC query keyed by ``Instrument.ins_code``.
+
+    This path deliberately bypasses the active account, BrokerManager,
+    InstrumentProvider and broker order path. The returned display fields
+    still use the Decision 020 mapping in ``models.trading_state``.
+    """
+
+    def __init__(self, client=None):
+        self._client = client
+
+    def _make_client(self):
+        if self._client is not None:
+            return self._client
+        from market.tsetmc import TSETMC
+
+        return TSETMC()
+
+    def get_trading_state(self, ins_code: str) -> TradingState:
+        if not ins_code:
+            return UNVERIFIED
+
+        client = self._make_client()
+        try:
+            states = client.get_trading_state(ins_code)
+        except (requests.RequestException, ConnectionError, TimeoutError) as exc:
+            raise TradingStateUnavailable(
+                f"Failed to get trading state for ins_code={ins_code}: {exc}"
+            ) from exc
+
+        if not isinstance(states, list) or not states:
+            return UNVERIFIED
+
+        matching = [
+            state
+            for state in states
+            if isinstance(state, dict)
+            and str(state.get("insCode")) == str(ins_code)
+        ]
+        if not matching:
+            return UNVERIFIED
+
+        latest = max(
+            matching,
+            key=lambda state: (
+                state.get("dEven", 0),
+                state.get("hEven", 0),
+            ),
+        )
+
+        c_etaval = latest.get("cEtaval")
+        c_etaval = c_etaval.strip() if isinstance(c_etaval, str) else c_etaval
+
+        c_etaval_title = latest.get("cEtavalTitle")
+        c_etaval_title = (
+            c_etaval_title.strip()
+            if isinstance(c_etaval_title, str) and c_etaval_title.strip()
+            else None
+        )
+
+        market_status = market_status_from_code(c_etaval)
+        common = {
+            "source": "tsetmc:cEtaval",
+            "market_status": market_status,
+            "market_status_title": c_etaval_title,
+        }
+
+        if c_etaval in CETAVAL_ALLOWED:
+            return TradingState(
+                is_order_entry_allowed=True,
+                is_verified=True,
+                reason=f"cEtaval={c_etaval}",
+                **common,
+            )
+
+        if c_etaval in CETAVAL_BLOCKED:
+            return TradingState(
+                is_order_entry_allowed=False,
+                is_verified=True,
+                reason=f"cEtaval={c_etaval}",
+                **common,
+            )
+
+        return TradingState(
+            is_order_entry_allowed=False,
+            is_verified=False,
+            reason=f"cEtaval ناشناخته: ({c_etaval!r})",
+            **common,
+        )
+
+
+__all__ = ["TradingStateQuery", "TsetmcTradingStateQuery"]

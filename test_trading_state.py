@@ -12,7 +12,13 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from unittest.mock import patch, MagicMock
-from models.trading_state import UNVERIFIED, TradingStateUnavailable
+from models.trading_state import (
+    MARKET_STATUS_LABELS,
+    UNVERIFIED,
+    MarketStatus,
+    TradingStateUnavailable,
+    market_status_from_code,
+)
 from brokers.agaah.broker import AgaahBroker
 import requests
 
@@ -71,6 +77,51 @@ def _make_broker_and_patch(states=None, raise_error=False, tse_id="6023588199972
         result = broker.get_trading_state("IRO1TEST0001")
 
     return result
+
+
+DOCUMENTED_MARKET_STATUSES = (
+    ("A ", MarketStatus.PERMITTED, "مجاز"),
+    ("AR", MarketStatus.PERMITTED_RESERVED, "مجاز-محفوظ"),
+    ("AG", MarketStatus.PERMITTED_BLOCKED, "مجاز-مسدود"),
+    ("AS", MarketStatus.PERMITTED_STOPPED, "مجاز-متوقف"),
+    ("I ", MarketStatus.FORBIDDEN, "ممنوع"),
+    ("IG", MarketStatus.FORBIDDEN_BLOCKED, "ممنوع-مسدود"),
+    ("IS", MarketStatus.FORBIDDEN_STOPPED, "ممنوع-متوقف"),
+    ("IR", MarketStatus.FORBIDDEN_RESERVED, "ممنوع-محفوظ"),
+)
+
+
+def test_documented_cetaval_display_mapping():
+    for code, status, label in DOCUMENTED_MARKET_STATUSES:
+        assert market_status_from_code(code) is status
+        assert market_status_from_code(code.strip()) is status
+        assert MARKET_STATUS_LABELS[status] == label
+    assert market_status_from_code("ZZ") is None
+    assert market_status_from_code(None) is None
+
+
+def test_documented_cetaval_status_carried_into_trading_state():
+    for code, status, _ in DOCUMENTED_MARKET_STATUSES:
+        result = _make_broker_and_patch(_make_states(code))
+        assert result.market_status is status
+        assert result.market_status_title == "test-title"
+        expected_allowed = status is MarketStatus.PERMITTED or (
+            status is MarketStatus.PERMITTED_RESERVED
+        )
+        assert result.is_order_entry_allowed is expected_allowed
+
+
+def test_unknown_cetaval_has_neutral_display_status():
+    result = _make_broker_and_patch(_make_states("ZZ"))
+    assert result.market_status is None
+    assert result.market_status_title == "test-title"
+
+
+def test_missing_state_has_no_display_status():
+    result = _make_broker_and_patch([])
+    assert result == UNVERIFIED
+    assert result.market_status is None
+    assert result.market_status_title is None
 
 
 def test_cEtaval_A_allows_order():
@@ -210,6 +261,10 @@ def test_get_instrument_failure_raises_trading_state_unavailable():
 
 if __name__ == "__main__":
     tests = [
+        test_documented_cetaval_display_mapping,
+        test_documented_cetaval_status_carried_into_trading_state,
+        test_unknown_cetaval_has_neutral_display_status,
+        test_missing_state_has_no_display_status,
         test_cEtaval_A_allows_order,
         test_cEtaval_AR_allows_order,
         test_cEtaval_I_blocks_order,

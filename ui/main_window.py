@@ -267,12 +267,10 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_resolver_factory(
             self._real_symbol_resolver
         )
-        # UI-3.2B: the trading-state display reads the status through the
-        # EXISTING read-only TradingStateQuery seam, built lazily (only
-        # when a real state is actually queried) so construction stays
-        # offline. No Order, no submission path, no ordering call.
+        # UI-3.2B: display status is queried directly from TSETMC by
+        # ins_code, lazily and independently of the selected account.
         self.order_configuration_page.set_trading_state_query_factory(
-            self._real_trading_state_query
+            self._real_tsetmc_trading_state_query
         )
         self.order_configuration_page.set_order_identity_factory(
             self._real_order_identity_resolver
@@ -407,6 +405,12 @@ class MainWindow(QMainWindow):
             account_id, broker_name
         )
         return TradingStateQuery(broker, provider)
+
+    def _real_tsetmc_trading_state_query(self):
+        """Lazily create the account-independent direct TSETMC query."""
+        from core.trading_state_query import TsetmcTradingStateQuery
+
+        return TsetmcTradingStateQuery()
 
     def _real_order_identity_resolver(self, account_id, broker_name):
         """Resolve the account-owned instrument provider lazily."""

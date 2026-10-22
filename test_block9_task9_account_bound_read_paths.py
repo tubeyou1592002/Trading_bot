@@ -120,7 +120,7 @@ def test_shared_manager_resolves_independent_runtime_per_account(monkeypatch):
     assert manager.get_instrument_provider_for_account(ACCOUNT_A, BROKER) is provider_a
 
 
-def test_read_result_scope_rejects_late_same_broker_same_symbol_result(qapp):
+def test_order_identity_scope_rejects_late_same_broker_same_symbol_result(qapp):
     store = AccountStore()
     store.add(ACCOUNT_A, BROKER, "A")
     store.add(ACCOUNT_B, BROKER, "B")
@@ -132,14 +132,18 @@ def test_read_result_scope_rejects_late_same_broker_same_symbol_result(qapp):
     page.config.select_instrument(instrument)
     scope_a = (ACCOUNT_A, BROKER, INS_CODE)
     page._trading_state_instrument = INS_CODE
-    page._trading_state_account_scope = scope_a
+    page._trading_state_account_scope = (page._search_sequence, INS_CODE)
     page._order_identity_instrument = INS_CODE
     page._order_identity_broker = BROKER
     page._order_identity_account = ACCOUNT_A
     page._order_identity_scope = scope_a
 
     store.set_active(ACCOUNT_B)
-    page._on_trading_state_succeeded(scope_a, INS_CODE, object())
+    # Status is not account-bound; the payload is rejected here only due
+    # to unexpected state type. Order identity remains account-bound.
+    page._on_trading_state_succeeded(
+        page._trading_state_account_scope, INS_CODE, object()
+    )
     page._on_order_identity_succeeded(scope_a, INS_CODE, "stale-nsc-id")
     assert page._trading_state_shown is None
     assert page._order_nsc_id is None
@@ -155,7 +159,11 @@ def test_read_result_scope_rejects_late_same_broker_same_symbol_result(qapp):
 def _active_window_with_fake_runtime(store_accounts=((ACCOUNT_A, BROKER), (ACCOUNT_B, BROKER))):
     window = MainWindow()
     for account_id, broker_name in store_accounts:
-        window.account_store.add(account_id, broker_name, account_id)
+        try:
+            window.account_store.add(account_id, broker_name, account_id)
+        except ValueError:
+            # MainWindow fixtures share the repository-backed test database.
+            pass
 
     class FakeBroker:
         name = BROKER
@@ -232,12 +240,18 @@ def _pump_until(qapp, predicate, timeout=3.0):
     return predicate()
 
 
-def test_actual_page_workers_use_active_account_runtime(qapp):
+def test_actual_page_workers_use_direct_tsetmc_for_state_and_account_for_orders(qapp):
     window, manager = _active_window_with_fake_runtime()
     page = window.order_configuration_page
     instrument = Instrument(ins_code=INS_CODE, symbol="SYM", name="Symbol", market="TSE")
     page.config.select_instrument(instrument)
 
+    class DirectQuery:
+        def get_trading_state(self, ins_code):
+            assert ins_code == INS_CODE
+            return VERIFIED_TRADABLE
+
+    page.set_trading_state_query_factory(lambda: DirectQuery())
     page._start_trading_state_query(instrument)
     page._start_order_identity_resolution(instrument)
     page.wait_for_trading_state_workers(5000)
@@ -245,10 +259,8 @@ def test_actual_page_workers_use_active_account_runtime(qapp):
     assert _pump_until(qapp, lambda: page._order_nsc_id is not None)
 
     provider = manager.providers[(ACCOUNT_A, BROKER)]
-    broker = manager.brokers[(ACCOUNT_A, BROKER)]
-    assert provider.instrument_calls == [INS_CODE]
+    assert provider.instrument_calls == []
     assert provider.identity_calls == [INS_CODE]
-    assert broker.state_calls == [f"nsc-{ACCOUNT_A}"]
     assert page._trading_state_shown is VERIFIED_TRADABLE
     assert page._order_nsc_id == f"nsc-{ACCOUNT_A}"
     assert page._order_identity_scope == (ACCOUNT_A, BROKER, INS_CODE)
@@ -261,20 +273,17 @@ def test_real_page_workers_discard_late_account_a_result_after_switch(qapp):
     page = window.order_configuration_page
     instrument = Instrument(ins_code=INS_CODE, symbol="SYM", name="Symbol", market="TSE")
     page.config.select_instrument(instrument)
+    page.set_trading_state_query_factory(lambda: SimpleNamespace(
+        get_trading_state=lambda ins_code: VERIFIED_TRADABLE
+    ))
     gate_a = threading.Event()
-    manager.get_instrument_provider_for_account(
-        ACCOUNT_A, BROKER
-    ).instrument_gate = gate_a
     manager.get_instrument_provider_for_account(
         ACCOUNT_A, BROKER
     ).identity_gate = gate_a
 
     page._start_trading_state_query(instrument)
     page._start_order_identity_resolution(instrument)
-    assert _pump_until(qapp, lambda: (
-        manager.providers[(ACCOUNT_A, BROKER)].instrument_calls
-        and manager.providers[(ACCOUNT_A, BROKER)].identity_calls
-    ))
+    assert _pump_until(qapp, lambda: manager.providers[(ACCOUNT_A, BROKER)].identity_calls)
 
     window.account_store.set_active(ACCOUNT_B)
     page.refresh_active_account()
@@ -282,21 +291,18 @@ def test_real_page_workers_discard_late_account_a_result_after_switch(qapp):
     page.wait_for_order_identity_workers(5000)
     assert _pump_until(qapp, lambda: page._order_nsc_id == f"nsc-{ACCOUNT_B}")
     assert page._order_identity_scope == (ACCOUNT_B, BROKER, INS_CODE)
-    assert page._trading_state_account_scope == (ACCOUNT_B, BROKER, INS_CODE)
+    assert page._trading_state_account_scope == (page._search_sequence, INS_CODE)
 
     gate_a.set()
-    # Let both superseded A workers deliver their late results after B.
-    _pump_until(qapp, lambda: (
-        manager.brokers[(ACCOUNT_A, BROKER)].state_calls
-        and manager.providers[(ACCOUNT_A, BROKER)].identity_calls
-    ))
+    # Let the superseded A order-identity worker deliver its late result.
+    _pump_until(qapp, lambda: manager.providers[(ACCOUNT_A, BROKER)].identity_calls)
     page.wait_for_trading_state_workers(5000)
     page.wait_for_order_identity_workers(5000)
     qapp.processEvents()
 
     assert page._order_nsc_id == f"nsc-{ACCOUNT_B}"
     assert page._order_identity_scope == (ACCOUNT_B, BROKER, INS_CODE)
-    assert page._trading_state_account_scope == (ACCOUNT_B, BROKER, INS_CODE)
+    assert page._trading_state_account_scope == (page._search_sequence, INS_CODE)
     assert manager.providers[(ACCOUNT_A, BROKER)]._broker is manager.brokers[
         (ACCOUNT_A, BROKER)
     ]

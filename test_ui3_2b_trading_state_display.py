@@ -31,9 +31,8 @@ Extra contracts:
               AgaahBroker POST never touched).
     Extra 4 — the worker lifecycle (start → run → signal → cleanup →
               thread finished) leaves no lingering worker on any path.
-    Extra 5 — MainWindow wiring: the REAL query seam is injected lazily
-              (offline construction preserved) via the existing path
-              (BrokerManager → TradingStateQuery).
+    Extra 5 — MainWindow wires the direct TSETMC query lazily and without
+               requiring an active account.
     Extra 6 — full offline search+select flow: the state label starts
               as unknown/dash before any selection and reads only real
               state after selection.
@@ -139,6 +138,11 @@ class StubResolver:
         return self.instrument
 
 
+class StubIdentityResolver:
+    def get_nsc_id(self, ins_code):
+        return "NSC-TEST"
+
+
 @pytest.fixture(scope="module")
 def qapp():
     app = QApplication.instance()
@@ -149,7 +153,10 @@ def qapp():
 
 @pytest.fixture()
 def store():
-    return AccountStore()
+    store = AccountStore()
+    store.add("ACC-001", "آگاه", "ACC-001")
+    store.set_active("ACC-001")
+    return store
 
 
 def _wait_until(predicate, timeout_s=5.0):
@@ -214,6 +221,7 @@ def _select_symbol(qapp, page, text="آکو", results=(RESULT_AKOU,),
     """Run the REAL UI-3.2A search+select flow (offline, stubbed)."""
     stub = StubResolver(results=results, instrument=instrument)
     page.set_resolver_factory(lambda: stub)
+    page.set_order_identity_factory(lambda: StubIdentityResolver())
     page.symbol_input.setCurrentText(text)
     _finish_debounce(qapp, page)
     _drain(qapp, page)
@@ -564,11 +572,10 @@ def test_extra_trading_state_worker_lifecycle(qapp, store):
 # ============================================================
 
 
-def test_extra_main_window_lazy_real_query_factory(qapp):
+def test_extra_main_window_lazy_direct_tsetmc_query_factory(qapp):
     """
-    Construction stays fully offline; the real query seam is built only
-    when an actual status query runs, through the EXISTING path
-    (BrokerManager → broker/provider → TradingStateQuery).
+    Construction stays fully offline; the direct TSETMC query is built
+    only when an actual status query runs and needs no active account.
     """
     import subprocess as sp
 
@@ -598,11 +605,12 @@ def test_extra_main_window_lazy_real_query_factory(qapp):
             "assert page._trading_state_factory is not None",
             "banned = ('brokers', 'market', 'core')",
             "leaked = sorted(m for m in sys.modules if m.split('.')[0] in banned)",
-            "assert not leaked, f'UI construction imported trading modules: {leaked}'",                "assert page.trading_state_label.text() == '-'",
-            "# the real factory builds the EXISTING seam",
-            "query = window._real_trading_state_query()",
-            "from core.trading_state_query import TradingStateQuery",
-            "assert isinstance(query, TradingStateQuery)",
+            "assert not leaked, f'UI construction imported trading modules: {leaked}'",
+            "assert page.trading_state_label.text() == '-'",
+            "# The query factory is valid without adding/selecting an account.",
+            "query = window._real_tsetmc_trading_state_query()",
+            "from core.trading_state_query import TsetmcTradingStateQuery",
+            "assert isinstance(query, TsetmcTradingStateQuery)",
             "print('LAZY_QUERY_OK')",
         ]
     )
@@ -658,6 +666,8 @@ def test_extra_full_flow_search_select_state_offline():
             "",
             "app = QApplication([])",
             "store = AccountStore()",
+            "store.add('ACC-001', 'آگاه', 'ACC-001')",
+            "store.set_active('ACC-001')",
             "page = OrderConfigurationPage(store)",
             "",
             "instrument = Instrument(symbol='آکو', name='آکو باتري ايرانيان',",
@@ -671,12 +681,17 @@ def test_extra_full_flow_search_select_state_offline():
             "    def resolve(self, result):",
             "        return instrument",
             "",
+            "class _IdentityResolver:",
+            "    def get_nsc_id(self, ins_code):",
+            "        return 'NSC-TEST'",
+            "",
             "class _Query:",
             "    def get_trading_state(self, ins_code):",
             "        assert ins_code == '60235881999727383'",
             "        return VERIFIED_TRADABLE",
             "",
             "page.set_resolver_factory(lambda: _Resolver())",
+            "page.set_order_identity_factory(lambda: _IdentityResolver())",
             "page.set_trading_state_query_factory(lambda: _Query())",
             "",
             "page.symbol_input.setCurrentText('آکو')",

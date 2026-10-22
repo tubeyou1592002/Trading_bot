@@ -15,7 +15,7 @@ from models.trading_state import TradingState, TradingStateUnavailable, UNVERIFI
 from models.instrument import Instrument
 from models.broker_instrument import BrokerInstrument
 from brokers.base import InstrumentLookupError
-from core.trading_state_query import TradingStateQuery
+from core.trading_state_query import TradingStateQuery, TsetmcTradingStateQuery
 
 
 class TestTradingStateQuery:
@@ -404,6 +404,44 @@ class TestTradingStateQuery:
         assert result.is_order_entry_allowed is False
         assert result.is_verified is False
         assert result.source == "unverified"
+
+
+class TestTsetmcTradingStateQuery:
+    def test_direct_query_uses_ins_code_and_latest_matching_record(self):
+        client = MagicMock()
+        client.get_trading_state.return_value = [
+            {"insCode": "other", "dEven": 20261022, "hEven": 120000, "cEtaval": "I"},
+            {"insCode": "123", "dEven": 20261022, "hEven": 110000, "cEtaval": "I"},
+            {"insCode": "123", "dEven": 20261022, "hEven": 120000,
+             "cEtaval": "AR", "cEtavalTitle": "مجاز-محفوظ"},
+        ]
+        result = TsetmcTradingStateQuery(client).get_trading_state("123")
+        client.get_trading_state.assert_called_once_with("123")
+        assert result.is_verified is True
+        assert result.is_order_entry_allowed is True
+        assert result.source == "tsetmc:cEtaval"
+        assert result.market_status_title == "مجاز-محفوظ"
+
+    def test_direct_query_mismatch_fails_closed(self):
+        client = MagicMock()
+        client.get_trading_state.return_value = [
+            {"insCode": "elsewhere", "cEtaval": "A"},
+        ]
+        result = TsetmcTradingStateQuery(client).get_trading_state("123")
+        assert result is UNVERIFIED
+
+    def test_direct_source_failure_is_unavailable(self):
+        import requests
+
+        client = MagicMock()
+        client.get_trading_state.side_effect = requests.ConnectionError("offline")
+        query = TsetmcTradingStateQuery(client)
+        try:
+            query.get_trading_state("123")
+        except TradingStateUnavailable:
+            pass
+        else:
+            assert False, "expected direct TSETMC source failure"
 
 
 if __name__ == "__main__":
