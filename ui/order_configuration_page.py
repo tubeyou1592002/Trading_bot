@@ -149,6 +149,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QPushButton,
+    QDialog,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
@@ -804,6 +805,27 @@ class _QuantityLimitsWorker(QThread):
         )
 
 
+class _BuyPreviewWorker(QThread):
+    """Read-only Agaah buy preview; all service/network calls run here."""
+
+    succeeded = Signal(object, object, object)
+    failed = Signal(object, str)
+
+    def __init__(self, request_id, snapshot, calculate, parent=None):
+        super().__init__(parent)
+        self.request_id = request_id
+        self.snapshot = snapshot
+        self._calculate = calculate
+
+    def run(self):
+        try:
+            result = self._calculate(self.snapshot)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(self.request_id, str(exc))
+            return
+        self.succeeded.emit(self.request_id, self.snapshot, result)
+
+
 class OrderConfigurationPage(QWidget):
     """
     Order Configuration page (form and state only — no execution).
@@ -876,6 +898,19 @@ class OrderConfigurationPage(QWidget):
         self._quantity_limits_worker = None
         self._quantity_limits_request_id = 0
         self._quantity_limits_scope = None
+        self._buy_preview_factory = None
+        self._buy_preview_request_id = 0
+        self._buy_preview_worker = None
+        self._buy_preview_thread = None
+        self._buy_preview_dialog = None
+        self._buy_preview_result = None
+        self._auto_amount_request_id = 0
+        self._auto_amount_worker = None
+        self._auto_amount_thread = None
+        self._auto_amount_timer = QTimer(self)
+        self._auto_amount_timer.setSingleShot(True)
+        self._auto_amount_timer.setInterval(250)
+        self._auto_amount_timer.timeout.connect(self._start_auto_amount)
 
         # ---------------------------------------------
         # UI-9 Task 2 — page shell: scroll + two columns + bottom tables
@@ -960,10 +995,22 @@ class OrderConfigurationPage(QWidget):
         # ---------------------------------------------
 
         account_group = QGroupBox(STRINGS.GROUP_ACTIVE_ACCOUNT, self)
+        account_group.setObjectName("activeAccountGroup")
+        self.active_account_group = account_group
         account_layout = QHBoxLayout(account_group)
+        account_layout.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["sm"])
+        account_layout.setSpacing(SPACING["sm"])
         self.active_account_label = QLabel(self._active_account_text(), account_group)
-        account_layout.addWidget(self.active_account_label)
-        account_layout.addStretch(1)
+        self.active_account_label.setWordWrap(False)
+        self.active_account_label.setMinimumHeight(self.active_account_label.sizeHint().height())
+        self.active_account_label.setMinimumWidth(0)
+        # Ignored lets the trailing stretch consume the entire row on some
+        # Qt styles, leaving this label with width 0. Expanding keeps the
+        # text visible while the fixed group height prevents vertical growth.
+        self.active_account_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        account_layout.addWidget(self.active_account_label, 1)
+        account_group.setMinimumHeight(account_group.sizeHint().height())
+        account_group.setMaximumHeight(account_group.sizeHint().height())
         # UI-9 Task 2: the order-information column (left of the two).
         order_column_layout.addWidget(account_group)
 
@@ -989,10 +1036,31 @@ class OrderConfigurationPage(QWidget):
         self.symbol_input.setProperty("chevron", True)
         self.symbol_input.lineEdit().setPlaceholderText(STRINGS.PLACEHOLDER_SYMBOL)
         self.symbol_input.lineEdit().textChanged.connect(self._on_symbol_edited)
+        self.symbol_input.lineEdit().textChanged.connect(self._invalidate_buy_preview)
+        self.symbol_input.lineEdit().textChanged.connect(self._invalidate_auto_amount)
         # Suggestions are selected through the combo's own popup; the
         # activated signal fires for mouse and keyboard selection.
         self.symbol_input.activated.connect(self._on_symbol_activated)
-        form_grid.addWidget(self.symbol_input, 0, 1)
+        symbol_field = QWidget(form_group)
+        symbol_field.setObjectName("symbolNameField")
+        symbol_field.setAttribute(Qt.WA_TranslucentBackground, True)
+        symbol_field.setStyleSheet(
+            "QWidget#symbolNameField { background-color: transparent; border: 0px; }"
+        )
+        symbol_field_layout = QVBoxLayout(symbol_field)
+        symbol_field_layout.setContentsMargins(0, 0, 0, 0)
+        symbol_field_layout.setSpacing(SPACING["xs"])
+        symbol_field_layout.addWidget(self.symbol_input)
+        self.symbol_name_label = QLabel("-", form_group)
+        self.symbol_name_label.setObjectName("selectedSymbolName")
+        self.symbol_name_label.setStyleSheet(
+            "QLabel#selectedSymbolName { background-color: transparent; border: 0px; padding: 0px; }"
+        )
+        self.symbol_name_label.setContentsMargins(0, 0, 0, 0)
+        self.symbol_name_label.setWordWrap(False)
+        self.symbol_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        symbol_field_layout.addWidget(self.symbol_name_label)
+        form_grid.addWidget(symbol_field, 0, 1)
 
         # --- Trading-state icon next to the selected symbol ---
         self.trading_state_icon = QLabel(form_group)
@@ -1039,12 +1107,22 @@ class OrderConfigurationPage(QWidget):
         self.config.set_side(BUY)
         # BUY is the default side, so the panel starts with its green halo.
         self._apply_order_panel_halo(BUY)
+        self.calculator_button = QPushButton(form_group)
+        self.calculator_button.setObjectName("buyPreviewCalculatorButton")
+        self.calculator_button.setIcon(QIcon(str(_ICONS_DIR / "calculator.svg")))
+        self.calculator_button.setIconSize(QSize(SPACING["xl"], SPACING["xl"]))
+        self.calculator_button.setFixedSize(GEOMETRY["controlHeight"], GEOMETRY["controlHeight"])
+        self.calculator_button.setToolTip("محاسبه پیش‌نمایش خرید آگاه")
+        self.calculator_button.clicked.connect(self._open_buy_preview)
+        form_grid.addWidget(self.calculator_button, 1, 2)
 
         # --- Price ---------------------------------------------
         form_grid.addWidget(QLabel(STRINGS.LABEL_PRICE, form_group), 2, 0)
         self.price_input = QLineEdit(form_group)
         self.price_input.setPlaceholderText(STRINGS.PLACEHOLDER_PRICE)
         self.price_input.editingFinished.connect(self._on_price_changed)
+        self.price_input.textChanged.connect(self._invalidate_buy_preview)
+        self.price_input.textChanged.connect(self._schedule_auto_amount)
         form_grid.addWidget(self.price_input, 2, 1)
 
         price_limit_row = QWidget(form_group)
@@ -1076,6 +1154,7 @@ class OrderConfigurationPage(QWidget):
         self.quantity_input = QLineEdit(form_group)
         self.quantity_input.setPlaceholderText(STRINGS.PLACEHOLDER_QUANTITY)
         self.quantity_input.editingFinished.connect(self._on_quantity_changed)
+        self.quantity_input.textChanged.connect(self._schedule_auto_amount)
         form_grid.addWidget(self.quantity_input, 3, 1)
 
         quantity_limit_row = QWidget(form_group)
@@ -1285,19 +1364,10 @@ class OrderConfigurationPage(QWidget):
         # Symbol information / status display area
         # ---------------------------------------------
 
-        info_group = QGroupBox(STRINGS.GROUP_SYMBOL_INFORMATION, self)
-        info_form = QFormLayout(info_group)
-
-        self.symbol_name_label = QLabel("-", info_group)
         self.symbol_status_label = QLabel(
-            f"{STRINGS.LABEL_SYMBOL_STATUS_PREFIX}{STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY}", info_group
+            f"{STRINGS.LABEL_SYMBOL_STATUS_PREFIX}{STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY}", self
         )
-        self.trading_state_label = QLabel("-", info_group)
-        info_form.addRow(STRINGS.LABEL_NAME, self.symbol_name_label)
-        info_form.addRow(STRINGS.LABEL_STATUS, self.symbol_status_label)
-        info_form.addRow(STRINGS.LABEL_TRADING_STATE, self.trading_state_label)
-
-        order_column_layout.addWidget(info_group)
+        self.trading_state_label = QLabel("-", self)
 
         # ---------------------------------------------
         # Amounts group
@@ -1313,6 +1383,11 @@ class OrderConfigurationPage(QWidget):
         amounts_form.addRow(STRINGS.LABEL_BASE_AMOUNT, self.base_amount_label)
         amounts_form.addRow(STRINGS.LABEL_FEE, self.fee_label)
         amounts_form.addRow(STRINGS.LABEL_FINAL_AMOUNT, self.final_amount_label)
+        self.amount_warning_label = QLabel("", amounts_group)
+        self.amount_warning_label.setProperty("role", "danger")
+        self.amount_warning_label.setStyleSheet(f"color: {PALETTE['danger']};")
+        self.amount_warning_label.setWordWrap(True)
+        amounts_form.addRow(self.amount_warning_label)
 
         order_column_layout.addWidget(amounts_group)
 
@@ -1647,6 +1722,7 @@ class OrderConfigurationPage(QWidget):
         schedule_column_layout.addStretch(1)
 
         self._refresh_amounts()
+        self._start_auto_amount()
         self._refresh_symbol_info()
 
     # ---------------------------------------------------------
@@ -1707,6 +1783,304 @@ class OrderConfigurationPage(QWidget):
         provider remains the one owned by the active account's broker.
         """
         self._quantity_limits_factory = factory
+
+    def set_buy_preview_factory(self, factory):
+        """Inject account-bound, read-only Agaah preview service factory."""
+        self._buy_preview_factory = factory
+
+    def _buy_preview_snapshot(self):
+        record = self._active_account_record()
+        instrument = self.config.selected_instrument
+        nsc_id = self._order_nsc_id
+        if record is None or instrument is None or not nsc_id:
+            raise ValueError("حساب فعال، نماد انتخاب‌شده و شناسهٔ نماد لازم است")
+        if record.broker_name != "آگاه":
+            raise ValueError("ماشین‌حساب پیش‌نمایش فقط برای آگاه در دسترس است")
+        if self.config.side != BUY:
+            raise ValueError("پیش‌نمایش فقط برای سفارش خرید است")
+        price = _valid_limit(_parse_exact_integral_text(self.price_input.text()))
+        if price == 0:
+            price = None
+        return (record.account_id, record.broker_name, instrument.ins_code,
+                nsc_id, price, self._search_sequence, self.config.side)
+
+    def _open_buy_preview(self):
+        try:
+            snapshot = self._buy_preview_snapshot()
+        except Exception as exc:
+            self._show_validation_error(str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("محاسبه پیش‌نمایش سفارش خرید")
+        layout = QVBoxLayout(dialog)
+        self.preview_power_label = QLabel("در حال دریافت قدرت خرید…", dialog)
+        self.preview_amount_input = QLineEdit(dialog)
+        self.preview_amount_input.setPlaceholderText("مبلغ موردنظر به ریال")
+        self.preview_amount_input.textChanged.connect(self._preview_inputs_changed)
+        layout.addWidget(self.preview_power_label)
+        amount_row = QHBoxLayout()
+        amount_row.addWidget(self.preview_amount_input)
+        for icon, ratio, tip in (("battery-full.svg", 1, "کل قدرت خرید"),
+                                 ("battery-half.svg", 2, "نصف قدرت خرید")):
+            button = QPushButton(dialog)
+            button.setIcon(QIcon(str(_ICONS_DIR / icon)))
+            button.setToolTip(tip)
+            button.clicked.connect(lambda _=False, r=ratio: self._fill_preview_amount(r))
+            amount_row.addWidget(button)
+        layout.addLayout(amount_row)
+        layout.addWidget(QLabel("قیمت (ریال)", dialog))
+        self.preview_price_input = QLineEdit(str(snapshot[4]) if snapshot[4] else "", dialog)
+        self.preview_price_input.textChanged.connect(self._preview_inputs_changed)
+        layout.addWidget(self.preview_price_input)
+        price_limits = QHBoxLayout()
+        self.preview_price_max_button = QPushButton(dialog)
+        self.preview_price_min_button = QPushButton(dialog)
+        self.preview_price_max_button.setIcon(QIcon(str(_ARROW_UP_ICON)))
+        self.preview_price_min_button.setIcon(QIcon(str(_ARROW_DOWN_ICON)))
+        self.preview_price_max_button.setIconSize(QSize(SPACING["lg"], SPACING["lg"]))
+        self.preview_price_min_button.setIconSize(QSize(SPACING["lg"], SPACING["lg"]))
+        self.preview_price_max_button.setToolTip("حداکثر قیمت مجاز")
+        self.preview_price_min_button.setToolTip("حداقل قیمت مجاز")
+        self.preview_price_max_button.clicked.connect(lambda: self._set_preview_price_limit("max"))
+        self.preview_price_min_button.clicked.connect(lambda: self._set_preview_price_limit("min"))
+        price_limits.addWidget(self.preview_price_max_button)
+        price_limits.addWidget(self.preview_price_min_button)
+        layout.addLayout(price_limits)
+        controls = QHBoxLayout()
+        self.preview_calculate_button = QPushButton("محاسبه", dialog)
+        self.preview_calculate_button.clicked.connect(self._start_buy_preview)
+        self.preview_confirm_button = QPushButton("تأیید و پرکردن فرم", dialog)
+        self.preview_confirm_button.setEnabled(False)
+        self.preview_confirm_button.clicked.connect(self._apply_buy_preview)
+        controls.addWidget(self.preview_calculate_button)
+        controls.addWidget(self.preview_confirm_button)
+        layout.addLayout(controls)
+        self.preview_result_label = QLabel("", dialog)
+        layout.addWidget(self.preview_result_label)
+        self._buy_preview_dialog = dialog
+        self._buy_preview_snapshot_value = snapshot
+        self._buy_preview_dialog_snapshot = snapshot
+        self._buy_preview_power = None
+        self._buy_preview_result = None
+        self.preview_result_label.setText("")
+        dialog.finished.connect(
+            lambda _result, current=dialog: self._on_buy_preview_dialog_finished(current)
+        )
+        self._buy_preview_request_id += 1
+        request_id = self._buy_preview_request_id
+        factory = self._buy_preview_factory
+        worker = _BuyPreviewWorker(
+            request_id, snapshot,
+            lambda snap: self._get_preview_power_and_form(snap, factory), self,
+        )
+        self._buy_preview_worker = self._buy_preview_thread = worker
+        worker.succeeded.connect(self._on_preview_power_loaded)
+        worker.failed.connect(self._on_preview_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+        dialog.show()
+
+    def _on_buy_preview_dialog_finished(self, dialog):
+        if dialog is self._buy_preview_dialog:
+            self._buy_preview_request_id += 1
+            self._buy_preview_result = None
+            self._buy_preview_power = None
+            self._buy_preview_dialog = None
+
+    def _get_preview_power_and_form(self, snapshot, factory):
+        if factory is None:
+            raise RuntimeError("سرویس پیش‌نمایش آگاه در دسترس نیست")
+        service = factory(snapshot[0], snapshot[1])
+        power = service.get_tradable_balance(snapshot[0])
+        if isinstance(power, bool) or not isinstance(power, int) or power < 0:
+            raise ValueError("قدرت خرید معتبر نیست")
+        return {"power": power}
+
+    def _on_preview_power_loaded(self, request_id, snapshot, data):
+        if (self._buy_preview_dialog is None
+                or snapshot != self._buy_preview_dialog_snapshot
+                or self.store.active_account_id() != snapshot[0]):
+            return
+        self._buy_preview_power = data["power"]
+        self._buy_preview_snapshot_value = snapshot
+        self.preview_power_label.setText(f"قدرت خرید: {self._buy_preview_power:,} ریال")
+
+    def _on_preview_failed(self, request_id, message):
+        if request_id == self._buy_preview_request_id and self._buy_preview_dialog is not None:
+            self.preview_power_label.setText(message)
+
+    def _preview_inputs_changed(self, *_):
+        self._buy_preview_request_id += 1
+        self._buy_preview_result = None
+        if hasattr(self, "preview_confirm_button"):
+            self.preview_confirm_button.setEnabled(False)
+
+    def _set_preview_price_limit(self, kind):
+        """Reuse the page's existing TSETMC price-limits worker/factory."""
+        instrument = self.config.selected_instrument
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code or self._buy_preview_dialog is None:
+            self.preview_result_label.setText("نماد انتخاب‌شده یا پنجرهٔ محاسبه در دسترس نیست")
+            return
+        self._buy_preview_request_id += 1
+        request_id = self._buy_preview_request_id
+        dialog = self._buy_preview_dialog
+        dialog_snapshot = self._buy_preview_dialog_snapshot
+
+        def limits_factory():
+            if self._price_limits_factory is not None:
+                return self._price_limits_factory()
+            if self._resolver_factory is not None:
+                return self._resolver_factory()
+            from market.symbol_resolver import SymbolResolver
+            return SymbolResolver()
+
+        worker = _PriceLimitsWorker(ins_code, limits_factory, request_id, self)
+        worker.limits_succeeded.connect(
+            lambda rid, code, limits: self._on_preview_price_limits(
+                rid, code, limits, kind, dialog, dialog_snapshot
+            )
+        )
+        worker.limits_failed.connect(
+            lambda rid, code, message: self._on_preview_price_limits_failed(
+                rid, code, message, dialog, dialog_snapshot
+            )
+        )
+        worker.finished.connect(worker.deleteLater)
+        self._preview_price_limit_worker = worker
+        worker.start()
+
+    def _on_preview_price_limits(self, request_id, ins_code, limits, kind,
+                                 dialog=None, dialog_snapshot=None):
+        if (request_id != self._buy_preview_request_id or
+                dialog is not self._buy_preview_dialog or
+                dialog_snapshot != self._buy_preview_dialog_snapshot or
+                self.config.selected_instrument is None or
+                self.config.selected_instrument.ins_code != ins_code):
+            return
+        value = getattr(limits, "price_max" if kind == "max" else "price_min", None)
+        value = _valid_limit(value, allow_zero=False)
+        if value is None:
+            self.preview_result_label.setText("قیمت مجاز معتبر از TSETMC دریافت نشد")
+            return
+        self.preview_price_input.setText(str(value))
+
+    def _on_preview_price_limits_failed(self, request_id, ins_code, message,
+                                        dialog=None, dialog_snapshot=None):
+        if (request_id == self._buy_preview_request_id and
+                dialog is self._buy_preview_dialog and
+                dialog_snapshot == self._buy_preview_dialog_snapshot and
+                getattr(self.config.selected_instrument, "ins_code", None) == ins_code):
+            self.preview_result_label.setText(f"قیمت‌های مجاز در دسترس نیست: {message}")
+
+    def _fill_preview_amount(self, divisor):
+        if self._buy_preview_power is not None:
+            self.preview_amount_input.setText(str(self._buy_preview_power // divisor))
+
+    def _start_buy_preview(self):
+        try:
+            snapshot = self._buy_preview_snapshot()
+            amount = _valid_limit(_parse_exact_integral_text(self.preview_amount_input.text()))
+            price = _valid_limit(_parse_exact_integral_text(self.preview_price_input.text()))
+            if amount is None or amount <= 0 or price is None or price <= 0:
+                raise ValueError("مبلغ و قیمت باید عدد صحیح و مثبت باشند")
+            if self._buy_preview_power is None or amount > self._buy_preview_power:
+                raise ValueError("مبلغ از قدرت خرید حساب بیشتر است")
+            if price is None or price <= 0:
+                raise ValueError("قیمت باید عدد صحیح و مثبت باشد")
+            snapshot = snapshot[:4] + (price,) + snapshot[5:]
+            self._buy_preview_snapshot_value = snapshot + (amount,)
+            if self._buy_preview_factory is None:
+                raise RuntimeError("سرویس پیش‌نمایش آگاه در دسترس نیست")
+            self.preview_result_label.setText("در حال محاسبه…")
+            self.preview_confirm_button.setEnabled(False)
+            self._buy_preview_request_id += 1
+            request_id = self._buy_preview_request_id
+            worker = _BuyPreviewWorker(request_id, self._buy_preview_snapshot_value,
+                                       self._calculate_buy_preview, self)
+            self._buy_preview_worker = self._buy_preview_thread = worker
+            worker.succeeded.connect(self._on_buy_preview_calculated)
+            worker.failed.connect(self._on_preview_failed)
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+        except Exception as exc:
+            self.preview_result_label.setText(str(exc))
+
+    def _calculate_buy_preview(self, snap):
+        account_id, broker_name, ins_code, nsc_id, price, generation, side, amount = snap
+        record = self.store.get(account_id)
+        if record.broker_name != "آگاه":
+            raise ValueError("ماشین‌حساب پیش‌نمایش فقط برای آگاه در دسترس است")
+        if self.store.active_account_id() != account_id:
+            raise ValueError("حساب فعال هنگام محاسبه تغییر کرده است")
+        service = self._buy_preview_factory(account_id, broker_name)
+        power = service.get_tradable_balance(account_id)
+        if amount > power:
+            raise ValueError("مبلغ از قدرت خرید حساب بیشتر است")
+        broker = service.get_adapter(account_id)._broker
+        quantity = broker.get_buy_capacity(nsc_id, 1, amount, price)
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+            raise ValueError("تعداد برگشتی از آگاه معتبر نیست")
+        amount_order = price * quantity
+        # calculatedquantity returns only capacity, with no reduction/lot contract.
+        # Never submit a guessed smaller quantity if this result exceeds budget.
+        data = broker.get_commission_info(nsc_id, price, quantity, 1)
+        commission = data.get("commissionSum")
+        if isinstance(commission, bool) or not isinstance(commission, int) or commission < 0:
+            raise ValueError("کارمزد برگشتی از آگاه معتبر نیست")
+        total = amount_order + commission
+        if total > amount or total > power:
+            raise ValueError("تعداد محاسبه‌شده از بودجه بیشتر است؛ API تعداد روش دقیق و مجاز برای کاهش تعداد ارائه نمی‌کند")
+        return {"price": price, "quantity": quantity, "amount": amount_order,
+                "fee": commission, "total": total}
+
+    def _on_buy_preview_calculated(self, request_id, snapshot, result):
+        if request_id != self._buy_preview_request_id:
+            return
+        try:
+            current = self._buy_preview_snapshot()
+            current = current[:4] + (int(self.preview_price_input.text()),) + current[5:]
+            current = current + (int(self.preview_amount_input.text()),)
+        except Exception:
+            return
+        if (current != snapshot or self._buy_preview_power is None
+                or self.store.active_account_id() != snapshot[0]):
+            return
+        self._buy_preview_result = result
+        self.preview_result_label.setText(
+            f"مبلغ سفارش = {result['amount']:,}\nکارمزد = {result['fee']:,}\nمبلغ کل خرید = {result['total']:,}"
+        )
+        self.preview_confirm_button.setEnabled(True)
+
+    def _apply_buy_preview(self):
+        result = self._buy_preview_result
+        if result is None:
+            return
+        try:
+            current = self._buy_preview_snapshot()
+            current = current[:4] + (int(self.preview_price_input.text()),) + current[5:]
+            current += (int(self.preview_amount_input.text()),)
+        except Exception:
+            return
+        if current != self._buy_preview_snapshot_value or self.store.active_account_id() != current[0]:
+            self._buy_preview_result = None
+            self.preview_confirm_button.setEnabled(False)
+            return
+        self.price_input.setText(str(result["price"]))
+        self.quantity_input.setText(str(result["quantity"]))
+        self.config.set_price(result["price"])
+        self.config.set_quantity(result["quantity"])
+        self.base_amount_label.setText(f"{result['amount']:,}")
+        self.fee_label.setText(f"{result['fee']:,}")
+        self.final_amount_label.setText(f"{result['total']:,}")
+        self._refresh_test_button_state()
+        self._buy_preview_dialog.accept()
+
+    def _invalidate_buy_preview(self, *_):
+        self._buy_preview_request_id += 1
+        self._buy_preview_result = None
+        if self._buy_preview_dialog is not None:
+            self.preview_confirm_button.setEnabled(False)
 
     def _make_limit_arrow(self, icon_path, tooltip, object_name):
         button = QPushButton(self.form_group)
@@ -1853,6 +2227,7 @@ class OrderConfigurationPage(QWidget):
         # (re)store a selection — a late resolve for text the user has
         # already replaced must never set selected_instrument.
         self._search_sequence += 1
+        self._invalidate_auto_amount()
 
         # The previously displayed suggestions belong to the superseded
         # request: remove them from the popup and drop their identity
@@ -3559,6 +3934,8 @@ class OrderConfigurationPage(QWidget):
                 f"{getattr(instrument, 'symbol', '')} - "
                 f"{getattr(instrument, 'name', '')}{market_part}"
             )
+        self._invalidate_auto_amount()
+        self._refresh_amounts()
         # Fail-closed display: without a verified source this is never
         # "tradable"/"permitted".
         self.symbol_status_label.setText(
@@ -3596,6 +3973,8 @@ class OrderConfigurationPage(QWidget):
         self.validation_error_label.setVisible(False)
 
     def _on_side_selected(self, side):
+        self._invalidate_buy_preview()
+        self._invalidate_auto_amount()
         try:
             self.config.set_side(side)
         except OrderConfigError:  # pragma: no cover — buttons are fixed
@@ -3651,11 +4030,15 @@ class OrderConfigurationPage(QWidget):
         ).name()
 
     def _on_price_changed(self):
+        self._invalidate_buy_preview()
+        self._invalidate_auto_amount()
+        self._auto_amount_timer.stop()
         text = self.price_input.text().strip()
         if not text:
             self.config.price = None
             self._clear_validation_error()
             self._refresh_amounts()
+            self.base_amount_label.setText(STRINGS.VALUE_EMPTY_DASH)
             return
         try:
             # The Core Order contract is price: int — integer input only.
@@ -3664,16 +4047,24 @@ class OrderConfigurationPage(QWidget):
             self.config.set_price(int(text))
         except (OrderConfigError, ValueError):
             self._show_validation_error(STRINGS.DIALOG_INVALID_PRICE)
+            self.base_amount_label.setText(STRINGS.VALUE_EMPTY_DASH)
+            self.fee_label.setText("نامشخص؛ قیمت معتبر نیست")
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            return
         else:
             self._clear_validation_error()
         self._refresh_amounts()
+        self._start_auto_amount()
 
     def _on_quantity_changed(self):
+        self._invalidate_auto_amount()
+        self._auto_amount_timer.stop()
         text = self.quantity_input.text().strip()
         if not text:
             self.config.quantity = None
             self._clear_validation_error()
             self._refresh_amounts()
+            self.base_amount_label.setText(STRINGS.VALUE_EMPTY_DASH)
             return
         try:
             # The Core Order contract is quantity: int — integer input
@@ -3682,9 +4073,14 @@ class OrderConfigurationPage(QWidget):
             self.config.set_quantity(int(text))
         except (OrderConfigError, ValueError):
             self._show_validation_error(STRINGS.DIALOG_INVALID_QUANTITY)
+            self.base_amount_label.setText(STRINGS.VALUE_EMPTY_DASH)
+            self.fee_label.setText("نامشخص؛ تعداد معتبر نیست")
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            return
         else:
             self._clear_validation_error()
         self._refresh_amounts()
+        self._start_auto_amount()
 
     # ---------------------------------------------------------
     # Daily price / broker quantity limit arrows
@@ -4978,6 +5374,108 @@ class OrderConfigurationPage(QWidget):
         self.fee_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
         self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
 
+    def _invalidate_auto_amount(self):
+        if hasattr(self, "_auto_amount_timer"):
+            self._auto_amount_timer.stop()
+        self._auto_amount_request_id += 1
+        if hasattr(self, "amount_warning_label"):
+            self.amount_warning_label.clear()
+        if hasattr(self, "fee_label"):
+            self.fee_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+
+    def _schedule_auto_amount(self, *_):
+        """Coalesce keystrokes into one request while invalidating old results immediately."""
+        self._invalidate_auto_amount()
+        if hasattr(self, "base_amount_label"):
+            try:
+                price = _valid_limit(_parse_exact_integral_text(self.price_input.text()), allow_zero=False)
+                quantity = _valid_limit(_parse_exact_integral_text(self.quantity_input.text()), allow_zero=False)
+            except Exception:
+                price = quantity = None
+            self.base_amount_label.setText(
+                STRINGS.format_grouped(price * quantity)
+                if price is not None and quantity is not None
+                else STRINGS.VALUE_EMPTY_DASH
+            )
+            self.fee_label.setText("نامشخص؛ قیمت یا تعداد معتبر نیست")
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        self._auto_amount_timer.start()
+
+    def _start_auto_amount(self):
+        try:
+            record = self._active_account_record()
+            instrument = self.config.selected_instrument
+            price = _valid_limit(_parse_exact_integral_text(self.price_input.text()), allow_zero=False)
+            quantity = _valid_limit(_parse_exact_integral_text(self.quantity_input.text()), allow_zero=False)
+            if (record is None or record.broker_name != "آگاه" or instrument is None
+                    or not getattr(instrument, "ins_code", None) or not self._order_nsc_id
+                    or self.config.side != BUY or price is None or quantity is None):
+                self.fee_label.setText("نامشخص؛ حساب، نماد، قیمت یا تعداد معتبر نیست")
+                self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+                return
+        except Exception:
+            self.fee_label.setText("نامشخص؛ قیمت یا تعداد معتبر نیست")
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            return
+        snapshot = (record.account_id, instrument.ins_code, self._order_nsc_id,
+                    price, quantity, self.config.side)
+        self.base_amount_label.setText(STRINGS.format_grouped(price * quantity))
+        self.fee_label.setText("در حال دریافت کارمزد…")
+        self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        request_id = self._auto_amount_request_id
+        factory = self._buy_preview_factory
+
+        def calculate(_snapshot):
+            if factory is None:
+                raise RuntimeError("سرویس کارمزد آگاه در دسترس نیست")
+            service = factory(record.account_id, record.broker_name)
+            power = service.get_tradable_balance(record.account_id)
+            if isinstance(power, bool) or not isinstance(power, int) or power < 0:
+                raise ValueError("قدرت خرید حساب معتبر نیست")
+            broker = service.get_adapter(record.account_id)._broker
+            data = broker.get_commission_info(self._order_nsc_id, price, quantity, 1)
+            fee = data.get("commissionSum") if isinstance(data, dict) else None
+            if isinstance(fee, bool) or not isinstance(fee, int) or fee < 0:
+                raise ValueError("پاسخ کارمزد آگاه معتبر نیست")
+            return {"power": power, "fee": fee, "base": price * quantity,
+                    "total": price * quantity + fee}
+
+        worker = _BuyPreviewWorker(request_id, snapshot, calculate, self)
+        self._auto_amount_worker = self._auto_amount_thread = worker
+        worker.succeeded.connect(self._on_auto_amount_succeeded)
+        worker.failed.connect(self._on_auto_amount_failed)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _auto_amount_current(self, snapshot):
+        record = self._active_account_record()
+        instrument = self.config.selected_instrument
+        try:
+            values = (_valid_limit(_parse_exact_integral_text(self.price_input.text()), allow_zero=False),
+                      _valid_limit(_parse_exact_integral_text(self.quantity_input.text()), allow_zero=False))
+        except Exception:
+            return False
+        return (record is not None and instrument is not None
+                and snapshot == (record.account_id, instrument.ins_code, self._order_nsc_id,
+                                 *values, self.config.side))
+
+    def _on_auto_amount_succeeded(self, request_id, snapshot, result):
+        if request_id != self._auto_amount_request_id or not self._auto_amount_current(snapshot):
+            return
+        self.fee_label.setText(STRINGS.format_grouped(result["fee"]))
+        self.final_amount_label.setText(STRINGS.format_grouped(result["total"]))
+        if result["total"] > result["power"]:
+            self.amount_warning_label.setText("مبلغ نهایی از موجودی شما بیشتر است")
+        else:
+            self.amount_warning_label.clear()
+
+    def _on_auto_amount_failed(self, request_id, message):
+        if request_id == self._auto_amount_request_id:
+            self.fee_label.setText(f"نامشخص: {message}")
+            self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            self.amount_warning_label.clear()
+
     # ---------------------------------------------------------
     # Account display (verbatim from the UI-2.1 store)
     # ---------------------------------------------------------
@@ -4998,11 +5496,18 @@ class OrderConfigurationPage(QWidget):
 
     def refresh_active_account(self):
         """Re-mirror the active account from the store into the page."""
+        self._invalidate_buy_preview()
+        self._invalidate_auto_amount()
+        self._buy_preview_power = None
+        if self._buy_preview_dialog is not None:
+            self._buy_preview_dialog.reject()
+            self._buy_preview_dialog = None
         self.active_account_label.setText(self._active_account_text())
         self._clear_order_identity()
         instrument = self.config.selected_instrument
         self._restart_order_identity_if_stale()
         self._refresh_test_button_state()
+        self._start_auto_amount()
 
     def _active_account_record(self):
         """

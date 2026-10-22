@@ -758,6 +758,27 @@ class AgaahBroker(Broker):
 
         return int(capacity)
 
+    def get_commission_info(self, nsc_id: str, price: int, quantity: int, side_code: int):
+        """Return validated commissioninfo payload for a read-only preview."""
+        if not nsc_id:
+            raise ValueError("nsc_id نمی‌تواند خالی باشد.")
+        for name, value in (("price", price), ("quantity", quantity),
+                            ("side_code", side_code)):
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} باید عدد صحیح و مثبت باشد.")
+        response = self._authed_get_with_recovery(
+            "trades/commissioninfo",
+            params={"nscId": nsc_id, "price": price,
+                    "quantity": quantity, "sideCode": side_code},
+        ).json()
+        if not isinstance(response, dict) or response.get("isSuccess") is not True:
+            raise RuntimeError("دریافت اطلاعات کارمزد ناموفق بود.")
+        data = response.get("data")
+        commission = data.get("commissionSum") if isinstance(data, dict) else None
+        if isinstance(commission, bool) or not isinstance(commission, int) or commission < 0:
+            raise RuntimeError("commissionSum پاسخ آگاه معتبر نیست.")
+        return data
+
     # =================================================
     # SELL Capacity (Portfolio Quantity)
     # =================================================

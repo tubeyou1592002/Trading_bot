@@ -275,6 +275,9 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_order_identity_factory(
             self._real_order_identity_resolver
         )
+        self.order_configuration_page.set_buy_preview_factory(
+            lambda account_id, broker_name: self.authentication_service
+        )
         # UI-5 Task 2: the Test action drives its pending entries through
         # the EXISTING dry-run execution chain. The runner is built lazily
         # (only on the first real Test pass, never here), so construction
