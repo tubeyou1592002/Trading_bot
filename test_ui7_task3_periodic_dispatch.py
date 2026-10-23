@@ -589,8 +589,8 @@ def test_every_group_and_turn_gets_its_own_runner():
 
     seen = [nsc for instance in instances for names, _ in instance.calls for nsc in names]
     assert sorted(seen) == ["nsc-a", "nsc-a", "nsc-b", "nsc-b"]
-    accounts = {account for instance in instances for _, account in instance.calls}
-    assert accounts == {"account-object-acc-1"}
+    accounts = [account for instance in instances for _, account in instance.calls]
+    assert all(account == {"acc-1": "account-object-acc-1"} for account in accounts)
 
 
 def test_run_results_do_not_cross_between_groups_and_turns():
@@ -1241,9 +1241,9 @@ def test_the_frozen_set_is_really_frozen_across_turns(qapp):
         page.clock.advance(0.05)
         page._service_due_dispatch_turns()   # turn 1
 
-        assert sent == [], "multi-destination Apply must fail closed before dispatch"
-        assert page._schedule_snapshot is None
-        assert "چند مقصد" in page.schedule_summary_label.text()
+        assert len(sent) == 4
+        assert {broker for broker, _ in sent} == {"agah", "sana"}
+        assert page._schedule_snapshot is not None
 
         pending = page.order_queue.list_pending()
         assert {id(e) for e in pending} == {id(entry_a), id(entry_b)}

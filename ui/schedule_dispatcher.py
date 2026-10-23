@@ -802,7 +802,7 @@ class PeriodicScheduleDispatcher:
             # thread preparation, or the end of the broker's answer.
             started_mono = self._mono()
             _plan, execution_id, result = runner.run(
-                entries, account=group.account
+                entries, account={group.account_id: group.account}
             )
             # The trace id is read ONLY from the real Core result.
             trace = getattr(result, "trace_id", None)

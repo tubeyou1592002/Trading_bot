@@ -235,41 +235,22 @@ class TestRunner:
                 "(fail-closed, nothing is dispatched)"
             )
 
-        first = entries[0]
-        account_id = first.account_id
-        broker_name = first.broker_name
-        for entry in entries:
-            if (
-                entry.account_id != account_id
-                or entry.broker_name != broker_name
-            ):
-                raise ValueError(
-                    "Test run skipped: the selected entries mix accounts or "
-                    "brokers; one Test action is exactly one single-batch "
-                    "dispatch, no grouping/splitting is performed "
-                    "(fail-closed)"
-                )
-
         from models.account import Account
 
-        if account is None:
-            raise ValueError(
-                "Test run skipped: no Account object was supplied for the "
-                "selection (fail-closed, nothing is dispatched)"
-            )
-        if not isinstance(account, Account):
-            raise ValueError(
-                "Test run skipped: the supplied account is not a "
-                "models.account.Account (fail-closed, nothing is dispatched)"
-            )
-        if account.account_id != account_id:
-            raise ValueError(
-                "Test run skipped: the supplied Account "
-                f"({account.account_id!r}) does not match the entries' "
-                f"account_id ({account_id!r}) — the resolved account must "
-                "be the one bound to every selected entry (fail-closed, "
-                "nothing is dispatched)"
-            )
+        if isinstance(account, dict):
+            accounts = dict(account)
+        elif isinstance(account, Account):
+            accounts = {account.account_id: account}
+        else:
+            accounts = {}
+        for entry in entries:
+            bound = accounts.get(entry.account_id)
+            if not isinstance(bound, Account) or bound.account_id != entry.account_id:
+                raise ValueError(
+                    "Test run skipped: no matching Account object was "
+                    f"supplied for account_id {entry.account_id!r} "
+                    "(fail-closed, nothing is dispatched)"
+                )
 
         if self.live:
             if self._safety_gate is None:
@@ -287,10 +268,6 @@ class TestRunner:
         # Lazy, first-run Core access: importing the existing bridge pulls
         # in the existing integration/core pieces. Nothing is imported when
         # the runner is merely constructed or toggled.
-        from core.order_queue_adapter import (
-            build_execution_plan_from_selected_entries,
-        )
-
         self._run_counter += 1
         plan_id = f"ui5-test-{self._run_counter}"
 
@@ -299,13 +276,36 @@ class TestRunner:
         # object — the documented integration-layer convention of Blocks
         # 6/9/10. With the Account attached, the real DispatchCore can
         # execute instead of fail-closing on an id-only binding.
-        plan = build_execution_plan_from_selected_entries(
-            entries,
-            account_id=account_id,
-            broker_name=broker_name,
-            plan_id=plan_id,
+        from core.execution_planner import (
+            ExecutionPlanner,
+            LogicalOrderInstruction,
+            PlannedOrder,
         )
-        plan.accounts = [account]
+
+        instruction = LogicalOrderInstruction(
+            plan_id=plan_id,
+            orders=[
+                PlannedOrder(
+                    order=entry.order,
+                    account_id=entry.account_id,
+                    broker_name=entry.broker_name,
+                    sequence=sequence,
+                )
+                for sequence, entry in enumerate(entries)
+            ],
+        )
+        plan = ExecutionPlanner().build_plan(instruction)
+        if len(entries) == 1 and isinstance(account, Account):
+            # Preserve the established single-entry plan contract exactly.
+            plan.accounts = [account]
+        else:
+            plan_accounts = []
+            seen_account_ids = set()
+            for entry in entries:
+                if entry.account_id not in seen_account_ids:
+                    plan_accounts.append(accounts[entry.account_id])
+                    seen_account_ids.add(entry.account_id)
+            plan.accounts = plan_accounts
 
         # Exactly ONE dispatch per Test action. When the real ``DispatchCore``
         # exposes the existing Task 8.2 measured contract, it is the single

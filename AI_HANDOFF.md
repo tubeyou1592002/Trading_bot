@@ -2635,21 +2635,25 @@ Minimum verifications:
 
 **Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
 
-**Status:** IN PROGRESS — Task 11.1 is complete and reviewed; Tasks 11.2–11.7 remain planned. This does not authorize production Live or a real order.
+**Status:** IN PROGRESS — Task 11.1 contract and its two implementation stages (destination readiness, then account-bound multi-destination dispatch) are complete and reviewed. Tasks 11.2–11.7 remain planned. This does not authorize production Live or a real order.
 
 #### Task 11.1 — Firing Contract and Freshness Policy
 
 **Status: COMPLETE (2026-10-23).** The owner accepted these rules:
 
-- The active account and its local broker session are bound to the scheduled run through its end. A local logout, invalidation, deletion, broker change, or active-account change disarms the run. The application does not make a network request to probe session validity. A remote disconnect/revocation that produces no local state or event cannot be detected until an existing broker operation reports it.
+- Each queued order is bound to its own account, broker, and locally known session through the scheduled run. Only accounts referenced by queued orders are checked; all accounts do not need to be active simultaneously. Changing the UI's active account alone does not change or invalidate the queued destinations. A local logout, invalidation, deletion, or broker/session change for a destination account disarms the run. The application does not make a network request to probe session validity. A remote disconnect/revocation that produces no local state or event cannot be detected until an existing broker operation reports it.
 - The order queue and effective order specifications are frozen at Apply. Queue/account/session changes invalidate the run; the user must Apply again. A run never silently switches to a changed account or order.
 - The user checks displayed purchase power and market price bounds before Apply. The scheduler does not re-fetch those display values as a freshness probe. This does not remove or weaken mandatory M6/SafetyGate checks; later Block 11 tasks must complete required checks during pre-arm, never at firing time.
 - Every planned turn resends the complete frozen queue. Maximum submissions are `planned turns × frozen order count`; the UI must disclose this count before approval. No implicit deduplication or automatic POST retry is assumed.
 - If pre-arm is incomplete, a required check fails, the batch changes, or the scheduled start deadline is missed, disarm and send nothing. Never start late or do blocking preparation at the firing instant.
 
-The implementation for this contract records and validates the account/session/queue snapshot, propagates local invalidation events, and starts the dispatch worker only after final validation and schedule lock. It does not yet implement the prepared-order/submit separation or make production Live ready.
+The implementation for this contract records and validates the per-destination account/session/queue snapshot, propagates local invalidation events, routes each frozen order to its own account and broker, and starts the dispatch worker only after final validation and schedule lock. Multi-destination Apply is supported when every destination is valid; the firing path still uses the existing runner and does not yet implement prepared-order/submit separation or make production Live ready.
 
-**Verification reported and reviewed:** `test_ui7_task3_periodic_dispatch.py`, `test_ui7_task1_schedule_clock.py`, and `test_ui2_1_account_management.py` — 164 passed; `py_compile` succeeded for changed production/test files. The current `git diff --check` passes. No live network request or real order was used.
+**Stage 1 verification reported:** `test_ui7_task3_periodic_dispatch.py`, `test_ui7_task1_schedule_clock.py`, and `test_ui2_1_account_management.py` — 167 passed; `py_compile` succeeded. No live network request or real order was used.
+
+**Stage 2 — Account-bound multi-destination dispatch: COMPLETE (2026-10-23).** `TestRunner` now builds the real execution plan with each QueueEntry's account/broker binding; the dispatcher fans out one runner per `(account_id, broker_name)` group and passes that group's pre-resolved Account. The schedule snapshot no longer depends on the UI active account. Offline integration tests used real `Order`/`QueueEntry`, the real runner/dispatcher/Core path, and simulation brokers to verify two accounts at one broker, two brokers, and concurrent fan-out before slow responses. Targeted tests: **118 passed**; `py_compile` succeeded. An additional legacy SimulationHarness regression run had **143 passed, 2 failed** before reaching the changed runner path because its `BrokerManager.__new__` fixture lacks `_account_lock`. No real endpoint or order was used. Line-ending/trailing-whitespace noise was reported in existing CRLF files; avoid broad normalization in follow-up work.
+
+These stages implement the per-order destination contract only. They do not prepare immutable Live payloads, evaluate batch-scoped Live authorization, or enable production Live.
 
 **Acceptance:** the owner can determine from the documented summary exactly which payloads will be sent, how many times, against which account, and which data is considered fresh for the scheduled window.
 

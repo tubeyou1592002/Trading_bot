@@ -3130,11 +3130,7 @@ class OrderConfigurationPage(QWidget):
         )
 
     def _dispatch_snapshot(self, targets):
-        record = self._active_account_record()
         return (
-            self.store.active_account_id(),
-            getattr(record, "account_id", None),
-            getattr(record, "broker_name", None),
             tuple(
                 (
                     id(target.entry),
@@ -4968,13 +4964,6 @@ class OrderConfigurationPage(QWidget):
                     return (f"queued order {getattr(entry.order, 'nsc_id', entry)} "
                             f"is registered for broker {entry.broker_name!r} but "
                             f"account {entry.account_id} is bound to {record.broker_name!r}")
-            if len({(entry.account_id, entry.broker_name) for entry in entries}) > 1:
-                missing = next((entry for entry in entries
-                                if _account_record_or_none(store, entry.account_id) is None), None)
-                if missing is not None:
-                    return (f"queued order {getattr(missing.order, 'nsc_id', missing)} "
-                            f"has no valid account ({missing.account_id}) - add that account first")
-                return "صف چندحسابی آماده است، اما مسیر ارسال زمان‌بندی فعلی از چند مقصد مستقل در یک Apply پشتیبانی نمی‌کند؛ سفارش‌ها ارسال نشدند."
             return None
         for entry in entries:
             record = _account_record_or_none(store, entry.account_id)
@@ -4991,8 +4980,6 @@ class OrderConfigurationPage(QWidget):
                     f"account {entry.account_id} is bound to "
                     f"{record.broker_name!r}"
                 )
-        if len({(entry.account_id, entry.broker_name) for entry in entries}) > 1:
-            return "صف چندحسابی آماده است، اما مسیر ارسال زمان‌بندی فعلی از چند مقصد مستقل در یک Apply پشتیبانی نمی‌کند؛ سفارش‌ها ارسال نشدند."
         return None
 
     def _frozen_dispatch_targets(self):
@@ -5115,15 +5102,8 @@ class OrderConfigurationPage(QWidget):
         self._pending_dispatch_targets = None
         self._pending_dispatch_snapshot = None
         timing = self._schedule_timing
-        active_id = self.store.active_account_id()
-        active_record = self._active_account_record()
         manager = self._session_manager
-        try:
-            session = manager.get(active_id) if manager is not None else None
-            session_identity = (session.account_id, session.broker_name,
-                                session.state.value, manager.revision(active_id)) if session is not None else None
-        except Exception:
-            session_identity = None
+        session_identity = None
         sessions = {}
         try:
             for account_id, broker_name in dict.fromkeys(
@@ -5137,11 +5117,6 @@ class OrderConfigurationPage(QWidget):
         except Exception:
             sessions = {}
         self._schedule_snapshot = {
-            "active_id": active_id,
-            "account": ((active_record.account_id, active_record.broker_name,
-                         id(active_record.account)) if active_record is not None else None),
-            "session": session_identity,
-            "session_revision": (session_identity[3] if session_identity else None),
             "sessions": sessions,
             "queue": tuple((id(target.entry), id(target.entry.order),
                             target.account_id, target.broker_name,
@@ -5156,8 +5131,6 @@ class OrderConfigurationPage(QWidget):
                          self._run_mode),
         }
         self._schedule_snapshot["cancel_event"] = self._schedule_cancel_event
-        if session_identity is None:
-            self._schedule_snapshot["session"] = None
         if manager is None or not sessions or any(
             identity[2] != "logged_in" for identity in sessions.values()
         ):
@@ -5281,6 +5254,13 @@ class OrderConfigurationPage(QWidget):
                 live=True, safety_gate=self._frozen_live_gate
             )
         return factory()
+
+    def _schedule_accounts(self):
+        """Resolve the already-validated account objects from frozen targets."""
+        return {
+            target.account_id: target.account
+            for target in self._schedule_snapshot.get("runner_targets", ())
+        }
 
     # -- the dispatch worker (never the UI thread) -------------------------
 
@@ -5664,18 +5644,6 @@ class OrderConfigurationPage(QWidget):
             self._set_schedule_summary(
                 STRINGS.SCHEDULE_REJECTED.format(reason=target_rejection)
             )
-            return
-
-        # Scheduled dispatch's current TestRunner accepts exactly one
-        # account/broker binding. Never route a mixed queue through the
-        # active UI account; reject it before any schedule is armed.
-        if len({(entry.account_id, entry.broker_name)
-                for entry in self._schedule_queue_entries}) > 1:
-            self._schedule_arming = False
-            self._schedule_arming_account_id = None
-            self._set_schedule_summary(STRINGS.SCHEDULE_REJECTED.format(
-                reason="صف چندحسابی آماده است، اما مسیر ارسال فعلی از چند مقصد مستقل در یک Apply پشتیبانی نمی‌کند؛ سفارش‌ها ارسال نشدند."
-            ))
             return
 
         self._pending_schedule = parsed
