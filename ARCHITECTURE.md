@@ -1470,7 +1470,7 @@ Block 2 MUST NOT bypass M6-A through M6-E. Block 2 must use the existing `OrderE
 
 **Dry-run:**
 
-`live` in `BrokerDispatchRequest` is always False during development. The Dispatch Core does NOT enable live trading. Dry-run is the only mode until Block 10 (Controlled Live Execution) and explicit human approval.
+`live` in `BrokerDispatchRequest` remains False by default. Block 10 defines the controlled Live boundary; production scheduled Live remains unavailable until the pre-armed lifecycle in Block 11 is implemented and explicitly approved.
 
 ### Explicit execution mode and optional OMS feedback (Decision 036)
 
@@ -1498,6 +1498,16 @@ order success/failure verdict. Stop blocks future turns but does not claim to
 cancel requests already started. Each scheduled turn resends the full frozen
 queue, so possible total submissions are planned turns multiplied by frozen
 queue size.
+
+### Pre-armed scheduled Live lifecycle (Decision 037 / Block 11)
+
+The scheduled-Live requirement is a two-phase lifecycle: `PREPARE/ARM` before the firing window, then `FIRE/OBSERVE` at each scheduled instant. The countdown starts only after the complete queue has passed preparation, readiness checks, and explicit approval. The prepared batch freezes account, broker, payloads, schedule, repetition count, and freshness metadata. Any material mutation, failed prerequisite, stale source, or missed start deadline disarms the batch and sends nothing.
+
+Instrument resolution and M6-A…M6-E remain mandatory, but their network reads run during pre-arm preparation. A prepared order is immutable and account-bound; submission consumes only an unexpired prepared result. At the firing instant the application must not perform database access, instrument resolution, M6/readiness HTTP calls, credential refresh, new worker construction, modal interaction, or wait for HTTP/NATS responses. It uses a prestarted sender and monotonic timing to release the authorized payloads. NATS remains receive-only and optional.
+
+Every due turn currently resends the entire frozen queue. Live arming must disclose the exact maximum count (`planned turns × queue size`) and validate aggregate repeated exposure; if that cannot be proven from the prepared batch and broker contract, the plan remains unarmed. No automatic POST retry is allowed. Measure planned due, scheduler wake/release, POST initiation, HTTP response, and NATS feedback separately; zero avoidable application work is the objective, not a claim of zero Windows/network/broker latency.
+
+Block 11 is planned and not implemented. It supersedes Block 10's original out-of-scope restriction on schedule/M6 lifecycle changes only for this pre-arm/prepare/fire work. It does not permit bypassing M6, SafetyGate, account authorization, or broker protections.
 
 **Out of scope for Block 2:**
 

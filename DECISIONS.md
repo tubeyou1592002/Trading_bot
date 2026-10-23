@@ -1636,3 +1636,34 @@ reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance 
 - NATS/OMS is an optional receive-only feedback channel. Bootstrap failure, timeout, or later disconnect only marks feedback unavailable with `بازخورد از سازمان بورس دریافت نشده`; it never changes Live permission, pauses/stops scheduling, modifies the initial HTTP result, or causes POST replay. HTTP send results and delayed OMS feedback remain separate. Correlation remains decision-ID/account scoped.
 
 **Verification boundary:** all new tests use local fakes/mocks. No live broker endpoint or `POST /order` is used. Live behavior can be exercised only with explicit simulated readiness and a SafetyGate; production remains blocked until its missing readiness contracts are provided.
+
+---
+
+## Decision 037 — Pre-Armed Scheduled Live Dispatch
+
+**Status:** Approved for roadmap; implementation not started.
+
+**Context:** Block 10 established a controlled Live boundary and simulation-only acceptance. Production remains fail-closed. The current UI schedule re-enters the runner per due turn; `execute_by_ins_code()` resolves the instrument on the execution path, and `OrderEngine.prepare()` performs trading-state and capacity reads. This adds variable work at the firing instant and does not meet the owner's requirement to queue orders, apply a schedule, and complete checks before countdown/firing.
+
+**Decision:** Introduce Block 11 as a targeted `PREPARE/ARM → FIRE → OBSERVE` lifecycle. Apply freezes a batch and performs account/session/readiness checks, instrument resolution, M6-A…M6-E checks, payload construction, SafetyGate evaluation, and explicit approval before countdown starts. The resulting prepared orders and authorization are immutable and bound to the exact account, broker, payload, schedule window, repetition count, and source freshness limits. Failed, mutated, expired, or late preparation disarms the batch; it never performs recovery work at the firing instant.
+
+At each due time, prestarted senders release only the already-prepared payloads using monotonic schedule timing. The firing path does no database access, instrument resolution, M6/readiness HTTP call, credential refresh, modal interaction, or new worker-pool construction. It does not wait for earlier HTTP responses or NATS feedback. Initial HTTP results and delayed NATS events are processed asynchronously and correlated to the exact order/account. No automatic POST retry/replay is allowed.
+
+**Safety and freshness:** M6-A…M6-E are not weakened; they remain the authoritative per-order checks but execute before the batch is armed. Each external result must have a documented source-specific validity period. A local freshness check may disarm at firing time but must never perform a network refresh then. If a prerequisite cannot be verified or a prepared result is stale, nothing is sent. The broker remains the final authority to accept/reject an order.
+
+**Repeated dispatch:** Existing schedule semantics send the full frozen queue every planned turn. Live UI must show the exact maximum number of submissions (`planned turns × queue size`). Pre-arm must validate aggregate repeated exposure according to the broker contract; if that cannot be safely established, Live repetition is rejected. No implicit deduplication is assumed.
+
+**Latency objective:** Remove avoidable application work between scheduled due time and POST initiation. Measure schedule due time, scheduler wake/release, POST initiation, HTTP response, and NATS feedback separately. Do not claim zero end-to-end latency; Windows scheduling, network transit, and broker processing remain outside full application control.
+
+**Scope:** Block 11 supersedes Block 10's original exclusion of schedule/M6 lifecycle redesign only for the pre-armed scheduled-Live lifecycle. It does not redesign unrelated Block 5–9 capabilities, weaken account authorization, bypass SafetyGate/M6, or enable a global broker lock from UI code.
+
+**Tasks:**
+1. **11.1 Firing contract and freshness policy** — define schedule start/deadline, repetition semantics, maximum submission count, data freshness by source, invalidation, and disarm behavior.
+2. **11.2 Prepared order / submit separation** — produce immutable prepared orders from instrument resolution and M6-A…M6-E; submission consumes only a matching, unexpired prepared result.
+3. **11.3 Live readiness and batch-scoped authorization** — connect only verifiable account/session and broker capability evidence; aggregate actual M6 results; bind approval to the frozen batch and maximum submissions; never invent READY statuses or toggle a global broker lock from UI.
+4. **11.4 Pre-arm workflow and countdown** — Apply freezes and prepares the batch; countdown starts only after all checks and approval; failures/staleness/deadline miss disarm without late sends.
+5. **11.5 Low-latency fire path** — prestart workers/connections; release prepared submissions at each due time without serial response waits; verify transport concurrency and account isolation; no retries.
+6. **11.6 Latency instrumentation and offline verification** — measure due/wake/release/POST/HTTP/NATS separately; prove the hot path performs no preparation; test with fakes/mocks only.
+7. **11.7 Controlled owner-run Live qualification** — after review, document one owner-operated single-order/single-turn qualification; do not send real orders in implementation or automated tests. Burst repetition requires separate owner acceptance of maximum exposure.
+
+**Acceptance boundary:** Each task is accepted on offline tests and review. Production readiness is not claimed until Tasks 11.1–11.6 are complete. Task 11.7 is owner-operated and requires explicit owner action; the coding agent never sends a real order.

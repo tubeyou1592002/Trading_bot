@@ -2618,6 +2618,69 @@ Minimum verifications:
 
 ---
 
+### Block 11 — Pre-Armed Scheduled Live Dispatch
+
+**Goal:** Prepare and validate the complete, frozen Live order batch before its scheduled firing window. Once the countdown reaches the firing time, the application performs no blocking preparation, authentication refresh, database access, instrument lookup, M6 network read, or NATS wait; it releases the already-authorized submissions immediately.
+
+**Why this is a new block:** Block 10 implements and tests the controlled Live boundary, but its acceptance was simulation-only and no real order was sent. The current production UI remains fail-closed. The current dispatch path performs instrument resolution and `OrderEngine.prepare()` as part of each dispatch; `prepare()` reads trading state and buy/sell capacity. The schedule creates a runner for each due turn and resubmits the frozen queue. This is correct for the existing contract but does not meet the pre-arm/no-hot-path-preparation requirement. Block 11 supersedes Block 10's original “no scheduler or M6 redesign” scope only for this explicit pre-armed Live lifecycle; it does not weaken any M6 check or redesign unrelated Blocks 5–9 capabilities.
+
+**Operational contract:**
+- The user queues orders and presses Apply before the scheduled firing time. Preparation begins immediately; countdown and “Ready to fire” state begin only after the full batch passes preparation, the user confirms the exact summary, and the firing plan is armed.
+- The queue, account, broker, order payloads, timing window, repetitions, and authorization are frozen as one snapshot. Any edit, account/session change, failed/expired prerequisite, or missed start deadline disarms the plan. It must never start late or silently use a changed order.
+- M6-A…M6-E remain authoritative and run for each order during pre-arm preparation. The prepared results are tied to the exact order and have source-specific freshness limits. No M6/API recheck runs at firing time. Expired preparation disarms locally before any POST.
+- Live readiness and human approval are evaluated against the prepared batch. Do not invent a broker readiness endpoint or a generic M6 status. Use documented, verifiable account/session and broker capability signals; if a required signal cannot be verified, the whole batch stays unarmed.
+- At each due time, a prestarted sender releases the prepared payloads without waiting for prior HTTP responses or NATS. HTTP results and delayed NATS feedback are observed asynchronously. No automatic POST retry/replay is permitted.
+- Existing schedule semantics resend the complete frozen queue on every planned turn. The UI must disclose `planned turns × frozen order count`. Before arming Live, preparation must account for the total possible repeated exposure; if it cannot establish that the configured repetition is within validated limits, Live arming is rejected. NATS remains optional and receive-only.
+- The target is no avoidable application work between the planned firing time and POST initiation. Windows scheduling, network transit, and broker processing remain measurable external latency; the application must report them separately and must not claim zero end-to-end latency.
+
+**Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
+
+**Status:** PLANNED — no Block 11 implementation has started. No real order is authorized by this roadmap entry.
+
+#### Task 11.1 — Firing Contract and Freshness Policy
+
+Record the exact pre-arm workflow, start/deadline behavior, per-source freshness limits, invalidation rules, repeat count, and total-submission exposure. Preserve the current repeat-every-turn behavior unless the owner explicitly changes it. Define what happens when preparation is incomplete or stale at the scheduled time: disarm and send nothing; never perform blocking work at the firing instant.
+
+**Acceptance:** the owner can determine from the documented summary exactly which payloads will be sent, how many times, against which account, and which data is considered fresh for the scheduled window.
+
+#### Task 11.2 — Prepared Order / Submit Separation
+
+Refactor the existing `InstrumentProvider → OrderEngine.prepare() → broker` path into an explicit prepare result and a submit-prepared operation. Resolve the broker instrument and run M6-A…M6-E before arming. Store an immutable, account-bound prepared order with payload identity, check results, preparation timestamp, and freshness metadata. Preserve the existing Dry Run behavior and all fail-closed M6 outcomes.
+
+**Acceptance:** offline tests prove prepare performs all required reads before arming; submit-prepared performs no instrument lookup, M6/API read, or payload reconstruction and rejects mismatched, modified, or expired prepared orders.
+
+#### Task 11.3 — Live Readiness and Batch-Scoped Authorization
+
+Replace the current production “missing provider” dead end with a documented readiness contract based on real, available evidence. Separate application-level Live permission (explicit Live selection, human approval, authorized active account/session, supported production broker) from each order's M6 result. Aggregate the actual prepared-order results before approving the batch; never hard-code M6/broker `READY` statuses. Bind authorization to the frozen batch, account, broker, timing window, and maximum number of submissions. Keep independent engine/broker protections and do not let UI code flip a global broker lock.
+
+**Acceptance:** missing, invalid, stale, or mismatched evidence blocks arming; an allowed test permit is scoped to exactly the approved snapshot and cannot authorize another account, changed payload, or unplanned repetition.
+
+#### Task 11.4 — Pre-Arm Workflow and Countdown
+
+Make Apply freeze the schedule and queue, run preparation/readiness work before countdown, show progress and per-order failures, obtain final human confirmation of the frozen summary, and enter `READY/COUNTDOWN` only after successful arming. Prestart required workers and authenticated connections. If work completes after the scheduled start or any source expires before firing, disarm without a late send.
+
+**Acceptance:** tests prove no countdown/READY state appears before preparation and approval; any failure, mutation, account/session change, or deadline miss prevents all sends.
+
+#### Task 11.5 — Low-Latency Fire Path
+
+At each due time use the prearmed, monotonic schedule to release already-prepared payloads. Do not create a runner/thread pool, read the database, refresh credentials, resolve instruments, call M6, call readiness APIs, show a modal dialog, or wait for HTTP/NATS results at the firing instant. Start independent same-turn submissions without serially waiting for earlier HTTP responses, using a transport/session design whose thread safety and account isolation are verified. Do not retry an uncertain POST. Keep Stop semantics honest: it prevents future turns but cannot retract requests already initiated.
+
+**Acceptance:** fake-clock tests prove the firing path performs only bounded local checks and initiates sends at the scheduled turn; a slow response for one submission does not hold up other submissions or later scheduled turns.
+
+#### Task 11.6 — Latency Instrumentation and Offline Verification
+
+Record monotonic timestamps for planned due time, scheduler wake, release, each POST initiation, each initial HTTP response, and each NATS event. Report internal scheduling/release delay separately from network and broker response time. Test Dry Run, preparation, stale/modified plans, NATS unavailable, slow HTTP, no POST replay, repeated-turn counts, and account isolation with local fakes only.
+
+**Acceptance:** deterministic offline tests verify no network preparation occurs on the hot path; latency records correlate by stable order/account identity and never contain credentials or tokens. No live broker endpoint is used by automated tests.
+
+#### Task 11.7 — Controlled Owner-Run Live Qualification
+
+After Tasks 11.1–11.6 pass review, document an owner-operated Live qualification procedure. Start with a single explicitly approved prepared order and one firing turn; do not use burst repetition for the first Live qualification. Review measured schedule-to-POST and HTTP response timings, broker result, and later NATS feedback separately. Burst repetition may be enabled only after the owner reviews and explicitly accepts the exact maximum submission count and exposure.
+
+**Acceptance:** this task documents the procedure and results only when the owner performs it. The coding agent must never submit a real order as part of implementation or automated testing.
+
+---
+
 ### Dependency Graph
 
 ```
@@ -2637,6 +2700,8 @@ Block 0 → Block 1 → Block 2
                         ↓
                    Block 10
                         ↓
+                   Block 11
+                        ↓
                       UI
 ```
 
@@ -2646,7 +2711,9 @@ Block 0 → Block 1 → Block 2
 - **Block 5 depends on Block 2, Block 3, and Block 4** so it can track both dispatch paths.
 - **Latency instrumentation starts in Block 2**, not Block 8. Block 8 analyzes and optimizes existing data.
 - **Block 10 depends on Block 9** and must reuse Blocks 5–9 as-is; it only adds the Live enablement layer.
+- **Block 11 depends on Blocks 2–10.** It adds the explicit pre-arm/prepare/fire lifecycle needed for scheduled Live and revises the relevant Block 10 “no scheduler/M6 redesign” constraint only for that lifecycle. M6 validation remains mandatory and runs before arming.
 - **UI depends on Block 10**, so the Controlled Live Execution path is a prerequisite for the UI to offer a Live Trading surface.
+- **Scheduled Live UI depends on Block 11.** A visible Live selector alone does not mean production Live is ready.
 
 ### Roadmap Summary
 
@@ -2663,7 +2730,8 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| UI | User Interface | Block 10 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
+| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | PLANNED (Tasks 11.1–11.7) |
+| UI | User Interface | Block 10; scheduled Live depends on Block 11 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
 
