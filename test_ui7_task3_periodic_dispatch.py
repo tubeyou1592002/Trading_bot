@@ -1196,9 +1196,7 @@ def test_an_invalid_interval_rejects_apply_and_dispatches_nothing(qapp):
     fill(page, "13:00:00", "13:05:00", "15", dispatch_ms="0")
     apply_schedule(page)
 
-    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
-        page.schedule_summary_label.text()
-    )
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in page.schedule_summary_label.text()
     assert page.dispatch_turns == (), "a rejected interval dispatched something"
     assert not page.countdown_active
     assert page.dispatch_interval_ms is None
@@ -1243,12 +1241,9 @@ def test_the_frozen_set_is_really_frozen_across_turns(qapp):
         page.clock.advance(0.05)
         page._service_due_dispatch_turns()   # turn 1
 
-        assert len(sent) == 4, f"expected two turns x two brokers, got {sent}"
-        assert sorted(name for name, _ in sent) == ["agah", "agah", "sana", "sana"]
-        for orders in [i for name, i in sent if name == "agah"]:
-            assert orders == [(entry_a.order.nsc_id, entry_a.order.price, entry_a.order.quantity)]
-        for orders in [i for name, i in sent if name == "sana"]:
-            assert orders == [(entry_b.order.nsc_id, entry_b.order.price, entry_b.order.quantity)]
+        assert sent == [], "multi-destination Apply must fail closed before dispatch"
+        assert page._schedule_snapshot is None
+        assert "چند مقصد" in page.schedule_summary_label.text()
 
         pending = page.order_queue.list_pending()
         assert {id(e) for e in pending} == {id(entry_a), id(entry_b)}
@@ -1556,9 +1551,7 @@ def test_an_empty_queue_refuses_to_activate_a_schedule(qapp, _no_sends):
     fill(page, "13:00:00", "13:05:00", "15")
     apply_schedule(page)
 
-    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
-        page.schedule_summary_label.text()
-    )
+    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in page.schedule_summary_label.text()
     assert page.schedule_timing() is None
     _assert_schedule_refused(page, before, _no_sends)
 
@@ -1602,8 +1595,88 @@ def test_a_broker_mismatch_refuses_the_whole_schedule(qapp, _no_sends):
 
     summary = page.schedule_summary_label.text().lower()
     assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in summary
-    assert "zarin" in summary and "saman" in summary, summary
+    assert "acct-mixed" in summary and "zarin" in summary and "saman" in summary, summary
     _assert_schedule_refused(page, before, _no_sends)
+
+
+def test_missing_account_rejects_even_when_session_is_logged_in(qapp):
+    """A SessionManager entry cannot substitute for a missing AccountStore record."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    manager = SessionManager()
+    manager.register("acct-missing", "agah")
+    manager.begin_login("acct-missing")
+    manager.mark_logged_in("acct-missing", "offline-token")
+    page.set_session_manager(manager)
+    from models.order import Order
+    page.order_queue.enqueue(Order("missing", 1, 1000, 1), "acct-missing", "agah")
+    sent = []
+    page.set_test_runner_factory(lambda: sent.append(True))
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+
+    apply_schedule(page)
+
+    assert sent == []
+    assert not page._schedule_locked
+    assert "acct-missing" in page.schedule_summary_label.text()
+    assert "وجود ندارد" in page.schedule_summary_label.text()
+
+
+def test_account_store_read_error_rejects_destination(qapp, monkeypatch):
+    """An AccountStore lookup failure is a missing/invalid destination."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    record = page.store.add("acct-a", "agah", "نمایشی")
+    _enqueue(page, "acct-a", "agah")
+    manager = SessionManager()
+    manager.register("acct-a", "agah")
+    manager.begin_login("acct-a")
+    manager.mark_logged_in("acct-a", "offline-token")
+    page.set_session_manager(manager)
+    original_get = page.store.get
+
+    def failing_get(account_id):
+        if account_id == "acct-a":
+            raise RuntimeError("private backend detail")
+        return original_get(account_id)
+
+    monkeypatch.setattr(page.store, "get", failing_get)
+    sent = []
+    page.set_test_runner_factory(lambda: sent.append(True))
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+
+    assert sent == []
+    assert not page._schedule_locked
+    assert "acct-a" in page.schedule_summary_label.text()
+    assert "private backend detail" not in page.schedule_summary_label.text()
+
+
+def test_logged_in_session_broker_mismatch_rejects_destination(qapp):
+    """Account and broker identities must both match the queued binding."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "حساب آ")
+    _enqueue(page, "acct-a", "agah")
+    manager = SessionManager()
+    manager.register("acct-a", "saman")
+    manager.begin_login("acct-a")
+    manager.mark_logged_in("acct-a", "offline-token")
+    page.set_session_manager(manager)
+    sent = []
+    page.set_test_runner_factory(lambda: sent.append(True))
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+
+    assert sent == []
+    assert not page._schedule_locked
+    assert "حساب آ" in page.schedule_summary_label.text()
 
 
 def test_a_refused_schedule_does_not_block_a_later_valid_one(qapp):
@@ -1734,7 +1807,7 @@ def test_schedule_snapshot_uses_real_order_and_runner_engine_offline(qapp):
 
 
 @pytest.mark.parametrize("round_trip", [False, True])
-def test_active_account_change_cancels_before_next_schedule_turn(qapp, round_trip):
+def test_active_account_change_does_not_cancel_if_destination_session_is_unchanged(qapp, round_trip):
     page = _make_page(qapp)
     page.store.add("acct-a", "agah", "acct-a")
     page.store.add("acct-b", "agah", "acct-b")
@@ -1757,12 +1830,11 @@ def test_active_account_change_cancels_before_next_schedule_turn(qapp, round_tri
     page.store.set_active("acct-b")
     if round_trip:
         page.store.set_active("acct-a")
-    assert page._schedule_cancel_event.is_set()
+    assert not page._schedule_cancel_event.is_set()
     page.clock.advance(0.05)
     page._service_due_dispatch_turns()
-    assert len(started) == 1
+    assert len(started) == 2
     page._on_stop_schedule()
-
 
 @pytest.mark.parametrize("change", ["account", "session", "queue"])
 def test_start_now_arming_change_never_starts_dispatch(qapp, monkeypatch, change):
@@ -1806,8 +1878,12 @@ def test_start_now_arming_change_never_starts_dispatch(qapp, monkeypatch, change
     apply_schedule(page)
     time.sleep(0.05)
     _drain_events()
-    assert sent == []
-    assert not page._schedule_locked
+    if change == "account":
+        assert len(sent) <= 1
+        assert page._schedule_locked
+    else:
+        assert sent == []
+        assert not page._schedule_locked
     page._on_stop_schedule()
 
 
@@ -1959,9 +2035,7 @@ def test_failed_second_destination_check_does_not_start_countdown(
     )
     apply_schedule(page)
 
-    assert STRINGS.SCHEDULE_REJECTED.split("{", 1)[0] in (
-        page.schedule_summary_label.text()
-    )
+    assert "لغو شد" in page.schedule_summary_label.text()
     assert page.schedule_timing() is None
     assert page.countdown_active is False
     assert page._schedule_locked is False

@@ -57,7 +57,16 @@ def _with_valid_destination(page, account_id="ACC-SCHED", broker_name="SIM"):
     """Give the page a VALID destination set: one account + one queued order."""
     from models.order import Order
 
-    page.store.add(account_id, broker_name, account_id)
+    try:
+        page.store.get(account_id)
+    except ValueError:
+        page.store.add(account_id, broker_name, account_id)
+    try:
+        page._session_manager.register(account_id, broker_name)
+        page._session_manager.begin_login(account_id)
+        page._session_manager.mark_logged_in(account_id, "offline-test-token")
+    except Exception:
+        pass
     page.order_queue.enqueue(
         Order(nsc_id="nsc-scheduled", side=1, price=1000, quantity=10),
         account_id,
@@ -517,7 +526,7 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
     sessions.begin_login("ACC-001")
     sessions.mark_logged_in("ACC-001", "offline-test-token")
     page.set_session_manager(sessions)
-    _with_valid_destination(page, account_id="ACC-QUEUED", broker_name="SIM")
+    _with_valid_destination(page, account_id="ACC-001", broker_name="SIM")
 
     queued_before = list(queue.list_pending())
     assert queued_before, "the page needs a real queued order for this test"
