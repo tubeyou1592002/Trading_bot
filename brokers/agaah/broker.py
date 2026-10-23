@@ -1140,6 +1140,28 @@ class AgaahBroker(Broker):
 
         return order.to_payload()
 
+    def submit_prepared_order(self, payload: dict, live: bool = False):
+        """Submit an already-built request without rebuilding its payload."""
+        if not isinstance(payload, dict):
+            raise TypeError("payload باید از نوع dict باشد.")
+        if not live:
+            return {"mode": "DRY_RUN", "sent": False, "payload": payload}
+        if not self.live_trading_enabled:
+            raise RuntimeError(
+                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
+            )
+        response = self.session.post(
+            self._url("order"),
+            headers=self._auth_headers(),
+            json=payload,
+            timeout=10,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if not data.get("isSuccess"):
+            raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
+        return data
+
     def place_order(
         self,
         order: Order,

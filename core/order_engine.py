@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
+import json
+from time import perf_counter_ns
 from typing import TYPE_CHECKING, Optional
 
 from models.account import Account
@@ -69,10 +71,192 @@ class OrderExecutionResult:
     broker_received_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class PreparedOrder:
+    """Immutable binding of a validated order to its final broker payload."""
+    order: Order
+    payload_json: str
+    account_id: str
+    broker_name: str
+    prepared_at: datetime
+    expires_at: datetime | None
+    m6_results: tuple
+    m6_completed_at: datetime
+    freshness: tuple
+    order_fingerprint: str
+    account_fingerprint: str
+    broker_identity: int
+    instrument: BrokerInstrument
+    evidence_order_fingerprint: str
+    evidence_account_id: str
+    evidence_broker_name: str
+    checks_succeeded: bool
+    scheduled_valid: bool
+
+    @property
+    def payload(self):
+        return json.loads(self.payload_json)
+
+
+@dataclass(frozen=True)
+class PreparedBatch:
+    orders: tuple
+    valid: bool
+    message: str = ""
+    checks_succeeded: bool = False
+
+
 class OrderEngine:
+    # Filled only from a documented source policy. No source-specific M6
+    # validity periods are currently documented in this repository.
+    PREPARED_SOURCE_TTLS = {}
 
     def __init__(self):
         self.validator = OrderValidator()
+
+    @staticmethod
+    def _fingerprint(value):
+        return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
+
+    def prepare_order(self, broker, provider, ins_code, order, account,
+                      account_id, broker_name, max_age=None, broker_timing=None):
+        if not callable(getattr(broker, "build_order_payload", None)):
+            raise ValueError(f"Broker {broker_name} lacks scheduled prepared-order capability")
+        try:
+            _, instrument = measure_broker_call(
+                broker_timing, OP_GET_INSTRUMENT,
+                lambda: provider.get_instrument(ins_code),
+            )
+        except Exception as exc:
+            return None, OrderExecutionResult(False, False, "BLOCKED", order,
+                broker_name=broker_name, message=f"Instrument lookup failed: {exc}")
+        evidence = []
+        result = self.prepare(broker, order, instrument, account, broker_timing,
+                              evidence=evidence)
+        if not result.success:
+            return None, result
+        # The repository documents no elapsed-time validity limit for these
+        # sources; do not invent one. Keep successful reads as evidence but
+        # mark their scheduled-use validity unknown so submission fails closed.
+        payload = broker.build_order_payload(order)
+        now = datetime.now().astimezone()
+        freshness = tuple(
+            (item[3], item[4],
+             item[4] + self.PREPARED_SOURCE_TTLS[item[3]]
+             if item[3] in self.PREPARED_SOURCE_TTLS else None)
+            for item in evidence
+        )
+        prepared = PreparedOrder(
+            order=order, payload_json=self._fingerprint(payload),
+            account_id=account_id, broker_name=broker_name,
+            prepared_at=now,
+            expires_at=min((item[2] for item in freshness if item[2] is not None),
+                           default=None),
+            m6_results=tuple(evidence), m6_completed_at=now,
+            freshness=freshness,
+            order_fingerprint=self._fingerprint(order.to_payload()),
+            account_fingerprint=self._fingerprint(vars(account)),
+            broker_identity=id(broker), instrument=instrument,
+            evidence_order_fingerprint=self._fingerprint(order.to_payload()),
+            evidence_account_id=account_id, evidence_broker_name=broker_name,
+            checks_succeeded=True,
+            scheduled_valid=bool(freshness) and all(expiry is not None for _, _, expiry in freshness),
+        )
+        return prepared, result
+
+    def submit_prepared_order(self, prepared, broker, account, account_id,
+                              broker_name, live=False):
+        order = getattr(prepared, "order", None)
+        def blocked(message):
+            return OrderExecutionResult(False, False, "BLOCKED", order,
+                broker_name=broker_name, message=message)
+        if not isinstance(prepared, PreparedOrder):
+            return blocked("Invalid prepared order")
+        if not prepared.checks_succeeded or not prepared.scheduled_valid:
+            return blocked("Preparation checks succeeded but scheduled validity is not established")
+        if (not prepared.payload_json or not prepared.m6_results
+                or prepared.m6_completed_at is None
+                or not prepared.prepared_at
+                or not prepared.order_fingerprint
+                or not prepared.account_fingerprint):
+            return blocked("Prepared order evidence is incomplete")
+        if not prepared.freshness or any(
+                not isinstance(item, tuple) or len(item) != 3
+                or item[2] is None for item in prepared.freshness):
+            return blocked("Scheduled validity is undocumented for one or more M6 sources")
+        if not isinstance(prepared.expires_at, datetime):
+            return blocked("Prepared batch expiry is missing")
+        now = datetime.now().astimezone()
+        if any(now > expires_at for _, _, expires_at in prepared.freshness):
+            return blocked("A prepared source result has expired")
+        if any(not isinstance(item, tuple) or len(item) != 6 or item[1] is not True
+               or not isinstance(item[2], int) or item[2] < 0
+               or not isinstance(item[3], str) or not item[3]
+               or not isinstance(item[4], datetime)
+               for item in prepared.m6_results):
+            return blocked("Prepared order M6 evidence is invalid")
+        capacity_gate = (
+            "M6-C-buy-capacity" if order.side == BUY
+            else "M6-D-sell-capacity" if order.side == SELL
+            else None
+        )
+        required_gates = {
+            "M6-A-identity", "M6-A-trading-state", "M6-B-validation",
+            capacity_gate, "M6-E-capacity-check",
+        }
+        names = [item[0] for item in prepared.m6_results]
+        if (None in required_gates or len(names) != len(set(names))
+                or set(names) != required_gates):
+            return blocked("Prepared order M6 evidence set is incomplete or inconsistent")
+        expected_freshness = tuple((item[3], item[4],
+            item[4] + self.PREPARED_SOURCE_TTLS[item[3]]
+            if item[3] in self.PREPARED_SOURCE_TTLS else None)
+            for item in prepared.m6_results)
+        if prepared.freshness != expected_freshness:
+            return blocked("Prepared freshness records do not match their M6 source evidence")
+        if (prepared.account_id != account_id or prepared.broker_name != broker_name
+                or prepared.broker_identity != id(broker)):
+            return blocked("Prepared destination changed")
+        if getattr(account, "account_id", None) != account_id:
+            return blocked("Prepared account identity changed")
+        if self._fingerprint(vars(account)) != prepared.account_fingerprint:
+            return blocked("Prepared account changed")
+        if self._fingerprint(order.to_payload()) != prepared.order_fingerprint:
+            return blocked("Prepared order changed")
+        if (prepared.evidence_order_fingerprint != prepared.order_fingerprint
+                or prepared.evidence_account_id != prepared.account_id
+                or prepared.evidence_broker_name != prepared.broker_name):
+            return blocked("Prepared M6 evidence belongs to another order or destination")
+        if self._fingerprint(prepared.payload) != prepared.payload_json:
+            return blocked("Prepared payload changed")
+        submit = getattr(broker, "submit_prepared_order", None)
+        if not callable(submit):
+            return blocked(f"Broker {broker_name} lacks prepared-order submission")
+        if live and not getattr(broker, "live_trading_enabled", False):
+            return blocked("ارسال زنده سفارش غیرفعال است")
+        try:
+            response = submit(prepared.payload, live=live)
+        except Exception as exc:
+            return OrderExecutionResult(False, False, "ERROR", order,
+                broker_name=broker_name, message=str(exc))
+        return OrderExecutionResult(True, live, "LIVE" if live else "DRY_RUN",
+            order, broker_name=broker_name, response=response)
+
+    def prepare_batch(self, requests):
+        """Prepare all request tuples (kwargs to prepare_order), or reject all."""
+        prepared = []
+        for request in requests:
+            try:
+                item, result = self.prepare_order(**request)
+            except Exception as exc:
+                return PreparedBatch((), False, str(exc), False)
+            if item is None or not result.success:
+                return PreparedBatch((), False, result.message or "Batch preparation failed", False)
+            if not item.scheduled_valid:
+                return PreparedBatch((), False,
+                    "Scheduled validity is undocumented for one or more preparation sources", True)
+            prepared.append(item)
+        return PreparedBatch(tuple(prepared), True, "", True)
 
     def execute_by_ins_code(
         self,
@@ -221,6 +405,7 @@ class OrderEngine:
         instrument: BrokerInstrument,
         account: Account,
         broker_timing: Optional["BrokerCallRecorder"] = None,
+        evidence=None,
     ) -> OrderExecutionResult:
         """
         آماده‌سازی سفارش بدون ارسال.
@@ -261,6 +446,7 @@ class OrderEngine:
         # تطبیق داشته باشد. عدم تطابق باعث Block سفارش
         # می‌شود و overwrite مجاز نیست.
 
+        gate_started = perf_counter_ns()
         if order.nsc_id != instrument.nsc_id:
             return OrderExecutionResult(
                 success=False,
@@ -273,6 +459,10 @@ class OrderEngine:
                     "یکسان نیست."
                 ),
             )
+        if evidence is not None:
+            evidence.append(("M6-A-identity", True, perf_counter_ns() - gate_started,
+                             "OrderEngine.order.nsc_id/BrokerInstrument.nsc_id",
+                             datetime.now().astimezone(), None))
 
         # ---------------------------------------------
         # Trading State
@@ -282,6 +472,7 @@ class OrderEngine:
         # TypeError، NotImplementedError و ...) عمداً
         # منتشر می‌شوند تا باگ‌ها پنهان نشوند.
 
+        gate_started = perf_counter_ns()
         try:
             state = measure_broker_call(
                 broker_timing,
@@ -341,18 +532,21 @@ class OrderEngine:
                     "نماد مجاز نیست."
                 ),
             )
+        if evidence is not None:
+            evidence.append(("M6-A-trading-state", True, perf_counter_ns() - gate_started,
+                             "broker.get_trading_state", datetime.now().astimezone(), None))
 
         # ---------------------------------------------
         # Order Validation
         # ---------------------------------------------
 
+        gate_started = perf_counter_ns()
         try:
             self.validator.validate(
                 order,
                 instrument,
                 account,
             )
-
         except OrderValidationError as exc:
             return OrderExecutionResult(
                 success=False,
@@ -362,6 +556,9 @@ class OrderEngine:
                 broker_name=broker.name,
                 message=str(exc),
             )
+        if evidence is not None:
+            evidence.append(("M6-B-validation", True, perf_counter_ns() - gate_started,
+                             "OrderValidator.validate", datetime.now().astimezone(), None))
 
         # ---------------------------------------------
         # Capacity (M6-C BUY / M6-D SELL)
@@ -452,6 +649,7 @@ class OrderEngine:
             )
             capacity_label = "فروش"
 
+        gate_started = perf_counter_ns()
         result = self._check_capacity(
             order=order,
             broker_name=broker.name,
@@ -461,6 +659,14 @@ class OrderEngine:
 
         if not result.success:
             return result
+        if evidence is not None:
+            gate_name = "M6-C-buy-capacity" if order.side == BUY else "M6-D-sell-capacity"
+            capacity_source = "broker.get_buy_capacity" if order.side == BUY else "broker.get_sell_capacity"
+            ended = datetime.now().astimezone()
+            duration = perf_counter_ns() - gate_started
+            evidence.append((gate_name, True, duration, capacity_source, ended, None))
+            evidence.append(("M6-E-capacity-check", True, duration,
+                             "OrderEngine._check_capacity", ended, None))
 
         # ---------------------------------------------
         # Ready

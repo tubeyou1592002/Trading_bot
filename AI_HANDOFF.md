@@ -2635,7 +2635,7 @@ Minimum verifications:
 
 **Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
 
-**Status:** IN PROGRESS — Task 11.1 contract and its two implementation stages (destination readiness, then account-bound multi-destination dispatch) are complete and reviewed. Tasks 11.2–11.7 remain planned. This does not authorize production Live or a real order.
+**Status:** IN PROGRESS — Task 11.1 and Task 11.2's offline prepare/submit implementation are complete. Task 11.2 remains operationally gated because no documented source-specific freshness limits are available; prepared batches therefore fail closed for scheduled use. Tasks 11.3–11.7 remain planned. This does not authorize production Live or a real order.
 
 #### Task 11.1 — Firing Contract and Freshness Policy
 
@@ -2662,6 +2662,10 @@ These stages implement the per-order destination contract only. They do not prep
 Refactor the existing `InstrumentProvider → OrderEngine.prepare() → broker` path into an explicit prepare result and a submit-prepared operation. Resolve the broker instrument and run M6-A…M6-E before arming. Store an immutable, account-bound prepared order with payload identity, check results, preparation timestamp, and freshness metadata. Preserve the existing Dry Run behavior and all fail-closed M6 outcomes.
 
 **Acceptance:** offline tests prove prepare performs all required reads before arming; submit-prepared performs no instrument lookup, M6/API read, or payload reconstruction and rejects mismatched, modified, or expired prepared orders.
+
+**Implementation checkpoint (2026-10-23):** The additive Core path now creates immutable `PreparedOrder` / `PreparedBatch` records, captures the complete side-specific M6-A…M6-E evidence with source, completion time, and duration, resolves the instrument and builds the broker payload during preparation, and submits that exact payload through the new optional broker capability. The legacy `place_order(order)` path is unchanged. Batch preparation is all-or-nothing; submission rejects incomplete, changed, mismatched, expired, or unverifiable evidence. Offline tests cover BUY/SELL gate evidence, each missing/invalid gate, source expiry, account/broker separation, changed order/payload, batch failure, legacy compatibility, and one-shot timeout behavior. Reported verification: **15 targeted tests passed** and `py_compile` succeeded; no live endpoint or order was used.
+
+**Freshness limitation — scheduled use remains blocked:** Repository documentation and current source contracts do not define valid age limits for the prepared M6 inputs. Production `OrderEngine.PREPARED_SOURCE_TTLS` is intentionally empty; the tests inject short TTLs only as fixtures. Consequently `prepare_order` can record successful checks, but marks scheduled validity unknown, and `prepare_batch` returns invalid with no sendable orders. Do not invent durations or enable scheduled submission until an authoritative, source-specific validity policy is documented and reviewed. This is a required follow-up to operationally accept Task 11.2 and does not authorize Live.
 
 #### Task 11.3 — Live Readiness and Batch-Scoped Authorization
 
@@ -2744,7 +2748,7 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1 complete; 11.2–11.7 planned) |
+| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1 complete; 11.2 implementation complete but freshness-gated; 11.3–11.7 planned) |
 | UI | User Interface | Block 10; scheduled Live depends on Block 11 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
