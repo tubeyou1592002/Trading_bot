@@ -408,6 +408,7 @@ class PeriodicScheduleDispatcher:
         runner_factory: Callable[[], object],
         mono_clock: Optional[Callable[[], float]] = None,
         on_turn: Optional[Callable[[TurnRecord], None]] = None,
+        before_turn: Optional[Callable[[], Optional[str]]] = None,
     ) -> None:
         if not callable(runner_factory):
             raise TypeError("runner_factory must be callable")
@@ -420,6 +421,8 @@ class PeriodicScheduleDispatcher:
             time.monotonic if mono_clock is None else mono_clock
         )
         self._on_turn = on_turn
+        self._before_turn = before_turn
+        self._cancel_reason: Optional[str] = None
 
         self._groups: Tuple[BrokerGroup, ...] = ()
         self._interval_ms: Optional[float] = None
@@ -442,6 +445,8 @@ class PeriodicScheduleDispatcher:
         self._stopped = False
         self._next_turn_index = 0
         self._lock = threading.RLock()
+        self._cancel_event = threading.Event()
+        self._claimed_turns = set()
 
     # -- configuration ----------------------------------------------------
 
@@ -571,7 +576,11 @@ class PeriodicScheduleDispatcher:
 
     @property
     def stopped(self) -> bool:
-        return self._stopped
+        return self._cancel_event.is_set()
+
+    @property
+    def cancel_reason(self) -> Optional[str]:
+        return self._cancel_reason
 
     def mono_now(self) -> float:
         """The dispatcher's monotonic clock (exposed for the worker loop)."""
@@ -647,6 +656,16 @@ class PeriodicScheduleDispatcher:
         # Not due yet: nothing is sent and nothing is recorded.
         if now_mono < due_mono:
             return None
+
+        with self._lock:
+            cancelled = self._cancel_event.is_set() or self._stopped
+            if not cancelled:
+                self._claimed_turns.add(turn_index)
+        if cancelled:
+            return self._record(
+                turn_index, due_mono, self.project_wall(due_mono),
+                TurnStatus.SKIPPED_STOPPED, error=self._cancel_reason,
+            )
 
         if self._window is not None:
             start_mono = self.project_mono(self._window[0])
@@ -856,7 +875,17 @@ class PeriodicScheduleDispatcher:
         whatever they return is still collected into their own turn record
         through the normal result path.
         """
-        self._stopped = True
+        with self._lock:
+            self._stopped = True
+            self._cancel_event.set()
+
+    def cancel(self, reason: Optional[str] = None) -> None:
+        """Signal cancellation immediately without reading external state."""
+        with self._lock:
+            if reason and self._cancel_reason is None:
+                self._cancel_reason = str(reason)
+            self._stopped = True
+            self._cancel_event.set()
 
 
 __all__ = [

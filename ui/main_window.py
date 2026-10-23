@@ -270,6 +270,7 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_trading_state_query_factory(
             self._real_tsetmc_trading_state_query
         )
+        self.order_configuration_page.set_session_manager(self.session_manager)
         self.order_configuration_page.set_order_identity_factory(
             self._real_order_identity_resolver
         )
@@ -652,6 +653,10 @@ class MainWindow(QMainWindow):
         orders may still receive feedback). Fail-safe: never raises.
         """
         try:
+            if event in ("logout", "delete", "broker_changed"):
+                page = getattr(self, "order_configuration_page", None)
+                if page is not None:
+                    page.on_broker_session_event(account_id, event)
             if event in ("logout", "delete", "broker_changed"):
                 self.stop_feedback_for_account(account_id, broker_name)
         except Exception:

@@ -2635,11 +2635,21 @@ Minimum verifications:
 
 **Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
 
-**Status:** PLANNED — no Block 11 implementation has started. No real order is authorized by this roadmap entry.
+**Status:** IN PROGRESS — Task 11.1 is complete and reviewed; Tasks 11.2–11.7 remain planned. This does not authorize production Live or a real order.
 
 #### Task 11.1 — Firing Contract and Freshness Policy
 
-Record the exact pre-arm workflow, start/deadline behavior, per-source freshness limits, invalidation rules, repeat count, and total-submission exposure. Preserve the current repeat-every-turn behavior unless the owner explicitly changes it. Define what happens when preparation is incomplete or stale at the scheduled time: disarm and send nothing; never perform blocking work at the firing instant.
+**Status: COMPLETE (2026-10-23).** The owner accepted these rules:
+
+- The active account and its local broker session are bound to the scheduled run through its end. A local logout, invalidation, deletion, broker change, or active-account change disarms the run. The application does not make a network request to probe session validity. A remote disconnect/revocation that produces no local state or event cannot be detected until an existing broker operation reports it.
+- The order queue and effective order specifications are frozen at Apply. Queue/account/session changes invalidate the run; the user must Apply again. A run never silently switches to a changed account or order.
+- The user checks displayed purchase power and market price bounds before Apply. The scheduler does not re-fetch those display values as a freshness probe. This does not remove or weaken mandatory M6/SafetyGate checks; later Block 11 tasks must complete required checks during pre-arm, never at firing time.
+- Every planned turn resends the complete frozen queue. Maximum submissions are `planned turns × frozen order count`; the UI must disclose this count before approval. No implicit deduplication or automatic POST retry is assumed.
+- If pre-arm is incomplete, a required check fails, the batch changes, or the scheduled start deadline is missed, disarm and send nothing. Never start late or do blocking preparation at the firing instant.
+
+The implementation for this contract records and validates the account/session/queue snapshot, propagates local invalidation events, and starts the dispatch worker only after final validation and schedule lock. It does not yet implement the prepared-order/submit separation or make production Live ready.
+
+**Verification reported and reviewed:** `test_ui7_task3_periodic_dispatch.py`, `test_ui7_task1_schedule_clock.py`, and `test_ui2_1_account_management.py` — 164 passed; `py_compile` succeeded for changed production/test files. The current `git diff --check` passes. No live network request or real order was used.
 
 **Acceptance:** the owner can determine from the documented summary exactly which payloads will be sent, how many times, against which account, and which data is considered fresh for the scheduled window.
 
@@ -2730,7 +2740,7 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | PLANNED (Tasks 11.1–11.7) |
+| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1 complete; 11.2–11.7 planned) |
 | UI | User Interface | Block 10; scheduled Live depends on Block 11 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).

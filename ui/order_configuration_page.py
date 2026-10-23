@@ -828,6 +828,8 @@ class OrderConfigurationPage(QWidget):
     Order Configuration page (form and state only — no execution).
     """
 
+    schedule_cancelled = Signal(str)
+
     def __init__(
         self,
         account_store,
@@ -1239,6 +1241,19 @@ class OrderConfigurationPage(QWidget):
         self._frozen_live_gate = None
         self._frozen_snapshot_summary = ""
         self._frozen_targets = ()
+        self._schedule_snapshot = None
+        self._schedule_arming = False
+        self._schedule_arming_account_id = None
+        self.store.add_active_change_listener(self._on_active_account_changed)
+        self._session_manager = None
+        self._schedule_cancel_event = threading.Event()
+        self._schedule_cancel_lock = threading.RLock()
+        self._schedule_cancel_reason = None
+        self.schedule_cancelled.connect(
+            self._on_schedule_integrity_failure, Qt.ConnectionType.QueuedConnection
+        )
+        if order_queue is not None and hasattr(order_queue, "add_change_listener"):
+            order_queue.add_change_listener(self._on_order_queue_changed)
         # Outcome of the last Test action (Task 3 consumes these).
         self._last_test_run = None    # (plan, execution_id, result)
         self._last_test_entries = None
@@ -3129,6 +3144,166 @@ class OrderConfigurationPage(QWidget):
             ),
         )
 
+    def set_session_manager(self, manager):
+        """Use the application's existing local session state for schedules."""
+        self._session_manager = manager
+        if manager is not None and hasattr(manager, "add_change_listener"):
+            manager.add_change_listener(self._on_session_revision_changed)
+
+    def _on_active_account_changed(self, previous_id, current_id):
+        snapshot = self._schedule_snapshot
+        with self._schedule_cancel_lock:
+            arming = self._schedule_arming
+            if arming and previous_id != current_id:
+                self._request_schedule_cancel(
+                    "حساب فعال هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد."
+                )
+            elif (self._schedule_locked and snapshot is not None
+                    and previous_id != current_id):
+                self._request_schedule_cancel(
+                    "حساب فعال پس از Apply تغییر کرد؛ اجرای زمان‌بندی لغو شد."
+                )
+
+    def _on_session_revision_changed(self, account_id, revision):
+        snapshot = self._schedule_snapshot
+        with self._schedule_cancel_lock:
+            arming = self._schedule_arming
+            arming_account_id = self._schedule_arming_account_id
+            if arming and account_id == arming_account_id:
+                self._request_schedule_cancel(
+                    "نشست هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد."
+                )
+            elif (self._schedule_locked and snapshot is not None
+                    and account_id == snapshot.get("active_id")
+                    and revision != snapshot.get("session_revision")):
+                self._request_schedule_cancel(
+                    "نشست کارگزاری تغییر یا باطل شد؛ اجرای زمان‌بندی لغو شد."
+                )
+
+    def _ensure_schedule_queue_listener(self):
+        queue = self.order_queue
+        if not hasattr(self, "_schedule_queue_listener_bound"):
+            self._schedule_queue_listener_bound = False
+        if not self._schedule_queue_listener_bound and hasattr(queue, "add_change_listener"):
+            queue.add_change_listener(self._on_order_queue_changed)
+            self._schedule_queue_listener_bound = True
+
+    @staticmethod
+    def _effective_order_fingerprint(order):
+        fields = ("nsc_id", "side", "price", "quantity", "validity_type",
+                  "category_id", "bank_account_id", "disclosed_quantity",
+                  "minimum_quantity", "validity_date", "creation_date")
+        return tuple((name, getattr(order, name, None)) for name in fields)
+
+    @staticmethod
+    def _immutable_schedule_entry(entry):
+        """Capture an independent order payload for the accepted run."""
+        from copy import deepcopy
+        from core.order_queue import QueueEntry
+
+        frozen_order = deepcopy(entry.order)
+        return QueueEntry(frozen_order, entry.account_id, entry.broker_name)
+
+    def _schedule_integrity_error(self):
+        snapshot = self._schedule_snapshot
+        if snapshot is None:
+            return "snapshot زمان‌بندی در دسترس نیست؛ اجرای زمان‌بندی لغو شد."
+        account_id = self.store.active_account_id()
+        record = self._active_account_record()
+        if account_id != snapshot["active_id"] or record is None:
+            return "حساب فعال تغییر کرده یا در دسترس نیست؛ اجرای زمان‌بندی لغو شد."
+        if (record.account_id, record.broker_name, id(record.account)) != snapshot["account"]:
+            return "هویت حساب فعال تغییر کرده است؛ اجرای زمان‌بندی لغو شد."
+        manager = self._session_manager
+        current_session = self._schedule_session_identity(account_id)
+        if manager is None:
+            return "وضعیت نشست داخلی در دسترس نیست؛ اجرای زمان‌بندی لغو شد."
+        if current_session != snapshot["session"] or not current_session or current_session[2] != "logged_in":
+            return "نشست کارگزاری قطع، نامعتبر یا عوض شده است؛ اجرای زمان‌بندی لغو شد."
+        if self.order_queue.revision != snapshot["queue_revision"]:
+            return "صف سفارش یا مشخصات سفارش‌ها پس از Apply تغییر کرده است؛ اجرای زمان‌بندی لغو شد."
+        frozen = snapshot.get("queue", ())
+        for target, captured in zip(self._frozen_targets, frozen):
+            if self._effective_order_fingerprint(target.entry.order) != captured[4]:
+                return "مشخصات سفارش پس از Apply تغییر کرده است؛ اجرای زمان‌بندی لغو شد."
+        return None
+
+    def _schedule_session_rejection(self):
+        """Validate a registered, logged-in session on the UI Apply path."""
+        manager = self._session_manager
+        active_id = self.store.active_account_id()
+        if manager is None or active_id is None:
+            return "نشست داخلی ثبت‌شده در دسترس نیست؛ زمان‌بندی پذیرفته نشد."
+        try:
+            session = manager.get(active_id)
+            if session.state.value != "logged_in":
+                return "نشست کارگزاری واردشده نیست؛ زمان‌بندی پذیرفته نشد."
+            return None
+        except Exception:
+            return "نشست داخلی ثبت‌شده در دسترس نیست؛ زمان‌بندی پذیرفته نشد."
+
+    def _schedule_session_identity(self, active_id):
+        manager = self._session_manager
+        if manager is None:
+            return None
+        try:
+            session = manager.get(active_id)
+            return (session.account_id, session.broker_name, session.state.value,
+                    manager.revision(active_id))
+        except Exception:
+            return None
+
+    def _validate_schedule_before_turn(self):
+        return None
+
+    def _request_schedule_cancel(self, reason):
+        """Thread-safe, immediate stop; UI notification is queued to Qt."""
+        with self._schedule_cancel_lock:
+            dispatcher = self._dispatcher
+            if self._schedule_cancel_event.is_set():
+                return
+            if dispatcher is not None:
+                dispatcher.cancel(str(reason))
+            self._schedule_cancel_event.set()
+            self._schedule_cancel_reason = str(reason)
+            stop_event = self._dispatch_stop_event
+            if stop_event is not None:
+                stop_event.set()
+        self.schedule_cancelled.emit(str(reason))
+
+    def _on_order_queue_changed(self, revision):
+        with self._schedule_cancel_lock:
+            arming = self._schedule_arming
+            if arming:
+                self._request_schedule_cancel(
+                    "صف سفارش هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد."
+                )
+            elif self._schedule_locked and self._schedule_snapshot is not None:
+                if revision != self._schedule_snapshot.get("queue_revision"):
+                    self._request_schedule_cancel(
+                        "صف سفارش پس از Apply تغییر کرد؛ اجرای زمان‌بندی لغو شد."
+                    )
+
+    def on_broker_session_event(self, account_id, event):
+        """Handle existing account lifecycle events without network access."""
+        snapshot = self._schedule_snapshot
+        with self._schedule_cancel_lock:
+            arming = self._schedule_arming
+            arming_account_id = self._schedule_arming_account_id
+            if arming:
+                if (account_id == arming_account_id
+                    and event in ("logout", "delete", "broker_changed")):
+                    self._request_schedule_cancel(
+                        "نشست هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد."
+                    )
+                return
+            if not self._schedule_locked or snapshot is None:
+                return
+            if account_id == snapshot["active_id"] and event in ("logout", "delete", "broker_changed"):
+                self._request_schedule_cancel(
+                    "نشست کارگزاری قطع یا تغییر کرده است؛ اجرای زمان‌بندی لغو شد."
+                )
+
     def _prepare_live_schedule(self, timing, interval_ms):
         """Preflight and confirm a stable account/target schedule snapshot."""
         for _attempt in range(3):
@@ -4834,11 +5009,13 @@ class OrderConfigurationPage(QWidget):
             self._pending_dispatch_interval_ms = None
             return False
 
+        self._ensure_schedule_queue_listener()
         # Defence in depth: the set was checked before the lock, and it is
         # checked again here so no code path can ever freeze or start a
         # worker over an unvalidated set.
         rejection = self._dispatch_set_rejection()
         if rejection is not None:
+            self._schedule_arming = False
             self._stop_dispatcher()
             self._clear_accepted_schedule()
             self._pending_schedule = None
@@ -4871,6 +5048,7 @@ class OrderConfigurationPage(QWidget):
                 or self._dispatch_snapshot(current_targets)
                 != self._pending_dispatch_snapshot
             ):
+                self._schedule_arming = False
                 self._set_schedule_summary(STRINGS.LIVE_SNAPSHOT_CHANGED)
                 return False
         self._frozen_targets = targets
@@ -4889,6 +5067,60 @@ class OrderConfigurationPage(QWidget):
         self._pending_live_gate = None
         self._pending_dispatch_targets = None
         self._pending_dispatch_snapshot = None
+        timing = self._schedule_timing
+        active_id = self.store.active_account_id()
+        active_record = self._active_account_record()
+        manager = self._session_manager
+        try:
+            session = manager.get(active_id) if manager is not None else None
+            session_identity = (session.account_id, session.broker_name,
+                                session.state.value, manager.revision(active_id)) if session is not None else None
+        except Exception:
+            session_identity = None
+        self._schedule_snapshot = {
+            "active_id": active_id,
+            "account": ((active_record.account_id, active_record.broker_name,
+                         id(active_record.account)) if active_record is not None else None),
+            "session": session_identity,
+            "session_revision": (session_identity[3] if session_identity else None),
+            "queue": tuple((id(target.entry), id(target.entry.order),
+                            target.account_id, target.broker_name,
+                            self._effective_order_fingerprint(target.entry.order))
+                           for target in targets),
+            "orders": tuple(
+                (target.entry, self._immutable_schedule_entry(target.entry))
+                for target in targets
+            ),
+            "queue_revision": getattr(self.order_queue, "revision", None),
+            "settings": (self._schedule_parsed, timing, interval_ms,
+                         self._run_mode),
+        }
+        self._schedule_snapshot["cancel_event"] = self._schedule_cancel_event
+        if session_identity is None:
+            self._schedule_snapshot["session"] = None
+        if manager is None or session_identity is None or session_identity[2] != "logged_in":
+            self._stop_dispatcher()
+            self._schedule_snapshot = None
+            self._schedule_parsed = None
+            self._schedule_timing = None
+            self._schedule_times = ()
+            self._schedule_assessment = None
+            self._pending_dispatch_interval_ms = None
+            self._set_schedule_locked(False)
+            self._set_schedule_summary("وضعیت نشست داخلی در دسترس نیست یا نشست معتبر نیست؛ زمان‌بندی پذیرفته نشد.")
+            self._set_schedule_state(SCHEDULE_STATE_CONFIG)
+            return False
+        self._schedule_snapshot["runner_targets"] = tuple(
+            DispatchTarget(
+                entry=snapshot_entry,
+                account_id=target.account_id,
+                broker_name=target.broker_name,
+                account=target.account,
+            )
+            for target, (original, snapshot_entry) in zip(
+                targets, self._schedule_snapshot["orders"]
+            )
+        )
         dispatcher = PeriodicScheduleDispatcher(
             runner_factory=self._new_send_runner,
             mono_clock=schedule_monotonic,
@@ -4900,7 +5132,7 @@ class OrderConfigurationPage(QWidget):
             else None
         )
         dispatcher.freeze(
-            targets=targets,
+            targets=self._schedule_snapshot["runner_targets"],
             interval_ms=interval_ms,
             locked_base=self._locked_base_time,
             locked_mono=self._locked_mono_anchor,
@@ -4911,7 +5143,6 @@ class OrderConfigurationPage(QWidget):
         self._pending_dispatch_interval_ms = None
         self._dispatch_cursor = 0
         self._dispatch_turns = ()
-        self._start_dispatch_worker(dispatcher)
         return True
 
     def _stop_dispatcher(self):
@@ -4935,6 +5166,10 @@ class OrderConfigurationPage(QWidget):
         self._pending_dispatch_targets = None
         self._pending_dispatch_snapshot = None
         self._frozen_targets = ()
+        self._schedule_snapshot = None
+        self._schedule_arming = False
+        self._schedule_arming_account_id = None
+        self._schedule_cancel_event.clear()
         self._frozen_snapshot_summary = ""
         # Task 2's rule, applied to Task 3: a stopped run is forgotten
         # completely, so the next Apply inherits no turn, no cadence and
@@ -4987,10 +5222,15 @@ class OrderConfigurationPage(QWidget):
         self._dispatch_stop_event = stop_event
         cursor = 0
 
+        # An integrity event may land after the UI's final check but before
+        # this worker is created. Keep that cancellation latched.
+        if self._schedule_cancel_event.is_set() or dispatcher.stopped:
+            stop_event.set()
+
         def _loop():
             index = cursor
-            while not stop_event.is_set():
-                dispatcher_obj = self._dispatcher
+            while not stop_event.is_set() and not self._schedule_cancel_event.is_set():
+                dispatcher_obj = dispatcher
                 if dispatcher_obj is None or dispatcher_obj.stopped:
                     break
                 mono = dispatcher_obj.mono_now()
@@ -5001,19 +5241,15 @@ class OrderConfigurationPage(QWidget):
 
                 due = dispatcher_obj.due_mono_for_turn(index)
                 # Wait until this due time arrives. A Stop wakes us at once.
-                while not stop_event.is_set():
+                while not stop_event.is_set() and not self._schedule_cancel_event.is_set():
                     remaining = due - dispatcher_obj.mono_now()
                     if remaining <= 0:
                         break
                     stop_event.wait(min(remaining, 0.05))
-                if stop_event.is_set():
+                if stop_event.is_set() or self._schedule_cancel_event.is_set():
                     break
 
                 now_mono = dispatcher_obj.mono_now()
-                # Bind the existing feedback signals lazily at the FIRST
-                # scheduled send, before handing off the turn. Binding is
-                # idempotent and never waits for a broker response.
-                self._ensure_feedback_binding()
                 # Each turn's worker may wait for responses; this coordinator
                 # does not. Therefore a pending response cannot delay the
                 # next due tick. Missed machine-level ticks remain skipped,
@@ -5220,6 +5456,7 @@ class OrderConfigurationPage(QWidget):
         self._stop_countdown()
         self._stop_dispatcher()
         self._clear_locked_time_base()
+        self._schedule_snapshot = None
         self._pending_schedule = None
         self._countdown_target = None
         self._start_now_shown = False
@@ -5248,6 +5485,15 @@ class OrderConfigurationPage(QWidget):
         elif self._schedule_locked and self._frozen_snapshot_summary:
             self._show_queue_status(self._frozen_snapshot_summary)
 
+    def _on_schedule_integrity_failure(self, reason):
+        """Disarm and display why the captured schedule became invalid."""
+        if not self._schedule_locked and not self._schedule_arming:
+            return
+        self._finish_schedule(SCHEDULE_STATE_STOPPED)
+        self._set_countdown_text(reason)
+        self._set_schedule_summary(reason)
+        self._set_schedule_state(reason)
+
     def _on_schedule_button_clicked(self):
         """The single schedule button: Apply before, Stop afterwards."""
         if self._schedule_locked:
@@ -5273,7 +5519,19 @@ class OrderConfigurationPage(QWidget):
         rejection immediately, never reaches the network, and leaves no
         previously accepted schedule looking active.
         """
+        # Atomically open the new arming window before any session check,
+        # parsing, or preparation can yield to a lifecycle callback.
+        with self._schedule_cancel_lock:
+            self._schedule_cancel_event.clear()
+            self._schedule_cancel_reason = None
+            self._schedule_arming_account_id = self.store.active_account_id()
+            self._schedule_arming = True
+            self._schedule_snapshot = None
+
         try:
+            session_reason = self._schedule_session_rejection()
+            if session_reason:
+                raise ScheduleValidationError(session_reason)
             parsed = parse_schedule_inputs(
                 self.schedule_start_input.text(),
                 self.schedule_end_input.text(),
@@ -5325,6 +5583,13 @@ class OrderConfigurationPage(QWidget):
         """
         parsed = self._pending_schedule
         if parsed is None:
+            return
+
+        session_reason = self._schedule_session_rejection()
+        if session_reason:
+            self._clear_accepted_schedule()
+            self._pending_schedule = None
+            self._set_schedule_summary(STRINGS.SCHEDULE_REJECTED.format(reason=session_reason))
             return
 
         try:
@@ -5381,6 +5646,23 @@ class OrderConfigurationPage(QWidget):
         # the helper clears the accepted state and we must not continue by
         # locking the page or starting a countdown without a dispatcher.
         if not self._freeze_dispatch_set():
+            self._schedule_arming = False
+            self._schedule_arming_account_id = None
+            return
+
+        # Validate the captured identities once on the UI thread while
+        # arming is still active. Any intervening event is latched and
+        # makes this final check fail closed.
+        integrity_error = (
+            self._schedule_integrity_error()
+            if not self._schedule_cancel_event.is_set()
+            else self._schedule_cancel_reason or "زمان‌بندی هنگام مسلح‌سازی لغو شد."
+        )
+        if integrity_error is not None:
+            self._request_schedule_cancel(integrity_error)
+            self._finish_schedule(SCHEDULE_STATE_STOPPED)
+            self._set_schedule_summary(integrity_error)
+            self._set_schedule_state(integrity_error)
             return
 
         summary = build_schedule_summary(
@@ -5403,6 +5685,17 @@ class OrderConfigurationPage(QWidget):
         # during that tick and must find its controls locked so it can
         # free them again.
         self._set_schedule_locked(True)
+        self._schedule_arming = False
+        self._schedule_arming_account_id = None
+        # A final synchronous gate after locking protects against a queued
+        # UI notification; event listeners themselves latch cancellation.
+        if self._schedule_cancel_event.is_set():
+            reason = self._schedule_cancel_reason or "زمان‌بندی هنگام مسلح‌سازی لغو شد."
+            self._finish_schedule(SCHEDULE_STATE_STOPPED)
+            self._set_schedule_summary(reason)
+            self._set_schedule_state(reason)
+            return
+        self._start_dispatch_worker(self._dispatcher)
         if self._frozen_snapshot_summary:
             self._show_queue_status(self._frozen_snapshot_summary)
         self._start_countdown()

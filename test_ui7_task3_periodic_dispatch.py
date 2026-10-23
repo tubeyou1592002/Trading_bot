@@ -1075,6 +1075,7 @@ def _make_page(qapp, clock=None):
     from ui.account_store import AccountStore
     import ui.order_configuration_page as page_module
     from ui.order_configuration_page import OrderConfigurationPage
+    from ui.session_manager import SessionManager
 
     clock = clock if clock is not None else Clock()
     page_module.system_wall_now = lambda: clock.wall.astimezone(ZoneInfo("Asia/Tehran"))
@@ -1082,6 +1083,10 @@ def _make_page(qapp, clock=None):
     page_module.system_monotonic = lambda: clock.mono
     page_module.schedule_monotonic = lambda: clock.mono
     page = OrderConfigurationPage(AccountStore())
+    sessions = SessionManager()
+    # Each test's standard account identity is registered on demand below;
+    # no synthetic logged-in fallback is used for arbitrary or missing ids.
+    page.set_session_manager(sessions)
     page.clock = clock
     PAGES.append(page)
     return page
@@ -1125,6 +1130,16 @@ def locked_controls(page):
 def _enqueue(page, account_id, broker_name):
     """Put one frozen order for ``account_id``/``broker_name`` in the queue."""
     from models.order import Order
+
+    manager = page._session_manager
+    try:
+        manager.get(account_id)
+    except Exception:
+        manager.register(account_id, broker_name)
+        manager.begin_login(account_id)
+        manager.mark_logged_in(account_id, "offline-test-token")
+    if page.store.active_account_id() is None and page.store.get(account_id):
+        page.store.set_active(account_id)
 
     order = Order(nsc_id=f"ins-{account_id}", side=1, price=1000, quantity=10)
     page.order_queue.enqueue(order, account_id, broker_name)
@@ -1209,7 +1224,7 @@ def test_the_frozen_set_is_really_frozen_across_turns(qapp):
             # The EXISTING runner takes the broker binding from the ENTRIES
             # (never from the Account object), exactly as TestRunner does.
             broker = entries[0].broker_name
-            sent.append((broker, [id(e) for e in entries]))
+            sent.append((broker, [(e.order.nsc_id, e.order.price, e.order.quantity) for e in entries]))
             return ("plan", f"exec-{broker}", FakeResult(trace_id=f"t-{broker}"))
 
     page.set_test_runner_factory(lambda: Runner())
@@ -1230,10 +1245,10 @@ def test_the_frozen_set_is_really_frozen_across_turns(qapp):
 
         assert len(sent) == 4, f"expected two turns x two brokers, got {sent}"
         assert sorted(name for name, _ in sent) == ["agah", "agah", "sana", "sana"]
-        for ids in [i for name, i in sent if name == "agah"]:
-            assert ids == [id(entry_a)], "agah did not get the frozen order"
-        for ids in [i for name, i in sent if name == "sana"]:
-            assert ids == [id(entry_b)], "sana did not get the frozen order"
+        for orders in [i for name, i in sent if name == "agah"]:
+            assert orders == [(entry_a.order.nsc_id, entry_a.order.price, entry_a.order.quantity)]
+        for orders in [i for name, i in sent if name == "sana"]:
+            assert orders == [(entry_b.order.nsc_id, entry_b.order.price, entry_b.order.quantity)]
 
         pending = page.order_queue.list_pending()
         assert {id(e) for e in pending} == {id(entry_a), id(entry_b)}
@@ -1605,7 +1620,307 @@ def test_a_refused_schedule_does_not_block_a_later_valid_one(qapp):
 
     assert page.schedule_timing() is not None
     assert page.countdown_active
+
+
+def test_schedule_snapshot_fails_closed_on_queue_and_session_changes(qapp):
+    """Offline guard: stale queue/session never reaches the runner."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.set_active("acct-a")
+    entry = _enqueue(page, "acct-a", "agah")
+    manager = SessionManager()
+    manager.register("acct-a", "agah")
+    manager.begin_login("acct-a")
+    manager.mark_logged_in("acct-a", "offline-token")
+    page.set_session_manager(manager)
+    sent = []
+
+    class Runner:
+        def run(self, entries, account):
+            sent.append(entries)
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+    assert page._schedule_snapshot is not None
+
+    # Editing an effective order field invalidates the frozen queue snapshot.
+    entry.order.price += 1
+    assert page._schedule_integrity_error() is not None
+    page._request_schedule_cancel(page._schedule_integrity_error())
+    _drain_events()
+    assert not page.countdown_active
+    assert page._schedule_snapshot is None
+    assert sent == []
+
+    # A fresh Apply binds a fresh snapshot; a logout event disarms it too.
+    entry.order.price -= 1
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+    assert page._schedule_snapshot is not None
+    manager.logout("acct-a")
+    page.on_broker_session_event("acct-a", "logout")
+    _drain_events()
+    assert page._schedule_snapshot is None
+    assert not page.countdown_active
+    assert sent == []
     page._on_stop_schedule()
+    page._on_stop_schedule()
+
+
+def test_schedule_snapshot_uses_real_order_and_runner_engine_offline(qapp):
+    """The frozen schedule entry retains the production Order contract."""
+    import threading
+    from models.order import Order
+    from core.simulation_harness import (
+        SimulationBroker, SimulationInstrumentProvider, build_simulation_catalog,
+    )
+    from ui.test_runner import TestRunner
+
+    page = _make_page(qapp)
+    page.store.add("SIM-ORDER", "SIM", "SIM-ORDER")
+    page.store.set_active("SIM-ORDER")
+    _enqueue(page, "SIM-ORDER", "SIM")
+    original = Order(nsc_id="INS-SIM-1", side=2, price=1000, quantity=3)
+    page.order_queue.remove(page.order_queue.list_pending()[0])
+    page.order_queue.enqueue(original, "SIM-ORDER", "SIM")
+    from brokers.manager import BrokerManager
+    catalog = build_simulation_catalog(ins_codes=("INS-SIM-1",))
+    broker = SimulationBroker(name="SIM", catalog=catalog)
+    manager = BrokerManager.__new__(BrokerManager)
+    manager.brokers = {}
+    manager.providers = {}
+    manager._provider_classes = {}
+    manager._broker_factories = {}
+    manager.account_brokers = {}
+    manager.account_providers = {}
+    manager._account_lock = threading.RLock()
+    manager._account_provider_instances = []
+    manager._broker_factories["SIM"] = lambda: broker
+    manager.register("SIM", broker, SimulationInstrumentProvider)
+    manager.account_brokers[("SIM-ORDER", "SIM")] = broker
+    manager.account_providers[("SIM-ORDER", "SIM")] = SimulationInstrumentProvider(broker)
+    harness = type("Harness", (), {"broker": broker, "manager": manager})()
+    calls = []
+    place_order = harness.broker.place_order
+
+    def record_order(order, live=False):
+        calls.append((order, live))
+        return place_order(order, live=live)
+
+    harness.broker.place_order = record_order
+    page.set_test_runner_factory(lambda: TestRunner(broker_manager=harness.manager))
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+    try:
+        frozen = page._schedule_snapshot["runner_targets"][0].entry.order
+        assert type(frozen) is Order
+        assert frozen is not original
+        assert frozen.to_payload()["price"] == 1000
+        original.price = 2000
+        assert frozen.to_payload()["price"] == 1000
+        page.clock.advance(60)
+        page._service_due_dispatch_turns()
+        assert calls and calls[0][0] is frozen
+        assert calls[0][1] is False
+        assert calls[0][0].to_payload()["price"] == 1000
+    finally:
+        page._on_stop_schedule()
+
+
+@pytest.mark.parametrize("round_trip", [False, True])
+def test_active_account_change_cancels_before_next_schedule_turn(qapp, round_trip):
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.add("acct-b", "agah", "acct-b")
+    _enqueue(page, "acct-a", "agah")
+    started = []
+
+    class Runner:
+        def run(self, entries, account):
+            started.append(entries[0].order.nsc_id)
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "13:00:00", "13:05:00", "15")
+    apply_schedule(page)
+    page.clock.advance(60)
+    page._service_due_dispatch_turns()
+    assert len(started) == 1
+
+    page.store.set_active("acct-b")
+    if round_trip:
+        page.store.set_active("acct-a")
+    assert page._schedule_cancel_event.is_set()
+    page.clock.advance(0.05)
+    page._service_due_dispatch_turns()
+    assert len(started) == 1
+    page._on_stop_schedule()
+
+
+@pytest.mark.parametrize("change", ["account", "session", "queue"])
+def test_start_now_arming_change_never_starts_dispatch(qapp, monkeypatch, change):
+    """Integrity changes at the worker hand-off fail closed for START_NOW."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.add("acct-b", "agah", "acct-b")
+    page.store.set_active("acct-a")
+    queued = _enqueue(page, "acct-a", "agah")
+    sessions = SessionManager()
+    sessions.register("acct-a", "agah")
+    sessions.begin_login("acct-a")
+    sessions.mark_logged_in("acct-a", "offline-token")
+    page.set_session_manager(sessions)
+    sent = []
+
+    class Runner:
+        def run(self, entries, account):
+            sent.append(entries)
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "12:58:00", "13:05:00", "15")
+    original_start = page._start_dispatch_worker
+
+    def mutate_before_worker(dispatcher):
+        assert page._schedule_snapshot is not None
+        assert page._schedule_locked
+        if change == "account":
+            page.store.set_active("acct-b")
+        elif change == "session":
+            sessions.logout("acct-a")
+        else:
+            page.order_queue.remove(queued)
+        original_start(dispatcher)
+
+    monkeypatch.setattr(page, "_start_dispatch_worker", mutate_before_worker)
+    apply_schedule(page)
+    time.sleep(0.05)
+    _drain_events()
+    assert sent == []
+    assert not page._schedule_locked
+    page._on_stop_schedule()
+
+
+def test_start_now_without_change_preserves_dispatch_cadence(qapp):
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.set_active("acct-a")
+    _enqueue(page, "acct-a", "agah")
+    sent = threading.Event()
+
+    class Runner:
+        def run(self, entries, account):
+            sent.set()
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "12:58:00", "13:05:00", "15")
+    apply_schedule(page)
+    try:
+        assert sent.wait(1.0), "START_NOW did not dispatch its first turn"
+        assert page._schedule_locked
+        assert page._dispatch_interval_ms == 50.0
+    finally:
+        page._on_stop_schedule()
+
+
+def test_target_session_change_at_apply_entry_never_dispatches(qapp, monkeypatch):
+    """A target logout immediately after the first validation is latched."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.set_active("acct-a")
+    _enqueue(page, "acct-a", "agah")
+    sessions = SessionManager()
+    sessions.register("acct-a", "agah")
+    sessions.begin_login("acct-a")
+    sessions.mark_logged_in("acct-a", "offline-token")
+    page.set_session_manager(sessions)
+    sent = []
+
+    class Runner:
+        def run(self, entries, account):
+            sent.append(entries)
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "12:58:00", "13:05:00", "15")
+    validate = page._schedule_session_rejection
+    changed = False
+
+    def logout_after_first_check():
+        nonlocal changed
+        result = validate()
+        if not changed:
+            changed = True
+            sessions.logout("acct-a")
+        return result
+
+    monkeypatch.setattr(page, "_schedule_session_rejection", logout_after_first_check)
+    apply_schedule(page)
+    time.sleep(0.05)
+    _drain_events()
+    assert sent == []
+    assert not page._schedule_locked
+
+
+def test_other_account_session_change_does_not_cancel_arming(qapp, monkeypatch):
+    """Session notifications are scoped to the account being armed."""
+    from ui.session_manager import SessionManager
+
+    page = _make_page(qapp)
+    page.store.add("acct-a", "agah", "acct-a")
+    page.store.add("acct-b", "agah", "acct-b")
+    page.store.set_active("acct-a")
+    _enqueue(page, "acct-a", "agah")
+    sessions = SessionManager()
+    for account_id in ("acct-a", "acct-b"):
+        sessions.register(account_id, "agah")
+        sessions.begin_login(account_id)
+        sessions.mark_logged_in(account_id, f"token-{account_id}")
+    page.set_session_manager(sessions)
+    sent = threading.Event()
+
+    class Runner:
+        def run(self, entries, account):
+            sent.set()
+            return (None, "offline", FakeResult(trace_id="offline"))
+
+    page.set_test_runner_factory(lambda: Runner())
+    sync_clock(page)
+    fill(page, "12:58:00", "13:05:00", "15")
+    original = page._dispatch_set_rejection
+    changed = False
+
+    def unrelated_change_during_prepare():
+        nonlocal changed
+        result = original()
+        if not changed:
+            changed = True
+            sessions.logout("acct-b")
+        return result
+
+    monkeypatch.setattr(page, "_dispatch_set_rejection", unrelated_change_during_prepare)
+    apply_schedule(page)
+    try:
+        assert sent.wait(1.0)
+        assert page._schedule_locked
+        assert not page._schedule_cancel_event.is_set()
+    finally:
+        page._on_stop_schedule()
 
 
 def test_freeze_refuses_an_invalid_set_even_if_apply_was_skipped(qapp):

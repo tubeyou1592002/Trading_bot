@@ -1641,7 +1641,7 @@ reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance 
 
 ## Decision 037 — Pre-Armed Scheduled Live Dispatch
 
-**Status:** Approved for roadmap; implementation not started.
+**Status:** Approved; implementation in progress. Task 11.1's contract is complete; Tasks 11.2–11.7 remain open.
 
 **Context:** Block 10 established a controlled Live boundary and simulation-only acceptance. Production remains fail-closed. The current UI schedule re-enters the runner per due turn; `execute_by_ins_code()` resolves the instrument on the execution path, and `OrderEngine.prepare()` performs trading-state and capacity reads. This adds variable work at the firing instant and does not meet the owner's requirement to queue orders, apply a schedule, and complete checks before countdown/firing.
 
@@ -1650,6 +1650,8 @@ reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance 
 At each due time, prestarted senders release only the already-prepared payloads using monotonic schedule timing. The firing path does no database access, instrument resolution, M6/readiness HTTP call, credential refresh, modal interaction, or new worker-pool construction. It does not wait for earlier HTTP responses or NATS feedback. Initial HTTP results and delayed NATS events are processed asynchronously and correlated to the exact order/account. No automatic POST retry/replay is allowed.
 
 **Safety and freshness:** M6-A…M6-E are not weakened; they remain the authoritative per-order checks but execute before the batch is armed. Each external result must have a documented source-specific validity period. A local freshness check may disarm at firing time but must never perform a network refresh then. If a prerequisite cannot be verified or a prepared result is stale, nothing is sent. The broker remains the final authority to accept/reject an order.
+
+**Task 11.1 owner decisions (2026-10-23):** The active account and its locally known session remain bound through one scheduled run; local logout, invalidation, deletion, broker change, or active-account change disarms it. Queue/order specifications remain frozen from Apply until completion; changes require a fresh Apply. No network probe is added for remote session validity. The user checks displayed purchase power and market price bounds before Apply, so the scheduler does not re-fetch those display values as freshness checks. This does not waive mandatory M6/SafetyGate work, which remains a pre-arm responsibility of later tasks. Every planned turn resends the whole frozen queue, and the maximum submission count must be shown as planned turns multiplied by queue size. Incomplete, failed, changed, or late preparation disarms and sends nothing.
 
 **Repeated dispatch:** Existing schedule semantics send the full frozen queue every planned turn. Live UI must show the exact maximum number of submissions (`planned turns × queue size`). Pre-arm must validate aggregate repeated exposure according to the broker contract; if that cannot be safely established, Live repetition is rejected. No implicit deduplication is assumed.
 

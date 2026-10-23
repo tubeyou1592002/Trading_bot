@@ -192,6 +192,26 @@ class SessionManager:
     def __init__(self):
         self._sessions = {}
         self._tokens = {}
+        self._revisions = {}
+        self._listeners = []
+
+    def add_change_listener(self, callback):
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._listeners.append(callback)
+
+    def _notify_change(self, account_id):
+        revision = self._revisions.get(account_id)
+        for callback in tuple(self._listeners):
+            try:
+                callback(account_id, revision)
+            except Exception:
+                pass
+
+    def revision(self, account_id):
+        """Return the local generation for this account's login session."""
+        self._get(account_id)
+        return self._revisions[account_id]
 
     # ------------------------------------------------------------------
     # internals
@@ -231,6 +251,9 @@ class SessionManager:
             state=new_state,
         )
         self._sessions[account_id] = updated
+        if new_state is not SessionState.LOGGED_IN or session.state is not SessionState.LOGGED_IN:
+            self._revisions[account_id] += 1
+            self._notify_change(account_id)
         return updated
 
     # ------------------------------------------------------------------
@@ -260,6 +283,8 @@ class SessionManager:
         )
         self._sessions[account_id] = session
         self._tokens[account_id] = None
+        self._revisions[account_id] = 0
+        self._notify_change(account_id)
         return session
 
     def unregister(self, account_id):
@@ -273,6 +298,8 @@ class SessionManager:
         self._get(account_id)
         del self._sessions[account_id]
         del self._tokens[account_id]
+        del self._revisions[account_id]
+        self._notify_change(account_id)
 
     # ------------------------------------------------------------------
     # read access
@@ -408,6 +435,9 @@ class SessionManager:
         )
         self._sessions[account_id] = invalidated
         self._tokens[account_id] = None
+        if session.state is not SessionState.LOGGED_OUT:
+            self._revisions[account_id] += 1
+            self._notify_change(account_id)
         return invalidated
 
     def replace_token(self, account_id, token):

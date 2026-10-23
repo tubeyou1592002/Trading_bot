@@ -1507,7 +1507,7 @@ Instrument resolution and M6-A…M6-E remain mandatory, but their network reads 
 
 Every due turn currently resends the entire frozen queue. Live arming must disclose the exact maximum count (`planned turns × queue size`) and validate aggregate repeated exposure; if that cannot be proven from the prepared batch and broker contract, the plan remains unarmed. No automatic POST retry is allowed. Measure planned due, scheduler wake/release, POST initiation, HTTP response, and NATS feedback separately; zero avoidable application work is the objective, not a claim of zero Windows/network/broker latency.
 
-Block 11 is planned and not implemented. It supersedes Block 10's original out-of-scope restriction on schedule/M6 lifecycle changes only for this pre-arm/prepare/fire work. It does not permit bypassing M6, SafetyGate, account authorization, or broker protections.
+Block 11 is in progress; Task 11.1's firing and invalidation contract is complete. The active account and its locally known session are bound through one scheduled run, and the accepted queue/order snapshot remains fixed. Local account/session/queue changes disarm the run; the scheduler does not probe remote session validity or re-fetch the user's displayed purchase-power and market-price-bound values. The user checks those display values before Apply. Mandatory M6/SafetyGate checks remain unchanged and must be handled by later pre-arm work, not moved to the firing instant. Tasks 11.2–11.7 remain incomplete, so this does not make production Live ready or authorize real orders.
 
 **Out of scope for Block 2:**
 

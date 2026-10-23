@@ -57,6 +57,25 @@ class OrderQueue:
 
     def __init__(self) -> None:
         self._entries: List[QueueEntry] = []
+        self._revision = 0
+        self._listeners = []
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def add_change_listener(self, callback) -> None:
+        if not callable(callback):
+            raise TypeError("callback must be callable")
+        self._listeners.append(callback)
+
+    def _changed(self) -> None:
+        self._revision += 1
+        for callback in tuple(self._listeners):
+            try:
+                callback(self._revision)
+            except Exception:
+                pass
 
     def enqueue(
         self,
@@ -75,6 +94,7 @@ class OrderQueue:
                 broker_name=broker_name,
             )
         )
+        self._changed()
 
     def remove(self, entry: QueueEntry) -> None:
         """
@@ -89,6 +109,7 @@ class OrderQueue:
         for index, queued in enumerate(self._entries):
             if queued is entry:
                 del self._entries[index]
+                self._changed()
                 return
         raise ValueError("entry is not in the queue")
 

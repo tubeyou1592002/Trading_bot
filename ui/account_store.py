@@ -120,6 +120,7 @@ class AccountStore:
     def __init__(self, repository=None, *, database_path=None):
         self._records = {}
         self._active_account_id = None
+        self._active_change_listeners = []
 
         if repository is not None and database_path is not None:
             raise ValueError(
@@ -294,7 +295,7 @@ class AccountStore:
                 ) from exc
         del self._records[account_id]
         if self._active_account_id == account_id:
-            self._active_account_id = None
+            self._set_active_account_id(None)
 
     def move(self, account_id, new_position):
         """
@@ -384,8 +385,31 @@ class AccountStore:
         Returns ``account_id``. Raises AccountStoreError for an unknown id.
         """
         record = self.get(account_id)
-        self._active_account_id = record.account_id
+        self._set_active_account_id(record.account_id)
         return self._active_account_id
+
+    def add_active_change_listener(self, callback):
+        """Register a callback invoked as ``(previous_id, current_id)``."""
+        if callback not in self._active_change_listeners:
+            self._active_change_listeners.append(callback)
+
+    def remove_active_change_listener(self, callback):
+        try:
+            self._active_change_listeners.remove(callback)
+        except ValueError:
+            pass
+
+    def _set_active_account_id(self, account_id):
+        previous = self._active_account_id
+        if previous == account_id:
+            return
+        self._active_account_id = account_id
+        for callback in tuple(self._active_change_listeners):
+            try:
+                callback(previous, account_id)
+            except Exception:
+                # Store state remains authoritative even if an observer fails.
+                continue
 
     def active_account_id(self):
         """The active account's id, or ``None`` while nothing is selected."""

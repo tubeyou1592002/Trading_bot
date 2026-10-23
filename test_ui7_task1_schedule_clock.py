@@ -33,6 +33,7 @@ import pytest
 from ui import strings as STRINGS
 from ui.account_store import AccountStore
 from ui.order_configuration_page import OrderConfigurationPage
+from ui.session_manager import SessionManager
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 UTC = timezone.utc
@@ -96,7 +97,14 @@ def make_page(qapp, now=FIXED_NOW):
     page_module.sample_system_clocks = lambda: (tehran_now, 0.0)
     page_module.system_monotonic = lambda: 0.0
     page = OrderConfigurationPage(AccountStore())
-    return _with_valid_destination(page)
+    sessions = SessionManager()
+    sessions.register("ACC-SCHED", "SIM")
+    sessions.begin_login("ACC-SCHED")
+    sessions.mark_logged_in("ACC-SCHED", "offline-test-token")
+    page.set_session_manager(sessions)
+    page = _with_valid_destination(page)
+    page.store.set_active("ACC-SCHED")
+    return page
 
 
 def fill(page, start, end, interval, dispatch_interval_ms="50"):
@@ -327,6 +335,7 @@ def test_clock_row_advances_from_the_system_clock(qapp, monkeypatch):
 def test_no_schedule_path_touches_the_real_network(qapp, monkeypatch):
     import requests
     import ui.order_configuration_page as page_module
+    from ui.session_manager import SessionManager
 
     now = FIXED_NOW.astimezone(ZoneInfo("Asia/Tehran"))
     monkeypatch.setattr(page_module, "system_wall_now", lambda: now)
@@ -344,6 +353,12 @@ def test_no_schedule_path_touches_the_real_network(qapp, monkeypatch):
     monkeypatch.setattr(requests, "post", _boom)
 
     page = _with_valid_destination(OrderConfigurationPage(AccountStore()))
+    sessions = SessionManager()
+    sessions.register("ACC-SCHED", "SIM")
+    sessions.begin_login("ACC-SCHED")
+    sessions.mark_logged_in("ACC-SCHED", "offline-test-token")
+    page.set_session_manager(sessions)
+    page.store.set_active("ACC-SCHED")
     fill(page, "13:00:00", "13:01:00", "15")
     apply_schedule(page)
 
@@ -497,6 +512,11 @@ def test_applying_a_schedule_sends_nothing_and_touches_no_order(qapp):
     store.set_active("ACC-001")
 
     page = OrderConfigurationPage(store, order_queue=queue)
+    sessions = SessionManager()
+    sessions.register("ACC-001", "SIM")
+    sessions.begin_login("ACC-001")
+    sessions.mark_logged_in("ACC-001", "offline-test-token")
+    page.set_session_manager(sessions)
     _with_valid_destination(page, account_id="ACC-QUEUED", broker_name="SIM")
 
     queued_before = list(queue.list_pending())
