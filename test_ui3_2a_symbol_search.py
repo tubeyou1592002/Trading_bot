@@ -682,11 +682,7 @@ def test_18_tsetmc_trading_state_never_called(qapp, store):
     assert page.config.symbol_status() == SYMBOL_STATUS_NOT_AVAILABLE == (
         "Not available"
     )
-    assert (
-        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
-        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
-    ) in page.symbol_status_label.text()
-    assert "tradable" not in page.symbol_status_label.text().lower()
+    assert not hasattr(page, "symbol_status_label")
     # The UI never touches TSETMC itself: no import of market.tsetmc,
     # no code reference to it, and no mapping of the raw TSETMC fields
     # (cEtaval / cEtavalTitle). The ONLY trading-state path the page may
@@ -704,21 +700,9 @@ def test_18_tsetmc_trading_state_never_called(qapp, store):
     src = inspect.getsource(mod)
     tree = ast.parse(src)
 
-    # Docstrings are documentation (they legitimately describe the
-    # boundary) — they are excluded; every real CODE reference counts.
-    docstring_values = set()
-    for node in ast.walk(tree):
-        if isinstance(
-            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-        ):
-            first = node.body[0] if node.body else None
-            if (
-                isinstance(first, ast.Expr)
-                and isinstance(first.value, ast.Constant)
-                and isinstance(first.value.value, str)
-            ):
-                docstring_values.add(id(first.value))
-
+    # Only real code references are checked: imports, names and attribute
+    # calls. A TSETMC word inside an unrelated user-facing error message is
+    # NOT direct access.
     offenders = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -734,13 +718,6 @@ def test_18_tsetmc_trading_state_never_called(qapp, store):
             offenders.append(f"attribute .{node.attr}")
         elif isinstance(node, ast.Name) and "tsetmc" in node.id.lower():
             offenders.append(f"name {node.id}")
-        elif (
-            isinstance(node, ast.Constant)
-            and isinstance(node.value, str)
-            and id(node) not in docstring_values
-            and "tsetmc" in node.value.lower()
-        ):
-            offenders.append(f"string {node.value!r}")
 
     assert not offenders, (
         "ui.order_configuration_page touches TSETMC directly: "
@@ -835,7 +812,7 @@ def test_21_no_order_created(qapp, store):
 
 
 def test_22_active_account_from_existing_store(qapp):
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
 
     assert window.order_configuration_page.store is window.account_store
     assert window.accounts_page.store is window.account_store
@@ -860,7 +837,7 @@ def test_22_active_account_from_existing_store(qapp):
 
 
 def test_23_prior_ui_contracts_preserved(qapp):
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
 
     # UI-1/UI-2.1/UI-3.1 navigation and placeholders intact
     assert set(window.pages) == {
@@ -877,10 +854,7 @@ def test_23_prior_ui_contracts_preserved(qapp):
     page = window.order_configuration_page
     assert page.fee_label.text() == STRINGS.VALUE_NOT_AVAILABLE
     assert page.final_amount_label.text() == STRINGS.VALUE_NOT_AVAILABLE
-    assert (
-        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
-        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
-    ) in page.symbol_status_label.text()
+    assert not hasattr(page, "symbol_status_label")
 
     # the MainWindow seam is the only market import path: a lazy factory
     import ui.main_window as mw

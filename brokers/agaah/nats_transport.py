@@ -36,6 +36,158 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Safe diagnostics (endpoint / structure only — never credentials or bodies)
+# ---------------------------------------------------------------------------
+
+#: Stable endpoint labels written to logs. The full URL is never logged.
+_ENDPOINT_CONNECTION_INFO = "pusher/nats"
+_ENDPOINT_MESSAGE_TYPES = "Pusher/message-types"
+_ENDPOINT_NATS_CONNECT = "nats-connect"
+
+
+def _elapsed_ms(started_mono: float) -> float:
+    """Milliseconds elapsed since a ``time.monotonic()`` reading."""
+    return round((time.monotonic() - started_mono) * 1000.0, 1)
+
+
+def _timeout_kind(exc: BaseException) -> Optional[str]:
+    """
+    Classify a timeout by its request phase, without reading any payload.
+
+    Returns ``"connect"`` / ``"read"`` / ``"request"`` for the ``requests``
+    timeout family, ``"timeout"`` for a builtin/asyncio ``TimeoutError``,
+    or ``None`` when the exception is not a timeout at all.
+    """
+    try:
+        import requests
+    except Exception:  # pragma: no cover - requests is a runtime dependency
+        requests = None
+
+    if requests is not None:
+        if isinstance(exc, requests.exceptions.ConnectTimeout):
+            return "connect"
+        if isinstance(exc, requests.exceptions.ReadTimeout):
+            return "read"
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "request"
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+        return "timeout"
+    return None
+
+
+def _safe_content_type(response: Any) -> Optional[str]:
+    """Read only the Content-Type header, never any other header/value."""
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+    try:
+        value = headers.get("Content-Type")
+    except Exception:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _response_structure(data: Any) -> dict[str, Any]:
+    """
+    Describe the SHAPE of a parsed response — never its values.
+
+    Only key names, value types, counts and the group ``code`` values (with
+    their Python types) are reported. Tokens, private keys, credentials,
+    usernames, account ids, message text and any other field value are
+    never copied here.
+    """
+    if not isinstance(data, dict):
+        return {"top_level_type": type(data).__name__}
+
+    structure: dict[str, Any] = {
+        "top_level_type": "dict",
+        "top_level_keys": sorted(str(key) for key in data.keys()),
+        "is_success_type": type(data.get("isSuccess")).__name__,
+    }
+
+    resp_data = data.get("data")
+    structure["data_type"] = type(resp_data).__name__
+
+    groups = None
+    if isinstance(resp_data, dict):
+        structure["data_keys"] = sorted(str(key) for key in resp_data.keys())
+        if "groups" in resp_data:
+            groups = resp_data.get("groups")
+            structure["groups_source"] = "data.groups"
+        elif "messageTypes" in resp_data:
+            groups = resp_data.get("messageTypes")
+            structure["groups_source"] = "data.messageTypes"
+        else:
+            structure["groups_source"] = None
+    elif isinstance(resp_data, list):
+        groups = resp_data
+        structure["groups_source"] = "data(list)"
+    else:
+        structure["groups_source"] = None
+
+    structure["groups_type"] = type(groups).__name__
+
+    if isinstance(groups, list):
+        structure["group_count"] = len(groups)
+        structure["group_item_types"] = sorted(
+            {type(item).__name__ for item in groups}
+        )
+        group_keys = set()
+        for item in groups:
+            if isinstance(item, dict):
+                group_keys.update(str(key) for key in item.keys())
+        structure["group_keys"] = sorted(group_keys)
+        codes = []
+        for item in groups:
+            if isinstance(item, dict) and "code" in item:
+                code = item.get("code")
+                codes.append({"value": code, "type": type(code).__name__})
+            else:
+                codes.append({"value": None, "type": type(item).__name__})
+        structure["codes"] = codes
+
+    return structure
+
+
+def _log_response_diagnostic(
+    endpoint: str,
+    response: Any,
+    data: Any,
+    *,
+    code_100_found: Optional[bool],
+) -> None:
+    """Log only the safe response shape on a contract mismatch."""
+    snapshot = {
+        "endpoint": endpoint,
+        "http_status": getattr(response, "status_code", None),
+        "content_type": _safe_content_type(response),
+        "is_success": data.get("isSuccess") if isinstance(data, dict) else None,
+        "structure": _response_structure(data),
+        "code_100_found": code_100_found,
+    }
+    logger.warning("Agah response diagnostic: %s", snapshot)
+
+
+def _log_fetch_failure(
+    endpoint: str,
+    exc: BaseException,
+    elapsed_ms: float,
+) -> None:
+    """Log endpoint + exception class + elapsed time; never the payload."""
+    http_response = getattr(exc, "response", None)
+    timeout_kind = _timeout_kind(exc)
+    details = {
+        "endpoint": endpoint,
+        "elapsed_ms": elapsed_ms,
+        "error_type": type(exc).__name__,
+        "timeout_kind": timeout_kind,
+        "http_status": getattr(http_response, "status_code", None),
+        "content_type": _safe_content_type(http_response),
+    }
+    logger.error("Agah endpoint failure: %s", details)
+
+
 @dataclass
 class NatsConnectionInfo:
     """NATS connection information from Agah API."""
@@ -142,9 +294,11 @@ class AgahNatsTransport:
         self,
         broker: Any,
         on_oms_state_changed: Optional[Callable[["OmsStateChanged"], Any]] = None,
+        on_unavailable: Optional[Callable[[str], Any]] = None,
     ):
         self.broker = broker
         self.on_oms_state_changed = on_oms_state_changed
+        self.on_unavailable = on_unavailable
         self._nc: Optional[Any] = None
         self._running = False
         self._connection_info: Optional[NatsConnectionInfo] = None
@@ -187,12 +341,37 @@ class AgahNatsTransport:
         # performs at most one retry with the refreshed token and keeps the
         # effective 10s timeout. The synchronous request runs in a thread pool
         # so the event loop is never blocked.
-        response = await asyncio.to_thread(
-            self.broker._authed_get_with_recovery, "pusher/nats"
-        )
+        started_mono = time.monotonic()
+        try:
+            response = await asyncio.to_thread(
+                self.broker._authed_get_with_recovery, "pusher/nats"
+            )
+        except Exception as exc:
+            _log_fetch_failure(
+                _ENDPOINT_CONNECTION_INFO, exc, _elapsed_ms(started_mono)
+            )
+            raise
 
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.error(
+                "Agah endpoint %s returned unparsable JSON "
+                "(http_status=%s, content_type=%s, error_type=%s)",
+                _ENDPOINT_CONNECTION_INFO,
+                getattr(response, "status_code", None),
+                _safe_content_type(response),
+                type(exc).__name__,
+            )
+            raise
+
         if not data.get("isSuccess"):
+            _log_response_diagnostic(
+                _ENDPOINT_CONNECTION_INFO,
+                response,
+                data,
+                code_100_found=None,
+            )
             raise RuntimeError(
                 f"Failed to get NATS connection info: {data.get('message')}"
             )
@@ -220,12 +399,37 @@ class AgahNatsTransport:
         # Same bounded HTTP 401 recovery path as _fetch_connection_info: the
         # broker helper owns retry/refresh, and the sync request runs in a
         # thread pool so the event loop is never blocked.
-        response = await asyncio.to_thread(
-            self.broker._authed_get_with_recovery, "Pusher/message-types"
-        )
+        started_mono = time.monotonic()
+        try:
+            response = await asyncio.to_thread(
+                self.broker._authed_get_with_recovery, "Pusher/message-types"
+            )
+        except Exception as exc:
+            _log_fetch_failure(
+                _ENDPOINT_MESSAGE_TYPES, exc, _elapsed_ms(started_mono)
+            )
+            raise
 
-        data = response.json()
+        try:
+            data = response.json()
+        except Exception as exc:
+            logger.error(
+                "Agah endpoint %s returned unparsable JSON "
+                "(http_status=%s, content_type=%s, error_type=%s)",
+                _ENDPOINT_MESSAGE_TYPES,
+                getattr(response, "status_code", None),
+                _safe_content_type(response),
+                type(exc).__name__,
+            )
+            raise
+
         if not data.get("isSuccess"):
+            _log_response_diagnostic(
+                _ENDPOINT_MESSAGE_TYPES,
+                response,
+                data,
+                code_100_found=False,
+            )
             raise RuntimeError(
                 f"Failed to get message types: {data.get('message')}"
             )
@@ -238,9 +442,34 @@ class AgahNatsTransport:
         elif isinstance(resp_data, list):
             groups = resp_data
 
-        oms_group = next((g for g in groups if g.get("code") == 100), None)
+        # The parser only accepts a list of group DICTS whose ``code`` is
+        # Python-equal to the integer 100. String codes ("100"), codes under
+        # another key, or a group list under an unknown key are NOT guessed
+        # or coerced here: the safe diagnostic reports what was actually
+        # present so the real contract can be fixed with evidence.
+        try:
+            oms_group = next(
+                (g for g in groups if g.get("code") == 100), None
+            )
+        except AttributeError:
+            # A non-dict group item cannot be inspected as a mapping. Log
+            # the safe shape and re-raise the SAME exception (no coercion,
+            # no silent skip, no behaviour change).
+            _log_response_diagnostic(
+                _ENDPOINT_MESSAGE_TYPES,
+                response,
+                data,
+                code_100_found=False,
+            )
+            raise
 
         if not oms_group:
+            _log_response_diagnostic(
+                _ENDPOINT_MESSAGE_TYPES,
+                response,
+                data,
+                code_100_found=False,
+            )
             raise RuntimeError("OmsStateChanged (code 100) not found in message types")
 
         # Extract group names (subjects) and schema from actual response
@@ -281,6 +510,24 @@ class AgahNatsTransport:
             "token": token,
         }
 
+        if self.on_unavailable is not None:
+            async def disconnected_cb():
+                self._notify_unavailable("disconnected")
+
+            async def closed_cb():
+                self._notify_unavailable("closed")
+
+            async def error_cb(exc):
+                # Never forward exception text; it may contain transport
+                # details or credentials from an implementation layer.
+                self._notify_unavailable(type(exc).__name__)
+
+            connect_options.update(
+                disconnected_cb=disconnected_cb,
+                closed_cb=closed_cb,
+                error_cb=error_cb,
+            )
+
         # NKey authentication
         if private_key:
             try:
@@ -311,9 +558,26 @@ class AgahNatsTransport:
                 "This may fail if server requires NKey."
             )
 
-        # Connect
-        self._nc = await nats.connect(**connect_options)
+        # Connect. This stage has its own endpoint label so a timeout here
+        # is never confused with the two HTTP bootstrap GETs.
+        started_mono = time.monotonic()
+        try:
+            self._nc = await nats.connect(**connect_options)
+        except Exception as exc:
+            _log_fetch_failure(
+                _ENDPOINT_NATS_CONNECT, exc, _elapsed_ms(started_mono)
+            )
+            raise
         logger.debug("NATS connected to %s", nats_url)
+
+    def _notify_unavailable(self, reason: str) -> None:
+        """Notify the display-only path without affecting order dispatch."""
+        logger.warning("NATS feedback unavailable (reason_type=%s)", reason)
+        if self.on_unavailable is not None:
+            try:
+                self.on_unavailable(reason)
+            except Exception:
+                logger.warning("NATS feedback-unavailable callback failed")
 
     def _extract_nkey_seed(self, private_key: str) -> bytearray:
         """

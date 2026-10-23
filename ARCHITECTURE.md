@@ -1472,6 +1472,33 @@ Block 2 MUST NOT bypass M6-A through M6-E. Block 2 must use the existing `OrderE
 
 `live` in `BrokerDispatchRequest` is always False during development. The Dispatch Core does NOT enable live trading. Dry-run is the only mode until Block 10 (Controlled Live Execution) and explicit human approval.
 
+### Explicit execution mode and optional OMS feedback (Decision 036)
+
+The Order Configuration page defaults each fresh use to Dry Run. Live is a
+separate explicit selection; the UI preflights the existing account/session,
+account-scoped broker lock, and SafetyGate prerequisites before showing a
+final confirmation. It then freezes the exact queue/account/broker/timing
+snapshot, displays planned turns and the maximum possible sends, and checks
+that snapshot again after confirmation. A changed snapshot is not dispatched
+under the old approval. Active schedule sends continue to use those frozen
+targets even if the selected account changes elsewhere in the application.
+
+No UI path writes `live=True`, flips `live_trading_enabled`, or bypasses
+`SafetyGate`, OrderEngine, or broker locks. Production Live currently fails
+closed because no authoritative M6/broker-readiness provider is wired and the
+real broker live lock is hard-off by default. A simulated readiness provider
+in tests is not production permission.
+
+NATS/OMS is an optional, receive-only feedback path. Its connection/startup
+failure or later disconnect updates feedback availability only; it does not
+gate Live, block a send, pause cadence, or cause `POST /order` replay. Initial
+HTTP order results remain distinct from delayed feedback, which is correlated
+by stable decision ID and account/broker scope. Missing feedback is not an
+order success/failure verdict. Stop blocks future turns but does not claim to
+cancel requests already started. Each scheduled turn resends the full frozen
+queue, so possible total submissions are planned turns multiplied by frozen
+queue size.
+
 **Out of scope for Block 2:**
 
 - Scheduler, timer, polling, or event bus — Block 3/4 handle these.

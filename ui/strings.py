@@ -56,6 +56,23 @@ __all__ = [
     "BUTTON_TEST",
     "BUTTON_TEST_ON",
     "BUTTON_SEND_ONCE",
+    "LABEL_EXECUTION_MODE",
+    "MODE_DRY_RUN",
+    "MODE_LIVE",
+    "LIVE_CONFIRM_TITLE",
+    "LIVE_CONFIRM_PROMPT",
+    "LIVE_CONFIRM_SUMMARY",
+    "LIVE_CONFIRM_ONCE_SUMMARY",
+    "LIVE_CONFIRM_CANCELLED",
+    "LIVE_SNAPSHOT_CHANGED",
+    "LIVE_START_REJECTED",
+    "LIVE_NOT_READY",
+    "LIVE_LOCK_DISABLED",
+    "LIVE_PREREQUISITES_UNKNOWN",
+    "FEEDBACK_UNAVAILABLE",
+    "SCHEDULE_STOPPED_IN_FLIGHT",
+    "SUMMARY_TOTAL_POSSIBLE_SENDS",
+    "SCHEDULE_SNAPSHOT",
     "BUTTON_REMOVE_FROM_QUEUE",
     "TOOLTIP_PRICE_MAX",
     "TOOLTIP_PRICE_MIN",
@@ -86,9 +103,6 @@ __all__ = [
     "LABEL_END_TIME",
     "LABEL_INTERVAL_SECONDS",
     "LABEL_DISPATCH_INTERVAL_MS",
-    "LABEL_CLOCK",
-    "LABEL_CLOCK_STATUS",
-    "LABEL_SYNC",
     "LABEL_STATE",
     "LABEL_COUNTDOWN",
     "LABEL_SUMMARY",
@@ -106,7 +120,12 @@ __all__ = [
     "SUMMARY_NEXT_MOMENTS_NONE",
     "SUMMARY_IMMEDIATE_START",
     "SUMMARY_CLOCK",
-    "SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY",
+    "SUMMARY_DISPATCH_INTERVAL",
+    "SUMMARY_PLANNED_TURNS",
+    "SUMMARY_PER_TURN",
+    "SUMMARY_PLANNED_TURNS_NOTE",
+    "SUMMARY_INTERNAL_INTERVAL",
+    "SUMMARY_DURATION_SECONDS",
     "NO_ACTIVE_ACCOUNT",
     "RESULT_EMPTY_STATE",
     "DIAGNOSTIC_EMPTY_STATE",
@@ -310,7 +329,7 @@ LABEL_SIDE = "نوع معامله:"
 LABEL_PRICE = "قیمت:"
 LABEL_QUANTITY = "تعداد:"
 
-PLACEHOLDER_SYMBOL = "مثلاً آگاه - تفکیک نام و نماد در مرحله بعدی انجام می‌شود"
+PLACEHOLDER_SYMBOL = "بطور مثال شستا"
 PLACEHOLDER_PRICE = "ریال - عددی"
 PLACEHOLDER_QUANTITY = "عددی"
 
@@ -318,6 +337,49 @@ BUTTON_ADD_TO_QUEUE = "افزودن به صف"
 BUTTON_TEST = "تست"
 BUTTON_TEST_ON = "تست (فعال)"
 BUTTON_SEND_ONCE = "ارسال یک‌بار سفارشات"
+LABEL_EXECUTION_MODE = "حالت اجرا:"
+MODE_DRY_RUN = "آزمایشی (Dry Run)"
+MODE_LIVE = "زنده (Live)"
+LIVE_CONFIRM_TITLE = "تأیید ارسال زنده"
+LIVE_CONFIRM_PROMPT = "ارسال زنده سفارش‌ها را تأیید می‌کنید؟"
+LIVE_CONFIRM_SUMMARY = (
+    "حالت: ارسال زنده\n"
+    "حساب/کارگزار: {destination}\n"
+    "سفارش‌های صف: {orders}\n"
+    "بازه: {start} تا {end}\n"
+    "فاصله ارسال: {interval} میلی‌ثانیه\n"
+    "نوبت‌های برنامه‌ریزی‌شده: {turns}\n"
+    "حداکثر ارسال احتمالی: {sends}\n"
+    "در هر نوبت همهٔ سفارش‌های صف دوباره ارسال می‌شوند؛ سفارش‌ها بین نوبت‌ها حذف نمی‌شوند."
+)
+LIVE_CONFIRM_ONCE_SUMMARY = (
+    "حالت: ارسال زنده\n"
+    "حساب/کارگزار: {destination}\n"
+    "سفارش‌های صف: {orders}\n"
+    "یک نوبت ارسال؛ همهٔ سفارش‌های صف به مسیر ارسال فرستاده می‌شوند."
+)
+LIVE_CONFIRM_CANCELLED = "ارسال لغو شد؛ هیچ نوبتی شروع نشده است."
+LIVE_SNAPSHOT_CHANGED = (
+    "حساب یا صف پس از آماده‌سازی تغییر کرد؛ اجرای قبلی شروع نشد. "
+    "اطلاعات تازه شد و برای شروع دوباره تأیید تازه لازم است."
+)
+LIVE_START_REJECTED = "ارسال زنده رد شد: {reason}"
+LIVE_NOT_READY = (
+    "پیش‌نیازهای واقعی ارسال زنده کامل یا قابل‌تأیید نیستند؛ "
+    "حساب و کارگزار باید آماده باشند و گیت‌های ایمنی اجازه دهند."
+)
+LIVE_LOCK_DISABLED = "قفل ارسال زندهٔ کارگزار غیرفعال است."
+LIVE_PREREQUISITES_UNKNOWN = "منبع معتبر وضعیت M6-A…M6-E پیش از ارسال و منبع رسمی آمادگی Live کارگزار متصل نیستند؛ M6 فعلی فقط در OrderEngine.prepare اجرا می‌شود."
+FEEDBACK_UNAVAILABLE = "بازخورد از سازمان بورس دریافت نشده"
+SCHEDULE_STOPPED_IN_FLIGHT = (
+    "زمان‌بندی متوقف شد؛ نوبت‌های بعدی شروع نمی‌شوند. "
+    "درخواست‌هایی که قبلاً شروع شده‌اند لغو نشده‌اند و نتیجهٔ آن‌ها جداگانه ثبت می‌شود."
+)
+SUMMARY_TOTAL_POSSIBLE_SENDS = "سفارش‌های صف در هر نوبت تکرار می‌شوند؛ حداکثر ارسال احتمالی: {count}"
+SCHEDULE_SNAPSHOT = (
+    "اجرای فعال با snapshot ثابت ادامه دارد: {destinations}؛ "
+    "{orders} سفارش. تغییر حساب یا صف، این اجرا را جابه‌جا نمی‌کند."
+)
 BUTTON_REMOVE_FROM_QUEUE = "حذف"
 
 #: Limit arrows next to the price and quantity fields.
@@ -384,11 +446,12 @@ NOTE_TIMEZONE = "به وقت تهران (Asia/Tehran, UTC+03:30)"
 # completed the row shows the program time and says so explicitly (a
 # program clock is never dressed up as a market clock). The suffix is
 # pure Persian; the page concatenates the time in front of it.
+CLOCK_PROGRAM_TIME_SUFFIX = "(ساعت برنامه)"
 
 # --- schedule summary lines (see schedule_settings.describe_summary) ---------
 # Clock/moment times inside these lines are technical and stay Latin; the
 # counts are quantities and go through format_persian_digits.
-SUMMARY_WINDOW = "بازه: {start} - {end} ({timezone})"
+SUMMARY_WINDOW = "بازه: {start} تا {end}"
 SUMMARY_INTERVAL = "فاصله: هر {interval} ثانیه"
 SUMMARY_RUN_MOMENTS = "تعداد اجراها در بازه: {count}"
 SUMMARY_STATE = "وضعیت: {state}"
@@ -398,11 +461,21 @@ SUMMARY_NEXT_MOMENTS_NONE = "اجراهای بعدی: وجود ندارد"
 SUMMARY_IMMEDIATE_START = "شروع فوری: یک‌بار، هم‌اکنون"
 SUMMARY_CLOCK = "ساعت: {clock}"
 
-# --- shared display-only states -------------------------------------------
-# The *token* SYMBOL_STATUS_NOT_AVAILABLE ("Not available") stays English in
-# ui.order_config_state because it is a machine-checked state value; only its
-# rendering is Persian.
-SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY = "ناموجود"
+# UI-10 — the summary now names the REAL dispatch cadence and the number of
+# scheduled turns it produces. The internal whole-second schedule interval is
+# shown separately so it can never be mistaken for the dispatch interval.
+SUMMARY_DURATION_SECONDS = "{count} ثانیه"
+SUMMARY_DISPATCH_INTERVAL = "فاصلهٔ ارسال: هر {interval} میلی‌ثانیه"
+SUMMARY_PLANNED_TURNS = "نوبت‌های ارسال برنامه‌ریزی‌شده در این بازه: {count} نوبت"
+SUMMARY_PER_TURN = "در هر نوبت، سفارش‌های صف به مسیر ارسال فرستاده می‌شوند."
+SUMMARY_PLANNED_TURNS_NOTE = (
+    "این تعداد برنامه‌ریزی‌شده است؛ نوبت‌های ازدست‌رفته به‌علت تأخیر سیستم "
+    "جبران نمی‌شوند."
+)
+SUMMARY_INTERNAL_INTERVAL = (
+    "فاصلهٔ نقاط زمانی داخلی: هر {interval} ثانیه "
+    "(فقط قرارداد زمان‌بندی؛ ارسال طبق فاصلهٔ ارسال بالا انجام می‌شود)"
+)
 
 NO_ACTIVE_ACCOUNT = "حساب فعالی وجود ندارد - یکی را در صفحهٔ حساب‌ها انتخاب کنید"
 
@@ -502,7 +575,6 @@ DIAGNOSTIC_BROKER_NONE = (
     "سفارش {order} - Broker/API: فراخوانی ثبت‌شده‌ای نیست"
 )
 
-LABEL_SYMBOL_STATUS_PREFIX = "وضعیت: "
 
 
 # ============================================================

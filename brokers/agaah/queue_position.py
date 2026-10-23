@@ -59,11 +59,13 @@ class AgahOrderCorrelator:
         on_order_registered: Optional[Callable[[str, "OrderTrackingInfo"], None]] = None,
         on_queue_position: Optional[Callable[[str, int], None]] = None,
         on_error: Optional[Callable[[str, str], None]] = None,
+        on_unavailable: Optional[Callable[[str], None]] = None,
     ):
         self.broker = broker
         self.on_order_registered = on_order_registered
         self.on_queue_position = on_queue_position
         self.on_error = on_error
+        self.on_unavailable = on_unavailable
 
         # Import here to avoid circular import
         from .nats_transport import AgahNatsTransport, AgahQueuePositionService
@@ -71,6 +73,7 @@ class AgahOrderCorrelator:
         self._transport = AgahNatsTransport(
             broker,
             on_oms_state_changed=self._handle_oms_event,
+            on_unavailable=self.on_unavailable,
         )
         self._queue_position_service = AgahQueuePositionService(broker)
 
@@ -279,12 +282,14 @@ class AgahQueuePositionProvider:
         on_order_registered: Optional[Callable[[str, "OrderTrackingInfo"], None]] = None,
         on_queue_position: Optional[Callable[[str, int], None]] = None,
         on_error: Optional[Callable[[str, str], None]] = None,
+        on_unavailable: Optional[Callable[[str], None]] = None,
     ):
         self.correlator = AgahOrderCorrelator(
             broker,
             on_order_registered=on_order_registered,
             on_queue_position=on_queue_position,
             on_error=on_error,
+            on_unavailable=on_unavailable,
         )
 
     async def start(self) -> None:

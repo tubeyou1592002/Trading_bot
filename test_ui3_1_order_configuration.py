@@ -78,7 +78,7 @@ def store():
 
 @pytest.fixture()
 def window(qapp):
-    return MainWindow()
+    return MainWindow(account_store=AccountStore(repository=False))
 
 
 # ============================================================
@@ -335,7 +335,7 @@ def test_9_no_nsc_id_guessed_or_produced(qapp, store):
 
 
 def test_10_active_account_from_store_no_fallback(qapp):
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
 
     # same store object shared between UI-2.1 page and UI-3.1 page
     assert window.order_configuration_page.store is window.account_store
@@ -375,17 +375,16 @@ def test_12_symbol_status_fail_closed(qapp, store):
     page = OrderConfigurationPage(store)
 
     assert page.config.symbol_status() == SYMBOL_STATUS_NOT_AVAILABLE == "Not available"
-    assert "tradable" not in page.symbol_status_label.text().lower()
-    assert "permitted" not in page.symbol_status_label.text().lower()
+    # The old text row was an unused orphan in the page corner; the trading
+    # state is rendered by the icon next to the symbol instead.
+    assert not hasattr(page, "symbol_status_label")
     # even with a real instrument selected (no verified source connected yet)
     page.config.select_instrument(
         Instrument(symbol="آکو", name="آکو", ins_code="1")
     )
     page._refresh_symbol_info()
-    assert (
-        STRINGS.LABEL_SYMBOL_STATUS_PREFIX
-        + STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
-    ) in page.symbol_status_label.text()
+    assert page.config.symbol_status() == SYMBOL_STATUS_NOT_AVAILABLE
+    assert not hasattr(page, "symbol_status_label")
 
 
 # ============================================================
@@ -480,6 +479,9 @@ def test_14_ui_does_not_use_legacy_main():
     imports the EXISTING dry-run chain — ``core.order_queue_adapter`` /
     ``core.block5_task4`` / ``core.dispatch_core`` — only to dispatch, and
     only in dry-run (``live`` stays False end-to-end).
+    UI-9 login seam: ``brokers.authentication`` is allowed ONLY inside
+    ``ui/accounts_page.py`` and only lazily, to map the broker's login
+    challenge onto the Accounts page.
     UI-7 seam: ``core.timing_contracts`` and
     ``core.timed_dispatch_scheduler`` are the EXISTING Block 3 window
     contract and deterministic moment generator that UI-7 reuses instead of
@@ -492,7 +494,7 @@ def test_14_ui_does_not_use_legacy_main():
 
     banned_top = {"main", "brokers", "core"}
     allowed_market = {"market.symbol_resolver"}
-    allowed_brokers = {"brokers.manager"}
+    allowed_brokers = {"brokers.manager", "brokers.authentication"}
     allowed_core = {
         "core.trading_state_query",
         "core.order_queue",
@@ -511,9 +513,19 @@ def test_14_ui_does_not_use_legacy_main():
         "market.symbol_resolver",
         "core.timing_contracts",
         "core.timed_dispatch_scheduler",
+        "brokers.authentication",
+    }
+    #: A lazy seam is still only accepted at its documented location.
+    allowed_locations = {
+        "brokers.authentication": {"accounts_page.py"},
     }
 
     def _check_import(module_name, node):
+        if isinstance(node, ast.ImportFrom) and node.module in allowed_locations:
+            assert module_name in allowed_locations[node.module], (
+                f"ui/{module_name} imports '{node.module}' outside its "
+                f"allowed seam {sorted(allowed_locations[node.module])}"
+            )
         if isinstance(node, ast.Import):
             for alias in node.names:
                 root = alias.name.split(".")[0]
@@ -736,7 +748,7 @@ def test_extra_active_account_refreshed_on_page_reentry(qapp):
     returning to Order Configuration must re-read the active account
     from the shared AccountStore (no fallback, no guessing).
     """
-    window = MainWindow()
+    window = MainWindow(account_store=AccountStore(repository=False))
     store = window.account_store
 
     store.add("ACC-001", "آگاه", "ACC-001")

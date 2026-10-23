@@ -404,15 +404,50 @@ class ScheduleSummary:
     upcoming_count: int
     next_times: Sequence[datetime]
     clock_description: str
+    duration_seconds: Optional[int] = None
+    dispatch_interval_ms: Optional[float] = None
+    planned_turns: Optional[int] = None
+    internal_interval_seconds: Optional[int] = None
 
     @property
     def is_expired(self) -> bool:
         return self.state is ScheduleState.EXPIRED
 
 
-def _format_moment(moment: datetime) -> str:
-    local = moment.astimezone(TEHRAN_TIMEZONE)
-    return local.strftime("%H:%M:%S")
+def count_planned_turns(
+    start_time: datetime,
+    end_time: datetime,
+    interval_ms: float,
+) -> int:
+    """
+    Count the dispatch turns a window schedules at a millisecond cadence.
+
+    The count includes BOTH endpoints, because the dispatcher's first due
+    time is the window start and a due time exactly at the window end is
+    still inside the window. For 08:44:58..08:45:05 (7000 ms) at 100 ms
+    this is 71. The value is the number of SCHEDULED turns: a turn missed
+    because the system was late is not replayed and therefore does not
+    change this count.
+    """
+    if not isinstance(start_time, datetime) or not isinstance(end_time, datetime):
+        raise ScheduleValidationError(
+            "count_planned_turns requires datetime start and end"
+        )
+    if end_time < start_time:
+        raise ScheduleValidationError("end_time must not precede start_time")
+    if not isinstance(interval_ms, (int, float)) or interval_ms <= 0:
+        raise ScheduleValidationError("interval_ms must be a positive number")
+
+    duration_ms = (end_time - start_time).total_seconds() * 1000.0
+    return int(duration_ms // float(interval_ms)) + 1
+
+
+def _duration_seconds(timing: object) -> int:
+    start_time = getattr(timing, "start_time", None)
+    end_time = getattr(timing, "end_time", None)
+    if not isinstance(start_time, datetime) or not isinstance(end_time, datetime):
+        return 0
+    return max(0, int((end_time - start_time).total_seconds()))
 
 
 def build_schedule_summary(
@@ -422,12 +457,24 @@ def build_schedule_summary(
     clock_description: str,
     moments: Optional[Sequence[datetime]] = None,
     preview_limit: int = 5,
+    dispatch_interval_ms: Optional[float] = None,
 ) -> ScheduleSummary:
     """Render the accepted schedule for confirmation before it starts."""
     all_moments = (
         list(moments) if moments is not None else generate_schedule_times(timing)
     )
     preview = tuple(assessment.upcoming[:preview_limit])
+    start_time = getattr(timing, "start_time", None)
+    end_time = getattr(timing, "end_time", None)
+    planned_turns = None
+    if (
+        dispatch_interval_ms is not None
+        and isinstance(start_time, datetime)
+        and isinstance(end_time, datetime)
+    ):
+        planned_turns = count_planned_turns(
+            start_time, end_time, dispatch_interval_ms
+        )
     return ScheduleSummary(
         start_text=parsed.start_text,
         end_text=parsed.end_text,
@@ -441,49 +488,42 @@ def build_schedule_summary(
         upcoming_count=assessment.upcoming_count,
         next_times=preview,
         clock_description=clock_description,
+        duration_seconds=_duration_seconds(timing),
+        dispatch_interval_ms=dispatch_interval_ms,
+        planned_turns=planned_turns,
+        internal_interval_seconds=int(parsed.interval.total_seconds()),
     )
 
 
 def describe_summary(summary: ScheduleSummary) -> str:
-    """A clear multi-line summary of the accepted schedule and clock.
+    """Exactly three lines: window, dispatch cadence and planned turns.
 
-    Every visible word comes from ``STRINGS``; only the clock/moment values
-    (times, and the ``Asia/Tehran`` identifier) stay Latin because they are
-    technical, while the counts go through ``format_persian_digits``.
+    The lifecycle state, the next run, the clock, the countdown, the
+    internal schedule interval and every explanatory note are shown
+    OUTSIDE this summary, so they are not repeated here. Every visible
+    word comes from ``STRINGS``; only the clock/moment values stay Latin
+    because they are technical, while the counts go through
+    ``format_persian_digits``.
     """
+    digits = STRINGS.format_persian_digits
     lines = [
         STRINGS.SUMMARY_WINDOW.format(
             start=summary.start_text,
             end=summary.end_text,
-            timezone=summary.timezone_note,
         ),
-        STRINGS.SUMMARY_INTERVAL.format(
-            interval=STRINGS.format_persian_digits(summary.interval_text)
-        ),
-        STRINGS.SUMMARY_RUN_MOMENTS.format(
-            count=STRINGS.format_persian_digits(summary.total_times)
-        ),
-        STRINGS.SUMMARY_STATE.format(state=summary.state_label),
     ]
-    if summary.missed_count:
+    if (
+        summary.dispatch_interval_ms is not None
+        and summary.planned_turns is not None
+    ):
         lines.append(
-            STRINGS.SUMMARY_SKIPPED.format(
-                count=STRINGS.format_persian_digits(summary.missed_count)
+            STRINGS.SUMMARY_DISPATCH_INTERVAL.format(
+                interval=digits(int(summary.dispatch_interval_ms))
             )
         )
-    if summary.next_times:
-        rendered = ", ".join(_format_moment(m) for m in summary.next_times)
-        shown = summary.upcoming_count > len(summary.next_times)
         lines.append(
-            STRINGS.SUMMARY_NEXT_MOMENTS.format(
-                count=STRINGS.format_persian_digits(summary.upcoming_count),
-                times=rendered,
+            STRINGS.SUMMARY_PLANNED_TURNS.format(
+                count=digits(summary.planned_turns)
             )
-            + (" …" if shown else "")
         )
-    else:
-        lines.append(STRINGS.SUMMARY_NEXT_MOMENTS_NONE)
-    if summary.fire_now:
-        lines.append(STRINGS.SUMMARY_IMMEDIATE_START)
-    lines.append(STRINGS.SUMMARY_CLOCK.format(clock=summary.clock_description))
     return "\n".join(lines)

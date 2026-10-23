@@ -534,11 +534,32 @@ class PeriodicScheduleDispatcher:
         return self._groups
 
     @property
+    def frozen_order_count(self) -> int:
+        """
+        Total frozen orders handed to the send path on EVERY turn.
+
+        The set is fixed at Apply and is never consumed, so each turn
+        re-sends exactly these orders again. This is a count for
+        diagnostics; it never changes what a turn sends.
+        """
+        return sum(len(group.targets) for group in self._groups)
+
+    @property
     def turns(self) -> Tuple[TurnRecord, ...]:
         return tuple(self._turns)
 
     @property
     def in_flight(self) -> int:
+        """
+        Dispatch TURNS still waiting on their send-path calls.
+
+        One turn carries the WHOLE frozen set, so this is never a count of
+        individual orders. It is incremented when a due turn starts and
+        decremented only after every group's ``runner.run(...)`` of that
+        turn has returned (or failed) and the turn's executor is shut
+        down. It therefore measures the entire turn duration, not only the
+        broker's response wait.
+        """
         with self._lock:
             return self._in_flight
 
@@ -668,9 +689,13 @@ class PeriodicScheduleDispatcher:
                 and not self._backlog_warning_active
             ):
                 _LOGGER.warning(
-                    "UI-7 dispatch backlog is %d unanswered turns; "
-                    "scheduled sends continue without response-based drops",
+                    "UI-7 dispatch backlog is %d open/in-progress dispatch "
+                    "turn(s) (not broker-unconfirmed orders); each turn "
+                    "re-sends the same %d frozen "
+                    "order(s) to the send path; scheduled sends continue "
+                    "without response-based drops",
                     self._in_flight,
+                    self.frozen_order_count,
                 )
                 self._backlog_warning_active = True
             turn_id = f"ui7-turn-{index}"

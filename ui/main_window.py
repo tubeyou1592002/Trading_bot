@@ -296,6 +296,9 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_order_authorizer_factory(
             self._real_order_authorizer
         )
+        self.order_configuration_page.set_live_readiness_factory(
+            self._real_live_readiness
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 
@@ -392,7 +395,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             return None
 
-    def _real_test_runner(self):
+    def _real_test_runner(self, *, live=False, safety_gate=None):
         """
         Lazily build the REAL UI-5 Test runner, passing the shared
         BrokerManager so that DispatchCore resolves the SAME AgaahBroker
@@ -406,8 +409,40 @@ class MainWindow(QMainWindow):
         from ui.test_runner import TestRunner
 
         return TestRunner(
-            broker_manager=self._shared_broker_manager()
+            broker_manager=self._shared_broker_manager(),
+            live=live,
+            safety_gate=safety_gate,
         )
+
+    def _real_live_readiness(self, account_id, broker_name, *, human_approval):
+        """Resolve Live readiness without inventing missing prerequisites.
+
+        Account/session/authentication are checked by authorize_order, but no
+        production provider supplies an authoritative pre-dispatch M6 result
+        or a broker live-readiness contract. The broker's independent safety
+        lock remains off. This seam therefore fails closed.
+        """
+        from ui.live_order_gate import check_live_readiness
+
+        try:
+            return check_live_readiness(
+                account_store=self.account_store,
+                authentication_service=self.authentication_service,
+                session_manager=self.session_manager,
+                broker_manager=self._shared_broker_manager(),
+                account_id=account_id,
+                broker_name=broker_name,
+                explicit_live_request=True,
+                human_approval=human_approval,
+                prerequisite_provider=None,
+            )
+        except Exception:
+            from ui.live_order_gate import LiveReadiness
+
+            return LiveReadiness(
+                False,
+                "منبع معتبر وضعیت M6-A…M6-E پیش از ارسال و منبع رسمی آمادگی Live کارگزار متصل نیستند؛ وضعیت حساب/نشست جداگانه بررسی می‌شود.",
+            )
 
     def _real_order_authorizer(self):
         """Build the authorization gate only when an order action needs it."""

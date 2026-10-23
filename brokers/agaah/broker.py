@@ -76,6 +76,7 @@ class AgaahBroker(Broker):
         self._order_registered_listeners = []
         self._queue_position_listeners = []
         self._order_error_listeners = []
+        self._feedback_unavailable_listeners = []
 
         self._logger = logging.getLogger(__name__)
 
@@ -1223,6 +1224,18 @@ class AgaahBroker(Broker):
         """Register a callback for order tracking errors."""
         self._order_error_listeners.append(callback)
 
+    def add_feedback_unavailable_listener(self, callback) -> None:
+        """Register a display-only listener for NATS transport loss."""
+        self._feedback_unavailable_listeners.append(callback)
+
+    def _on_feedback_unavailable_forward(self, reason: str) -> None:
+        """Forward NATS status without touching the order-send lifecycle."""
+        for callback in tuple(self._feedback_unavailable_listeners):
+            try:
+                callback(reason)
+            except Exception:
+                self._logger.warning("Feedback status listener failed")
+
     def _on_order_registered_forward(self, decision_id: str, order_info) -> None:
         """Forward AcceptedByBourse registration to all registered listeners."""
         for cb in self._order_registered_listeners:
@@ -1262,6 +1275,7 @@ class AgaahBroker(Broker):
                 on_order_registered=self._on_order_registered_forward,
                 on_queue_position=self._on_queue_position_forward,
                 on_error=self._on_order_error_forward,
+                on_unavailable=self._on_feedback_unavailable_forward,
             )
         return self._queue_position_provider
 

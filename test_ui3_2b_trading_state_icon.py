@@ -214,12 +214,14 @@ def test_only_the_icon_is_rendered_without_adjacent_text(qapp, store):
     assert page.findChild(QLabel, "marketStatusText") is None
 
 
-def test_icon_does_not_alter_the_simple_status_row(qapp, store):
+def test_icon_does_not_add_a_text_status_row(qapp, store):
     page, _ = _page_with_state(qapp, store, _state(MarketStatus.PERMITTED))
-    assert page.symbol_status_label.text() == (
-        f"{STRINGS.LABEL_SYMBOL_STATUS_PREFIX}"
-        f"{STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY}"
-    )
+    _show_page(qapp, page)
+
+    assert page.trading_state_icon.isVisible() is True
+    assert page.trading_state_icon.toolTip()
+    assert not hasattr(page, "symbol_status_label")
+    assert page.findChild(QLabel, "symbolStatusLabel") is None
 
 
 @pytest.mark.parametrize(

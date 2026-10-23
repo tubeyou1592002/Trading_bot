@@ -151,6 +151,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QDialog,
+    QMessageBox,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
@@ -429,16 +430,6 @@ RESULT_EMPTY_STATE = STRINGS.RESULT_EMPTY_STATE
 # no record of (never a technical nscId / tseId) and an unknown side label.
 RESULT_SYMBOL_UNKNOWN = "-"
 
-
-def _symbol_status_display(status):
-    """Render a symbol-status *token* for humans (UI-9.3).
-
-    ``config.symbol_status()`` returns machine-checked English tokens that the
-    tests compare against; only the rendered text is Persian.
-    """
-    if status == SYMBOL_STATUS_NOT_AVAILABLE:
-        return STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY
-    return status
 
 # UI-5 Task 4 (Stage 3) — the user-facing order log table.
 # The seven columns and their order live in ui.user_log.ORDER_LOG_COLUMNS; the
@@ -1236,6 +1227,18 @@ class OrderConfigurationPage(QWidget):
         # MainWindow wires a lazy real runner; tests inject a fake one.
         self._test_runner_factory = None  # set via set_test_runner_factory()
         self._test_runner_instance = None
+        self._test_runner_instance_live = False
+        self._live_readiness_factory = None
+        self._live_confirmation_handler = None
+        self._run_mode = "dry_run"
+        self._pending_live_mode = False
+        self._pending_live_gate = None
+        self._pending_dispatch_targets = None
+        self._pending_dispatch_snapshot = None
+        self._frozen_live_mode = False
+        self._frozen_live_gate = None
+        self._frozen_snapshot_summary = ""
+        self._frozen_targets = ()
         # Outcome of the last Test action (Task 3 consumes these).
         self._last_test_run = None    # (plan, execution_id, result)
         self._last_test_entries = None
@@ -1350,21 +1353,31 @@ class OrderConfigurationPage(QWidget):
         # Symbol information / status display area
         # ---------------------------------------------
 
-        self.symbol_status_label = QLabel(
-            f"{STRINGS.LABEL_SYMBOL_STATUS_PREFIX}{STRINGS.SYMBOL_STATUS_NOT_AVAILABLE_DISPLAY}", self
-        )
+        # The trading state is displayed ONLY by the icon next to the
+        # symbol (its tooltip carries the exact state). The text label is
+        # kept solely as the existing internal state surface; it is never
+        # parented into the layout, so hiding it prevents an orphan
+        # "وضعیت" widget from being painted in the page corner.
         self.trading_state_label = QLabel("-", self)
+        self.trading_state_label.hide()
 
         # ---------------------------------------------
         # Amounts group
         # ---------------------------------------------
 
         amounts_group = QGroupBox(STRINGS.GROUP_AMOUNTS, self)
+        self.amounts_group = amounts_group
         amounts_form = QFormLayout(amounts_group)
 
         self.base_amount_label = QLabel("-", amounts_group)
         self.fee_label = QLabel(STRINGS.VALUE_NOT_AVAILABLE, amounts_group)
         self.final_amount_label = QLabel(STRINGS.VALUE_NOT_AVAILABLE, amounts_group)
+        for amount_label in (
+            self.base_amount_label,
+            self.fee_label,
+            self.final_amount_label,
+        ):
+            amount_label.setWordWrap(True)
 
         amounts_form.addRow(STRINGS.LABEL_BASE_AMOUNT, self.base_amount_label)
         amounts_form.addRow(STRINGS.LABEL_FEE, self.fee_label)
@@ -1373,9 +1386,11 @@ class OrderConfigurationPage(QWidget):
         self.amount_warning_label.setProperty("role", "danger")
         self.amount_warning_label.setStyleSheet(f"color: {PALETTE['danger']};")
         self.amount_warning_label.setWordWrap(True)
+        self.amount_warning_label.setVisible(False)
         amounts_form.addRow(self.amount_warning_label)
 
         order_column_layout.addWidget(amounts_group)
+        self._harmonize_panel_heights()
 
         # ---------------------------------------------
         # Order Queue display (UI-4)
@@ -1484,6 +1499,23 @@ class OrderConfigurationPage(QWidget):
             EXECUTION_INTERVAL_LABEL, self.dispatch_interval_input
         )
 
+        mode_row = QWidget(self.schedule_group)
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        self.dry_run_mode_button = QRadioButton(
+            STRINGS.MODE_DRY_RUN, mode_row
+        )
+        self.dry_run_mode_button.setObjectName("dryRunModeButton")
+        self.live_mode_button = QRadioButton(STRINGS.MODE_LIVE, mode_row)
+        self.live_mode_button.setObjectName("liveModeButton")
+        self.dry_run_mode_button.setChecked(True)
+        self.dry_run_mode_button.toggled.connect(self._on_run_mode_changed)
+        self.live_mode_button.toggled.connect(self._on_run_mode_changed)
+        mode_layout.addWidget(self.dry_run_mode_button)
+        mode_layout.addWidget(self.live_mode_button)
+        mode_layout.addStretch(1)
+        schedule_form.addRow(STRINGS.LABEL_EXECUTION_MODE, mode_row)
+
         schedule_buttons = QWidget(self.schedule_group)
         schedule_buttons_layout = QHBoxLayout(schedule_buttons)
         schedule_buttons_layout.setContentsMargins(0, 0, 0, 0)
@@ -1514,28 +1546,26 @@ class OrderConfigurationPage(QWidget):
             SCHEDULE_STATE_CONFIG, self.schedule_group
         )
         self.schedule_state_label.setWordWrap(True)
-        # UI-9 Task 2 — the scheduling state reads as a prominent status.
-        self.schedule_state_label.setStyleSheet(
-            f"font-size: {GEOMETRY['statusFontPt']}pt;"
-            f" font-weight: bold; color: {PALETTE['accent']};"
-        )
         schedule_form.addRow(STRINGS.LABEL_STATE, self.schedule_state_label)
 
-        # UI-7 Task 2 — countdown display for active schedule
+        # UI-7 Task 2 — countdown display for active schedule. Both the
+        # state and the countdown use the page's normal text size; the
+        # former oversized bold monospace face is intentionally gone.
         self.countdown_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.countdown_label.setWordWrap(True)
-        # UI-9 Task 2 — the countdown must be visually prominent: larger
-        # and in the accent colour, with a monospace face so the ticking
-        # digits stay aligned. Colours/sizes come from ui/theme.py tokens.
-        self.countdown_label.setStyleSheet(
-            f"font-family: monospace; font-size: {GEOMETRY['countdownFontPt']}pt;"
-            f" font-weight: bold; color: {PALETTE['accent']};"
-        )
         schedule_form.addRow(STRINGS.LABEL_COUNTDOWN, self.countdown_label)
 
         self.schedule_summary_label = QLabel(SCHEDULE_UNAVAILABLE, self.schedule_group)
         self.schedule_summary_label.setWordWrap(True)
         schedule_form.addRow(STRINGS.LABEL_SUMMARY, self.schedule_summary_label)
+        self.schedule_send_count_label = QLabel("", self.schedule_group)
+        self.schedule_send_count_label.setWordWrap(True)
+        schedule_form.addRow("ارسال احتمالی:", self.schedule_send_count_label)
+        self.feedback_status_label = QLabel("", self.schedule_group)
+        self.feedback_status_label.setWordWrap(True)
+        self.feedback_status_label.setProperty("muted", "true")
+        schedule_form.addRow("وضعیت بازخورد:", self.feedback_status_label)
+        self._fit_schedule_group_height()
 
         # UI-9 Task 2: the scheduling column (right of the two).
         schedule_column_layout.addWidget(self.schedule_group)
@@ -2971,6 +3001,186 @@ class OrderConfigurationPage(QWidget):
         if self._test_mode:
             self._run_test_pass()
 
+    def _on_run_mode_changed(self, checked):
+        """Keep the explicit execution mode UI state in sync."""
+        if getattr(self, "_schedule_locked", False):
+            return
+        if not checked:
+            return
+        self._run_mode = (
+            "live" if self.live_mode_button.isChecked() else "dry_run"
+        )
+        # A cached dry-run runner must never be reused for a Live request.
+        self._test_runner_instance = None
+
+    def set_live_readiness_factory(self, factory):
+        """Inject the existing SafetyGate/readiness composition seam."""
+        self._live_readiness_factory = factory
+
+    def set_live_confirmation_handler(self, handler):
+        """Inject confirmation in tests; production uses a modal prompt."""
+        self._live_confirmation_handler = handler
+
+    def _confirm_live_start(self, summary):
+        handler = self._live_confirmation_handler
+        if handler is not None:
+            return bool(handler(summary))
+        answer = QMessageBox.question(
+            self,
+            STRINGS.LIVE_CONFIRM_TITLE,
+            f"{summary}\n\n{STRINGS.LIVE_CONFIRM_PROMPT}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return answer == QMessageBox.Yes
+
+    def _live_readiness(self, record, *, human_approval):
+        factory = self._live_readiness_factory
+        if factory is None:
+            from ui.live_order_gate import LiveReadiness
+            return LiveReadiness(False, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
+        try:
+            result = factory(
+                record.account_id,
+                record.broker_name,
+                human_approval=human_approval,
+            )
+        except Exception:
+            from ui.live_order_gate import LiveReadiness
+            return LiveReadiness(False, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
+        return result
+
+    def _live_snapshot(self, entries, record):
+        """Capture identities, exact queue-entry objects, and active account."""
+        active_id = self.store.active_account_id()
+        return (
+            active_id,
+            getattr(record, "account_id", None),
+            getattr(record, "broker_name", None),
+            id(getattr(record, "account", None)),
+            tuple(
+                (
+                    id(entry),
+                    id(entry.order),
+                    entry.account_id,
+                    entry.broker_name,
+                )
+                for entry in entries
+            ),
+        )
+
+    def _live_snapshot_unchanged(self, snapshot, record):
+        current_record = self._active_account_record()
+        current_entries = list(self.order_queue.list_pending())
+        return (
+            current_record is not None
+            and snapshot == self._live_snapshot(current_entries, current_record)
+        )
+
+    def _live_scope_rejection(self, entries, active_record):
+        """Do not claim one account's Live readiness for another target."""
+        if active_record is None:
+            return STRINGS.TEST_SKIPPED_NO_ACCOUNT
+        if any(
+            entry.account_id != active_record.account_id
+            or entry.broker_name != active_record.broker_name
+            for entry in entries
+        ):
+            return "ارسال زنده فقط برای سفارش‌های حساب فعال و کارگزار همان حساب قابل بررسی است."
+        return None
+
+    @staticmethod
+    def _live_destination(record):
+        name = getattr(record, "display_name", None) or record.account_id
+        return f"{name} / {record.broker_name}"
+
+    def _live_schedule_summary(self, record, order_count, timing, interval_ms):
+        from ui.schedule_settings import count_planned_turns
+
+        turns = count_planned_turns(
+            timing.start_time, timing.end_time, interval_ms
+        )
+        digits = STRINGS.format_persian_digits
+        return STRINGS.LIVE_CONFIRM_SUMMARY.format(
+            destination=self._live_destination(record),
+            orders=digits(order_count),
+            start=timing.start_time.strftime("%H:%M:%S"),
+            end=timing.end_time.strftime("%H:%M:%S"),
+            interval=digits(int(interval_ms)),
+            turns=digits(turns),
+            sends=digits(turns * order_count),
+        )
+
+    def _dispatch_snapshot(self, targets):
+        record = self._active_account_record()
+        return (
+            self.store.active_account_id(),
+            getattr(record, "account_id", None),
+            getattr(record, "broker_name", None),
+            tuple(
+                (
+                    id(target.entry),
+                    id(target.entry.order),
+                    target.account_id,
+                    target.broker_name,
+                    id(target.account),
+                )
+                for target in targets
+            ),
+        )
+
+    def _prepare_live_schedule(self, timing, interval_ms):
+        """Preflight and confirm a stable account/target schedule snapshot."""
+        for _attempt in range(3):
+            record = self._active_account_record()
+            targets = tuple(self._frozen_dispatch_targets())
+            entries = [target.entry for target in targets]
+            rejection = self._live_scope_rejection(entries, record)
+            if rejection:
+                return False, None, None, None, rejection
+
+            readiness = self._live_readiness(record, human_approval=False)
+            if not getattr(readiness, "ready_for_confirmation", False):
+                return False, None, None, None, getattr(
+                    readiness, "reason", STRINGS.LIVE_NOT_READY
+                )
+
+            snapshot = self._dispatch_snapshot(targets)
+            summary = self._live_schedule_summary(
+                record, len(entries), timing, interval_ms
+            )
+            if not self._confirm_live_start(summary):
+                return False, None, None, None, STRINGS.LIVE_CONFIRM_CANCELLED
+
+            current_record = self._active_account_record()
+            rejection = self._dispatch_set_rejection()
+            current_targets = (
+                tuple(self._frozen_dispatch_targets())
+                if rejection is None
+                else ()
+            )
+            if (
+                current_record is None
+                or rejection is not None
+                or self._dispatch_snapshot(current_targets) != snapshot
+            ):
+                # The modal prompt may have allowed account/queue changes.
+                # Rebuild the exact summary and obtain a new confirmation.
+                continue
+
+            readiness = self._live_readiness(
+                current_record, human_approval=True
+            )
+            if not getattr(readiness, "allowed", False):
+                return False, None, None, None, getattr(
+                    readiness, "reason", STRINGS.LIVE_NOT_READY
+                )
+            gate = getattr(readiness, "gate", None)
+            if gate is None:
+                return False, None, None, None, STRINGS.LIVE_PREREQUISITES_UNKNOWN
+            return True, current_record, current_targets, gate, None
+        return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
+
     def set_test_runner_factory(self, factory):
         """
         Provide the factory that builds the Test runner (UI-5 Task 2).
@@ -3016,18 +3226,22 @@ class OrderConfigurationPage(QWidget):
         """
         self._feedback_binder_factory = factory
 
-    def _test_runner(self):
+    def _test_runner(self, *, live=False, safety_gate=None):
         """
         Lazily build the wired Test runner (exactly once per factory).
 
         ``None`` when no runner has been wired — the Test action then
         stays a pure UI toggle (no execution possible).
         """
-        if (
-            self._test_runner_instance is None
-            and self._test_runner_factory is not None
-        ):
+        if self._test_runner_factory is None:
+            return None
+        if live:
+            return self._test_runner_factory(
+                live=True, safety_gate=safety_gate
+            )
+        if self._test_runner_instance is None:
             self._test_runner_instance = self._test_runner_factory()
+            self._test_runner_instance_live = False
         return self._test_runner_instance
 
     def _run_test_pass(self):
@@ -3074,11 +3288,6 @@ class OrderConfigurationPage(QWidget):
             self._show_queue_status(STRINGS.ORDER_AUTHORIZATION_REQUIRED)
             return
 
-        runner = self._test_runner()
-        if runner is None:
-            # No runner wired (tests, or UI-only usage): pure toggle.
-            return
-
         entries = list(self.order_queue.list_pending())
         if not entries:
             self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ORDERS)
@@ -3094,6 +3303,78 @@ class OrderConfigurationPage(QWidget):
                     STRINGS.TEST_SKIPPED_ACCOUNT_MISMATCH
                 )
                 return
+
+        live = self._run_mode == "live"
+        live_gate = None
+        if live:
+            # Scheduler dispatch replays the entire frozen queue every turn.
+            # Live authorization is intentionally one manual pass only until
+            # repetitions have an independent, bounded authorization model.
+            if getattr(self, "_schedule_locked", False) or getattr(
+                self, "_schedule_state", SCHEDULE_STATE_CONFIG
+            ) != SCHEDULE_STATE_CONFIG:
+                self._show_queue_status(
+                    STRINGS.LIVE_START_REJECTED.format(
+                        reason="Live زمان‌بندی‌شده غیرفعال است؛ زمان‌بندی هر نوبت کل صف را دوباره ارسال می‌کند.",
+                    )
+                )
+                return
+            rejection = self._live_scope_rejection(entries, record)
+            if rejection:
+                self._show_queue_status(
+                    STRINGS.LIVE_START_REJECTED.format(reason=rejection)
+                )
+                return
+            readiness = self._live_readiness(record, human_approval=False)
+            if not getattr(readiness, "ready_for_confirmation", False):
+                self._show_queue_status(
+                    STRINGS.LIVE_START_REJECTED.format(
+                        reason=getattr(
+                            readiness, "reason", STRINGS.LIVE_NOT_READY
+                        )
+                    )
+                )
+                return
+            snapshot = self._live_snapshot(entries, record)
+            summary = STRINGS.LIVE_CONFIRM_ONCE_SUMMARY.format(
+                destination=self._live_destination(record),
+                orders=STRINGS.format_persian_digits(len(entries)),
+            )
+            if not self._confirm_live_start(summary):
+                self._show_queue_status(STRINGS.LIVE_CONFIRM_CANCELLED)
+                return
+            if not self._live_snapshot_unchanged(snapshot, record):
+                self._show_queue_status(STRINGS.LIVE_SNAPSHOT_CHANGED)
+                return
+            readiness = self._live_readiness(record, human_approval=True)
+            if not getattr(readiness, "allowed", False):
+                self._show_queue_status(
+                    STRINGS.LIVE_START_REJECTED.format(
+                        reason=getattr(readiness, "reason", STRINGS.LIVE_NOT_READY)
+                    )
+                )
+                return
+            live_gate = getattr(readiness, "gate", None)
+            if live_gate is None:
+                self._show_queue_status(
+                    STRINGS.LIVE_START_REJECTED.format(
+                        reason=STRINGS.LIVE_PREREQUISITES_UNKNOWN
+                    )
+                )
+                return
+
+        try:
+            runner = self._test_runner(live=live, safety_gate=live_gate)
+        except Exception:
+            self._show_queue_status(
+                STRINGS.LIVE_START_REJECTED.format(
+                    reason=STRINGS.LIVE_PREREQUISITES_UNKNOWN
+                )
+            )
+            return
+        if runner is None:
+            # No runner wired (tests, or UI-only usage): pure UI action.
+            return
 
         # UI-5 Task 4 (base display): the wall-clock moment this send is
         # issued. A UI-local stamp of the send moment only — never a broker
@@ -3313,15 +3594,25 @@ class OrderConfigurationPage(QWidget):
                 factory, account_id, broker_name
             )
         except Exception:  # noqa: BLE001 — display wiring never breaks the send
+            self._mark_feedback_unavailable()
             return
         if binder is None:
+            self._mark_feedback_unavailable()
             return
         signal = getattr(binder, "order_registered", None)
         if signal is None:
+            self._mark_feedback_unavailable()
             return
         signal.connect(
             self._make_order_registered_handler(account_id, broker_name)
         )
+        unavailable_signal = getattr(binder, "feedback_unavailable", None)
+        if unavailable_signal is not None:
+            unavailable_signal.connect(self._on_feedback_unavailable)
+        else:
+            start_failed_signal = getattr(binder, "start_failed", None)
+            if start_failed_signal is not None:
+                start_failed_signal.connect(self._on_feedback_unavailable)
         # Stage 3 Task 4 — the SAME bound object's EXISTING queue-position
         # signal, consumed only when it actually exists (an object that
         # carries no such signal simply binds the registration signal
@@ -3333,6 +3624,17 @@ class OrderConfigurationPage(QWidget):
             )
         self._feedback_binders[key] = binder
         self._feedback_binder = binder
+        if getattr(binder, "startup_error", None):
+            self._mark_feedback_unavailable()
+
+    def _mark_feedback_unavailable(self):
+        """Display feedback absence without changing any order/send state."""
+        if hasattr(self, "feedback_status_label"):
+            self.feedback_status_label.setText(STRINGS.FEEDBACK_UNAVAILABLE)
+
+    def _on_feedback_unavailable(self, *_args):
+        """Receive optional feedback failure; never touch dispatch state."""
+        self._mark_feedback_unavailable()
 
     def _make_order_registered_handler(self, account_id, broker_name):
         """A per-account registration slot that tags the account identity."""
@@ -3430,6 +3732,7 @@ class OrderConfigurationPage(QWidget):
         accepted_at = _epoch_to_local_datetime(accepted_at_ts)
         if accepted_at is None:
             return  # no real event timestamp — nothing may be invented
+        self.feedback_status_label.clear()
         self.order_log.update_core_registration(order, accepted_at)
         self._refresh_order_log_display()
 
@@ -3920,6 +4223,109 @@ class OrderConfigurationPage(QWidget):
         self.test_button.setEnabled(has_queue and has_account and has_instrument)
 
     # ---------------------------------------------------------
+    # Panel geometry
+    # ---------------------------------------------------------
+
+    def _harmonize_panel_heights(self):
+        """Size each panel to its own real content.
+
+        The order-details group reserves room for a three-line inline
+        validation message, so a long error never clips or overlaps its
+        fields. The amounts group is NOT forced to that height: it is
+        fitted to its own visible content, including the purchase-power
+        warning when that warning is actually shown.
+        """
+        line = self.validation_error_label.fontMetrics().lineSpacing()
+        validation_reserve = 3 * line + 2 * SPACING["md"]
+        self.form_group.setFixedHeight(
+            self.form_group.sizeHint().height() + validation_reserve
+        )
+        self._fit_amounts_group_height()
+
+    def _fit_amounts_group_height(self):
+        """Give the amounts group exactly the height its content needs."""
+        for label in (
+            self.base_amount_label,
+            self.fee_label,
+            self.final_amount_label,
+        ):
+            label.setMinimumHeight(0)
+            label.setMinimumHeight(label.sizeHint().height())
+        layout = self.amounts_group.layout()
+        if layout is not None:
+            layout.activate()
+        self.amounts_group.setFixedHeight(
+            self.amounts_group.sizeHint().height()
+        )
+
+    def _fit_schedule_group_height(self):
+        """Lock the schedule box to its real visible content.
+
+        The height is recomputed from the current texts (including the
+        word-wrapped summary, state and countdown) whenever one of them
+        changes or the page is resized, then fixed. Nothing is clipped and
+        the box carries no empty tail left over from removed summary
+        notes.
+        """
+        if not hasattr(self, "schedule_group"):
+            return
+        layout = self.schedule_group.layout()
+        if self.schedule_group.isVisible():
+            value_width = self.schedule_summary_label.width()
+        else:
+            value_width = self.schedule_group.width() - 2 * SPACING["md"]
+        value_width = max(1, value_width)
+        for label in (
+            self.schedule_state_label,
+            self.countdown_label,
+            self.schedule_summary_label,
+        ):
+            label.setMinimumHeight(0)
+            wrapped_height = label.heightForWidth(value_width)
+            needed = (
+                wrapped_height
+                if wrapped_height >= 0
+                else label.sizeHint().height()
+            )
+            label.setMinimumHeight(needed)
+        if layout is not None:
+            layout.activate()
+        self.schedule_group.setFixedHeight(
+            self.schedule_group.sizeHint().height()
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "amounts_group"):
+            self._fit_amounts_group_height()
+        self._fit_schedule_group_height()
+        # The first fit runs before the layout has assigned the new field
+        # widths; run once more after layout so wrapped labels get the
+        # height their final width actually needs.
+        QTimer.singleShot(0, self._fit_amounts_group_height)
+        QTimer.singleShot(0, self._fit_schedule_group_height)
+
+    def _set_amount_warning(self, text):
+        """Show/hide the amounts warning and refit the box around it."""
+        self.amount_warning_label.setText(text)
+        visible = bool(text)
+        self.amount_warning_label.setVisible(visible)
+        self.amount_warning_label.setMinimumHeight(
+            self.amount_warning_label.sizeHint().height() if visible else 0
+        )
+        self._fit_amounts_group_height()
+
+    def _set_schedule_summary(self, text):
+        """Render the summary and refit the schedule box around it."""
+        self.schedule_summary_label.setText(text)
+        self._fit_schedule_group_height()
+
+    def _set_countdown_text(self, text):
+        """Render the countdown and refit the schedule box around it."""
+        self.countdown_label.setText(text)
+        self._fit_schedule_group_height()
+
+    # ---------------------------------------------------------
     # Symbol info / status display
     # ---------------------------------------------------------
 
@@ -3937,12 +4343,6 @@ class OrderConfigurationPage(QWidget):
             )
         self._invalidate_auto_amount()
         self._refresh_amounts()
-        # Fail-closed display: without a verified source this is never
-        # "tradable"/"permitted".
-        self.symbol_status_label.setText(
-            STRINGS.LABEL_SYMBOL_STATUS_PREFIX
-            + _symbol_status_display(self.config.symbol_status())
-        )
 
     # ---------------------------------------------------------
     # Side / Price / Quantity
@@ -4409,7 +4809,7 @@ class OrderConfigurationPage(QWidget):
             )
         return tuple(targets)
 
-    def _freeze_dispatch_set(self):
+    def _freeze_dispatch_set(self, frozen_targets=None):
         """
         Freeze the send set, its destinations and the cadence at Apply.
 
@@ -4443,12 +4843,52 @@ class OrderConfigurationPage(QWidget):
             self._clear_accepted_schedule()
             self._pending_schedule = None
             self._pending_dispatch_interval_ms = None
-            self.schedule_summary_label.setText(
+            self._set_schedule_summary(
                 STRINGS.SCHEDULE_REJECTED.format(reason=rejection)
             )
             return False
 
-        targets = self._frozen_dispatch_targets()
+        targets = tuple(
+            frozen_targets
+            if frozen_targets is not None
+            else (
+                self._pending_dispatch_targets
+                or self._frozen_dispatch_targets()
+            )
+        )
+        if (
+            self._pending_live_mode
+            and self._pending_dispatch_snapshot is not None
+        ):
+            rejection = self._dispatch_set_rejection()
+            current_targets = (
+                tuple(self._frozen_dispatch_targets())
+                if rejection is None
+                else ()
+            )
+            if (
+                rejection is not None
+                or self._dispatch_snapshot(current_targets)
+                != self._pending_dispatch_snapshot
+            ):
+                self._set_schedule_summary(STRINGS.LIVE_SNAPSHOT_CHANGED)
+                return False
+        self._frozen_targets = targets
+        self._frozen_snapshot_summary = STRINGS.SCHEDULE_SNAPSHOT.format(
+            destinations=", ".join(
+                sorted({
+                    f"{target.account_id} / {target.broker_name}"
+                    for target in targets
+                })
+            ),
+            orders=STRINGS.format_persian_digits(len(targets)),
+        )
+        self._frozen_live_mode = self._pending_live_mode
+        self._frozen_live_gate = self._pending_live_gate
+        self._pending_live_mode = False
+        self._pending_live_gate = None
+        self._pending_dispatch_targets = None
+        self._pending_dispatch_snapshot = None
         dispatcher = PeriodicScheduleDispatcher(
             runner_factory=self._new_send_runner,
             mono_clock=schedule_monotonic,
@@ -4488,6 +4928,14 @@ class OrderConfigurationPage(QWidget):
         self._dispatcher = None
         self._dispatch_interval_ms = None
         self._pending_dispatch_interval_ms = None
+        self._frozen_live_mode = False
+        self._frozen_live_gate = None
+        self._pending_live_mode = False
+        self._pending_live_gate = None
+        self._pending_dispatch_targets = None
+        self._pending_dispatch_snapshot = None
+        self._frozen_targets = ()
+        self._frozen_snapshot_summary = ""
         # Task 2's rule, applied to Task 3: a stopped run is forgotten
         # completely, so the next Apply inherits no turn, no cadence and
         # no cursor from it.
@@ -4514,6 +4962,14 @@ class OrderConfigurationPage(QWidget):
         factory = self._test_runner_factory
         if factory is None:
             raise RuntimeError("no send path is wired")
+        if self._frozen_live_mode:
+            if self._frozen_live_gate is None:
+                raise RuntimeError(
+                    "Live schedule has no approved SafetyGate; no send started"
+                )
+            return factory(
+                live=True, safety_gate=self._frozen_live_gate
+            )
         return factory()
 
     # -- the dispatch worker (never the UI thread) -------------------------
@@ -4706,7 +5162,7 @@ class OrderConfigurationPage(QWidget):
         """
         timing = self._schedule_timing
         if not self._schedule_times or timing is None:
-            self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+            self._set_countdown_text(COUNTDOWN_LABEL_UNAVAILABLE)
             return
 
         # UI-7 Task 3 NOTE: dispatch turns are NOT serviced here. They run
@@ -4722,7 +5178,7 @@ class OrderConfigurationPage(QWidget):
                 break
 
         if next_run is None:
-            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+            self._set_countdown_text(COUNTDOWN_LABEL_NO_UPCOMING)
             self._finish_schedule(SCHEDULE_STATE_EXPIRED)
             return
 
@@ -4731,7 +5187,7 @@ class OrderConfigurationPage(QWidget):
         minutes = (total_seconds % 3600) // 60
         seconds = total_seconds % 60
         self._countdown_target = next_run
-        self.countdown_label.setText(
+        self._set_countdown_text(
             STRINGS.COUNTDOWN_NEXT_RUN.format(
                 clock="{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds),
                 tehran=next_run.strftime("%H:%M:%S"),
@@ -4741,7 +5197,7 @@ class OrderConfigurationPage(QWidget):
         if now < timing.start_time:
             self._set_schedule_state(SCHEDULE_STATE_WAITING)
         elif now >= timing.end_time:
-            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+            self._set_countdown_text(COUNTDOWN_LABEL_NO_UPCOMING)
             self._finish_schedule(SCHEDULE_STATE_EXPIRED)
         else:
             self._set_schedule_state(SCHEDULE_STATE_COUNTING)
@@ -4750,6 +5206,7 @@ class OrderConfigurationPage(QWidget):
         """Update the lifecycle state and render it on the State row."""
         self._schedule_state = state
         self.schedule_state_label.setText(state)
+        self._fit_schedule_group_height()
 
     def _finish_schedule(self, state: str):
         """
@@ -4775,16 +5232,21 @@ class OrderConfigurationPage(QWidget):
             self._schedule_timing = None
             self._schedule_times = ()
             self._schedule_assessment = None
-            self.countdown_label.setText(COUNTDOWN_LABEL_STOPPED)
+            self._set_countdown_text(COUNTDOWN_LABEL_STOPPED)
+            self._show_queue_status(STRINGS.SCHEDULE_STOPPED_IN_FLIGHT)
         elif state == SCHEDULE_STATE_EXPIRED:
             # The expired window stays readable so the user can see what
             # ran out; only the active runtime state is dropped.
-            self.countdown_label.setText(COUNTDOWN_LABEL_NO_UPCOMING)
+            self._set_countdown_text(COUNTDOWN_LABEL_NO_UPCOMING)
         else:
-            self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+            self._set_countdown_text(COUNTDOWN_LABEL_UNAVAILABLE)
 
         self._set_schedule_state(state)
         self._refresh_market_clock_row()
+        if state == SCHEDULE_STATE_STOPPED:
+            self.schedule_send_count_label.clear()
+        elif self._schedule_locked and self._frozen_snapshot_summary:
+            self._show_queue_status(self._frozen_snapshot_summary)
 
     def _on_schedule_button_clicked(self):
         """The single schedule button: Apply before, Stop afterwards."""
@@ -4837,7 +5299,7 @@ class OrderConfigurationPage(QWidget):
         except (ScheduleValidationError, DispatchIntervalError) as exc:
             self._clear_accepted_schedule()
             self._pending_schedule = None
-            self.schedule_summary_label.setText(
+            self._set_schedule_summary(
                 STRINGS.SCHEDULE_REJECTED.format(reason=exc)
             )
             return
@@ -4846,7 +5308,7 @@ class OrderConfigurationPage(QWidget):
             self._clear_accepted_schedule()
             self._pending_schedule = None
             self._pending_dispatch_interval_ms = None
-            self.schedule_summary_label.setText(
+            self._set_schedule_summary(
                 STRINGS.SCHEDULE_REJECTED.format(reason=target_rejection)
             )
             return
@@ -4874,10 +5336,36 @@ class OrderConfigurationPage(QWidget):
         except ScheduleValidationError as exc:
             self._clear_accepted_schedule()
             self._pending_schedule = None
-            self.schedule_summary_label.setText(
+            self._set_schedule_summary(
                 STRINGS.SCHEDULE_REJECTED.format(reason=exc)
             )
             return
+
+        self._pending_live_mode = self._run_mode == "live"
+        self._pending_live_gate = None
+        self._pending_dispatch_targets = tuple(
+            self._frozen_dispatch_targets()
+        )
+        if self._pending_live_mode:
+            ok, _record, targets, gate, reason = self._prepare_live_schedule(
+                timing, self._pending_dispatch_interval_ms
+            )
+            if not ok:
+                self._clear_accepted_schedule()
+                self._pending_schedule = None
+                self._set_schedule_summary(
+                    STRINGS.LIVE_CONFIRM_CANCELLED
+                    if reason == STRINGS.LIVE_CONFIRM_CANCELLED
+                    else (
+                        STRINGS.LIVE_SNAPSHOT_CHANGED
+                        if reason == STRINGS.LIVE_SNAPSHOT_CHANGED
+                        else STRINGS.LIVE_START_REJECTED.format(reason=reason)
+                    )
+                )
+                return
+            self._pending_dispatch_targets = targets
+            self._pending_live_gate = gate
+            self._pending_dispatch_snapshot = self._dispatch_snapshot(targets)
 
         self._pending_schedule = None
         self._schedule_parsed = parsed
@@ -4901,13 +5389,22 @@ class OrderConfigurationPage(QWidget):
             assessment,
             STRINGS.CLOCK_SOURCE_DESCRIPTION,
             moments=times,
+            dispatch_interval_ms=self._dispatch_interval_ms,
         )
-        self.schedule_summary_label.setText(describe_summary(summary))
-
+        self._set_schedule_summary(describe_summary(summary))
+        pending_count = len(self._frozen_targets)
+        possible_sends = (summary.planned_turns or 0) * pending_count
+        self.schedule_send_count_label.setText(
+            STRINGS.SUMMARY_TOTAL_POSSIBLE_SENDS.format(
+                count=STRINGS.format_persian_digits(possible_sends)
+            )
+        )
         # Lock BEFORE the first tick: an already-expired window finishes
         # during that tick and must find its controls locked so it can
         # free them again.
         self._set_schedule_locked(True)
+        if self._frozen_snapshot_summary:
+            self._show_queue_status(self._frozen_snapshot_summary)
         self._start_countdown()
 
         # START_NOW is a one-shot notice: shown exactly once, never
@@ -4933,8 +5430,16 @@ class OrderConfigurationPage(QWidget):
         self._schedule_assessment = None
         self._countdown_target = None
         self._start_now_shown = False
+        self._pending_live_mode = False
+        self._pending_live_gate = None
+        self._pending_dispatch_targets = None
+        self._pending_dispatch_snapshot = None
+        self._frozen_live_mode = False
+        self._frozen_live_gate = None
+        self._frozen_targets = ()
+        self._frozen_snapshot_summary = ""
         self._set_schedule_locked(False)
-        self.countdown_label.setText(COUNTDOWN_LABEL_UNAVAILABLE)
+        self._set_countdown_text(COUNTDOWN_LABEL_UNAVAILABLE)
         self._set_schedule_state(SCHEDULE_STATE_CONFIG)
 
     def _set_schedule_locked(self, locked: bool):
@@ -4954,6 +5459,8 @@ class OrderConfigurationPage(QWidget):
         self.schedule_end_input.setEnabled(unlocked)
         self.schedule_interval_input.setEnabled(unlocked)
         self.dispatch_interval_input.setEnabled(unlocked)
+        self.dry_run_mode_button.setEnabled(unlocked)
+        self.live_mode_button.setEnabled(unlocked)
         self.apply_schedule_button.setText(
             STOP_BUTTON_LABEL if self._schedule_locked else APPLY_BUTTON_LABEL
         )
@@ -5013,16 +5520,19 @@ class OrderConfigurationPage(QWidget):
         # Fee / Final Amount: no contract exists — never fabricated.
         self.fee_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
         self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        self._fit_amounts_group_height()
 
     def _invalidate_auto_amount(self):
         if hasattr(self, "_auto_amount_timer"):
             self._auto_amount_timer.stop()
         self._auto_amount_request_id += 1
         if hasattr(self, "amount_warning_label"):
-            self.amount_warning_label.clear()
+            self._set_amount_warning("")
         if hasattr(self, "fee_label"):
             self.fee_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
             self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        if hasattr(self, "amounts_group"):
+            self._fit_amounts_group_height()
 
     def _schedule_auto_amount(self, *_):
         """Coalesce keystrokes into one request while invalidating old results immediately."""
@@ -5040,6 +5550,7 @@ class OrderConfigurationPage(QWidget):
             )
             self.fee_label.setText("نامشخص؛ قیمت یا تعداد معتبر نیست")
             self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        self._fit_amounts_group_height()
         self._auto_amount_timer.start()
 
     def _start_auto_amount(self):
@@ -5053,16 +5564,19 @@ class OrderConfigurationPage(QWidget):
                     or self.config.side != BUY or price is None or quantity is None):
                 self.fee_label.setText("نامشخص؛ حساب، نماد، قیمت یا تعداد معتبر نیست")
                 self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+                self._fit_amounts_group_height()
                 return
         except Exception:
             self.fee_label.setText("نامشخص؛ قیمت یا تعداد معتبر نیست")
             self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+            self._fit_amounts_group_height()
             return
         snapshot = (record.account_id, instrument.ins_code, self._order_nsc_id,
                     price, quantity, self.config.side)
         self.base_amount_label.setText(STRINGS.format_grouped(price * quantity))
         self.fee_label.setText("در حال دریافت کارمزد…")
         self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
+        self._fit_amounts_group_height()
         request_id = self._auto_amount_request_id
         factory = self._buy_preview_factory
 
@@ -5106,15 +5620,17 @@ class OrderConfigurationPage(QWidget):
         self.fee_label.setText(STRINGS.format_grouped(result["fee"]))
         self.final_amount_label.setText(STRINGS.format_grouped(result["total"]))
         if result["total"] > result["power"]:
-            self.amount_warning_label.setText("مبلغ نهایی از موجودی شما بیشتر است")
+            self._set_amount_warning("مبلغ نهایی از موجودی شما بیشتر است")
         else:
-            self.amount_warning_label.clear()
+            self._set_amount_warning("")
+        self._fit_amounts_group_height()
 
     def _on_auto_amount_failed(self, request_id, message):
         if request_id == self._auto_amount_request_id:
             self.fee_label.setText(f"نامشخص: {message}")
             self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
-            self.amount_warning_label.clear()
+            self._set_amount_warning("")
+        self._fit_amounts_group_height()
 
     # ---------------------------------------------------------
     # Account display (verbatim from the UI-2.1 store)

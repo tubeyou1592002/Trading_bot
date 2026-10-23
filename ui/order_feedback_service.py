@@ -94,6 +94,7 @@ class OrderFeedbackService(QThread):
     feedback_error = Signal(str)
     started = Signal()
     start_failed = Signal(str)
+    feedback_unavailable = Signal()
     stopped = Signal()
 
     def __init__(
@@ -133,6 +134,7 @@ class OrderFeedbackService(QThread):
         # a second copy of the same callbacks (no duplicate delivery).
         self._listeners_broker: Any = None
         self._stop_requested = False
+        self.startup_error = None
 
     def _default_broker_factory(self):
         """
@@ -195,8 +197,13 @@ class OrderFeedbackService(QThread):
             self._loop.run_forever()
 
         except Exception as exc:
-            logger.error("OrderFeedbackService failed to start: %s", exc)
-            self.start_failed.emit(str(exc))
+            self.startup_error = type(exc).__name__
+            logger.error(
+                "OrderFeedbackService feedback startup failed (error_type=%s)",
+                type(exc).__name__,
+            )
+            self.feedback_unavailable.emit()
+            self.start_failed.emit(type(exc).__name__)
         finally:
             self._cleanup()
 
@@ -216,6 +223,11 @@ class OrderFeedbackService(QThread):
         broker.add_order_registered_listener(self._on_order_registered)
         broker.add_queue_position_listener(self._on_queue_position)
         broker.add_order_error_listener(self._on_order_error)
+        unavailable_listener = getattr(
+            broker, "add_feedback_unavailable_listener", None
+        )
+        if callable(unavailable_listener):
+            unavailable_listener(self._on_feedback_unavailable)
         self._listeners_broker = broker
 
     def _ensure_provider(self) -> None:
@@ -246,6 +258,10 @@ class OrderFeedbackService(QThread):
     def _on_order_error(self, decision_id: str, error: str) -> None:
         """Listener for order-tracking errors."""
         self.feedback_error.emit(f"{decision_id}: {error}")
+
+    def _on_feedback_unavailable(self, _reason="") -> None:
+        """Report optional transport loss as feedback-only status."""
+        self.feedback_unavailable.emit()
 
     def start_service(self) -> None:
         """

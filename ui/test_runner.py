@@ -120,7 +120,14 @@ class TestRunner:
 
     __test__ = False  # helper double imported by tests; not a pytest test class
 
-    def __init__(self, dispatch_core: Any = None, broker_manager: Any = None) -> None:
+    def __init__(
+        self,
+        dispatch_core: Any = None,
+        broker_manager: Any = None,
+        *,
+        live: bool = False,
+        safety_gate: Any = None,
+    ) -> None:
         """
         Build the runner around an optional Dispatch Core test-double and/or
         a shared BrokerManager.
@@ -140,6 +147,8 @@ class TestRunner:
         """
         self._dispatch_core = dispatch_core
         self._broker_manager = broker_manager
+        self.live = bool(live)
+        self._safety_gate = safety_gate
         self._integration: Optional[Any] = None
         self._run_counter = 0
 
@@ -262,6 +271,19 @@ class TestRunner:
                 "nothing is dispatched)"
             )
 
+        if self.live:
+            if self._safety_gate is None:
+                raise ValueError(
+                    "Live run skipped: no existing SafetyGate was supplied "
+                    "(fail-closed, nothing is dispatched)"
+                )
+            decision = self._safety_gate.evaluate()
+            if getattr(decision, "allowed", False) is not True:
+                reason = getattr(decision, "reason", "SafetyGate blocked Live")
+                raise ValueError(
+                    f"Live run skipped by SafetyGate: {reason}"
+                )
+
         # Lazy, first-run Core access: importing the existing bridge pulls
         # in the existing integration/core pieces. Nothing is imported when
         # the runner is merely constructed or toggled.
@@ -372,6 +394,14 @@ class TestRunner:
                 )
             else:
                 self._dispatch_core = DispatchCore()
+
+        if self.live:
+            if not hasattr(self._dispatch_core, "safety_gate"):
+                raise ValueError(
+                    "Live run skipped: dispatch core has no SafetyGate seam "
+                    "(fail-closed, nothing is dispatched)"
+                )
+            self._dispatch_core.safety_gate = self._safety_gate
 
         from core.block5_task4 import DispatchIntegration
 

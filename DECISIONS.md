@@ -1619,3 +1619,20 @@ reported **56 passed in 6.09s, exit 0**. The implementation's scoped acceptance 
 **Owner-run manual local-app acceptance (2026-10-18):** two accounts on the same broker both logged in; activating either selected that account for current use while the other remained inactive; logging out one account did not disturb the other; logging the exited account back in succeeded and the other account remained normal. No issue was observed. This check covered account login/logout/re-login only; no order was submitted and live trading remains disabled.
 
 **Next gate:** broader regression and final acceptance of the local User Application. A prior coding-agent report recorded 57 passed / 9 failed, attributed to missing `nats`, and described one UI-7 failure as baseline; these remain reported historical observations until verified/classified in the broader run. This is not a claim that the full repository suite is green. Central Server remains outside the scope of this acceptance phase.
+
+---
+
+## Decision 036 — Explicit Execution Mode, Frozen Dispatch Snapshot, Optional NATS Feedback
+
+**Status:** Implemented in working tree; scoped offline verification pending.
+
+**Decision / contract:**
+
+- Every new page/session starts in Dry Run. Live selection is explicit and requires a per-action confirmation displaying the exact account/broker, queue size, schedule window/cadence, planned turns, and total possible submissions.
+- The existing `SafetyGate` remains the only live-permission authority at `DispatchCore`; OrderEngine and broker locks remain independent. The UI may not set a live flag or enable a broker lock directly.
+- Current production readiness is incomplete: there is no authoritative M6/broker readiness provider, and AgaahBroker's `live_trading_enabled` defaults to `False`. Live therefore fails closed before dispatch until those real prerequisites are supplied. The active account/session authorization and account-scoped broker resolution are checked using existing services; neither substitutes for the missing SafetyGate inputs.
+- A schedule freezes its exact target entries, accounts, brokers, mode, and timing. After Live confirmation, active account and queue identity are rechecked; a changed snapshot is not started and requires a fresh summary/confirmation. Account switching elsewhere cannot retarget an active schedule.
+- Every scheduled turn resubmits the complete frozen queue. The UI reports the maximum possible sends as `planned turns × frozen order count`. Stop prevents future turns; it does not claim to cancel sends already handed to the existing path.
+- NATS/OMS is an optional receive-only feedback channel. Bootstrap failure, timeout, or later disconnect only marks feedback unavailable with `بازخورد از سازمان بورس دریافت نشده`; it never changes Live permission, pauses/stops scheduling, modifies the initial HTTP result, or causes POST replay. HTTP send results and delayed OMS feedback remain separate. Correlation remains decision-ID/account scoped.
+
+**Verification boundary:** all new tests use local fakes/mocks. No live broker endpoint or `POST /order` is used. Live behavior can be exercised only with explicit simulated readiness and a SafetyGate; production remains blocked until its missing readiness contracts are provided.
