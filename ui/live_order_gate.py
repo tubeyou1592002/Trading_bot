@@ -567,6 +567,7 @@ def validate_live_batch_authorization(
     queue_revision=None,
     engine=None,
     now=None,
+    pre_arm=False,
 ) -> AuthorizationCheck:
     """Re-capture current evidence and compare it with the approved snapshot.
 
@@ -599,9 +600,24 @@ def validate_live_batch_authorization(
         return AuthorizationCheck(
             False, f"the current batch cannot be verified: {exc}"
         )
-    return validate_authorization(
-        authorization, current_snapshot=current, now=now
-    )
+    if pre_arm:
+        # Local-only pre-arm validation: confirm the immutable permit matches
+        # the freshly captured snapshot without consuming its future start.
+        # The submit path continues to call validate_authorization normally.
+        from core.live_order_authorization import _authorization_fingerprint
+
+        if (authorization is None
+                or authorization.authorization_id != _authorization_fingerprint(
+                    authorization.snapshot
+                )
+                or authorization.snapshot != current
+                or authorization.explicit_live_request is not True
+                or authorization.human_approval is not True):
+            return AuthorizationCheck(False, "pre-arm snapshot mismatch")
+        if now > authorization.expires_at:
+            return AuthorizationCheck(False, "the schedule window has ended")
+        return AuthorizationCheck(True, "", current)
+    return validate_authorization(authorization, current_snapshot=current, now=now)
 
 
 __all__ = [

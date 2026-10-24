@@ -217,6 +217,34 @@ def test_authorization_uses_real_per_destination_sessions_and_not_active_account
 
     readiness = _readiness(state)
     assert readiness.allowed
+
+
+def test_pre_arm_local_validation_accepts_future_start_but_submit_rejects_it(monkeypatch):
+    state = _setup(monkeypatch)
+    readiness = _readiness(state)
+    authorization = readiness.authorization
+    assert authorization is not None
+    check = validate_live_batch_authorization(
+        authorization=authorization,
+        account_store=Store(state["records"]),
+        authentication_service=state["auth"],
+        session_manager=state["sessions"],
+        broker_manager=state["manager"], targets=state["targets"],
+        prepared_batch=PreparedBatch(state["prepared"], True, "", True,
+                                     state["execution_id"]),
+        timing=state["timing"], interval_ms=5000,
+        execution_id=state["execution_id"], queue_revision=42,
+        engine=state["engine"], now=state["now"], pre_arm=True,
+    )
+    assert check.allowed
+    item = state["prepared"][0]
+    target = state["targets"][0]
+    result = state["engine"].submit_prepared_order(
+        item, state["brokers"][(target.account_id, target.broker_name)],
+        target.account, target.account_id, target.broker_name, live=True,
+        authorization=authorization, now=state["now"],
+    )
+    assert not result.success
     authorization = readiness.authorization
     assert authorization.snapshot.schedule.order_count == 2
     assert authorization.snapshot.schedule.planned_turns == 3

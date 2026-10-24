@@ -300,6 +300,15 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_live_readiness_factory(
             self._real_live_readiness
         )
+        self.order_configuration_page.set_live_prearm_factory(
+            self._real_live_prearm
+        )
+        self.order_configuration_page.set_live_batch_gate_factory(
+            self._real_live_batch_gate
+        )
+        self.order_configuration_page.set_live_batch_validator(
+            self._real_validate_live_batch
+        )
         self.pages["Order Configuration"] = self.order_configuration_page
         self.content_area.addWidget(self.order_configuration_page)
 
@@ -444,6 +453,36 @@ class MainWindow(QMainWindow):
                 False,
                 "منبع معتبر وضعیت M6-A…M6-E پیش از ارسال و منبع رسمی آمادگی Live کارگزار متصل نیستند؛ وضعیت حساب/نشست جداگانه بررسی می‌شود.",
             )
+
+    def _real_live_prearm(self, targets):
+        """Lazily compose the no-submit preparation coordinator."""
+        from ui.prearm_service import LivePrearmService
+
+        return LivePrearmService(
+            self.account_store, self.session_manager, self._shared_broker_manager()
+        )
+
+    def _real_live_batch_gate(self, **kwargs):
+        from ui.live_order_gate import check_live_batch_readiness
+
+        return check_live_batch_readiness(
+            account_store=self.account_store,
+            authentication_service=self.authentication_service,
+            session_manager=self.session_manager,
+            broker_manager=self._shared_broker_manager(),
+            **kwargs,
+        )
+
+    def _real_validate_live_batch(self, **kwargs):
+        from ui.live_order_gate import validate_live_batch_authorization
+
+        return validate_live_batch_authorization(
+            account_store=self.account_store,
+            authentication_service=self.authentication_service,
+            session_manager=self.session_manager,
+            broker_manager=self._shared_broker_manager(),
+            **kwargs,
+        )
 
     def _real_order_authorizer(self):
         """Build the authorization gate only when an order action needs it."""

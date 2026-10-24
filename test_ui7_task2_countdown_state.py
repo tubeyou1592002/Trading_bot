@@ -1,28 +1,20 @@
 """
-test_ui7_task2_countdown_state.py — UI-7 Task 2: startup sync, schedule
-lifecycle (Apply / lock / Stop), countdown and displayed states.
+test_ui7_task2_countdown_state.py — system-clock schedule lifecycle,
+Apply / lock / Stop, countdown and displayed states.
 
-Fully offline. Every clock reading and every HTTP answer is injected by the
-test, so nothing here touches the network, a real broker, or the real
-system clock.
+Fully offline. The schedule clock and monotonic clock are injected by the
+test. No clock network request, real broker, or real order is used.
 
 The ten scenarios mandated by the UI-7 Task 2 spec
 --------------------------------------------------
-  1. the ONE startup sync runs after the window is shown, off the Home
-     page, without depending on the Order Configuration page, and without
-     any request during construction/import;
-  2. the independent manual sync reports source / offset / uncertainty /
-     freshness for both success and failure, and never runs twice at once;
-  3. Apply CONSUMES the last completed sync and starts no request itself;
-  4. Apply pressed during an in-flight sync waits for THAT result and
-     falls back to the system clock when it fails;
-  5. freshness is measured on the MONOTONIC clock — a system-clock step
-     can neither renew a stale reading nor expire a fresh one;
+  1. construction, display and Apply make no clock-network request;
+  2. no manual sync controls or site-time freshness state remain;
+  3. Apply uses the injected system wall/monotonic clock without a request;
   6. Apply locks every order / queue / schedule control and turns itself
      into Stop, with Stop being the single way out;
   7. Stop stops the timer, clears the plan and unlocks — and sends
      nothing (Task 2 never dispatches);
-  8. a later sync or a system-clock step cannot move an active countdown;
+  8. a system-clock step cannot move an active countdown;
   9. expiry frees the controls and the next Apply inherits nothing;
  10. the UI-5 / UI-6 suites and the offline-construction contract are
      untouched by all of the above.
@@ -217,6 +209,7 @@ def _with_valid_destination(page, account_id="ACC-SCHED", broker_name="SIM"):
 def make_page(qapp, transport=None, clock=None):
     """Build a page with wall and monotonic clocks injected at the module seam."""
     from ui.account_store import AccountStore
+    from ui.session_manager import SessionManager
     import ui.order_configuration_page as page_module
     from ui.order_configuration_page import OrderConfigurationPage
 
@@ -235,6 +228,12 @@ def make_page(qapp, transport=None, clock=None):
     page = OrderConfigurationPage(AccountStore())
     page.clock = clock
     _with_valid_destination(page)
+    sessions = SessionManager()
+    sessions.register("ACC-SCHED", "SIM")
+    sessions.begin_login("ACC-SCHED")
+    sessions.mark_logged_in("ACC-SCHED", "offline-test-token")
+    page.set_session_manager(sessions)
+    page.test_session_manager = sessions
     PAGES.append(page)
     return page
 
@@ -315,12 +314,11 @@ def locked_controls(page):
 # ============================================================
 
 
-def test_1_startup_never_requests_tsetmc_clock(qapp, monkeypatch):
+def test_1_startup_never_requests_clock_network(qapp, monkeypatch):
     """
     The real MainWindow path: construction imports and builds nothing that
     talks to the network, ``show()`` schedules exactly one non-blocking
-    sync, and it happens while Home is still the visible page — i.e. the
-    sync does NOT depend on the Order Configuration page being opened.
+    clock request, including while Home remains visible.
     """
     from ui.main_window import MainWindow
 
@@ -340,8 +338,7 @@ def test_1_startup_never_requests_tsetmc_clock(qapp, monkeypatch):
     assert not hasattr(page, "sync_clock_button")
     assert not hasattr(page, "refresh_clock_button")
 
-    # Home was visible the whole time — the sync was never gated on the
-    # Order Configuration page.
+    # Home was visible throughout; no clock network operation is started.
     assert window.content_area.currentWidget() is window.placeholder_pages["Home"]
 
     window.hide()
@@ -375,11 +372,11 @@ def test_2b_system_clock_row_has_honest_label(qapp):
 
 
 # ============================================================
-# 3. Apply consumes the last completed sync — no request of its own
+# 3. Apply uses the injected system clock — no request of its own
 # ============================================================
 
 
-def test_3_apply_consumes_the_completed_sync_without_new_requests(qapp):
+def test_3_apply_uses_system_clock_without_new_requests(qapp):
     transport = offline_transport()
     page = make_page(qapp, transport=transport)
 
@@ -392,7 +389,7 @@ def test_3_apply_consumes_the_completed_sync_without_new_requests(qapp):
 
 
 # ============================================================
-# 4. Apply waits for an in-flight sync; failure falls back softly
+# 4. Apply remains local and never waits for clock-network activity
 # ============================================================
 
 
@@ -401,8 +398,7 @@ def test_4_apply_does_not_wait_for_or_start_clock_network(qapp):
 
     def _slow_fail(url, timeout):
         calls.append(url)
-        _time.sleep(0.05)
-        raise TimeoutError("the network is down")
+        raise AssertionError("clock network access is forbidden")
 
     page = make_page(qapp, transport=_slow_fail)
     fill(page, "13:00:00", "13:05:00", "15")
@@ -413,23 +409,20 @@ def test_4_apply_does_not_wait_for_or_start_clock_network(qapp):
 
 
 # ============================================================
-# 4a. Apply during a pending sync locks now; Stop cancels for good
+# 4a. Apply locks locally; Stop cancels the countdown
 # ============================================================
 
 
 def test_4a_apply_and_stop_work_without_pending_clock_sync(qapp):
     """
-    Apply pressed DURING an in-flight sync locks the controls and turns
-    itself into Stop straight away, and Stop before the sync lands cancels
-    the pending plan for good: the landing sync result must never revive
-    it.
+    Apply locks the controls using local schedule state. Stop cancels
+    the countdown and no clock request is involved.
     """
     calls = []
 
     def _slow_ok(url, timeout):
         calls.append(url)
-        _time.sleep(0.05)
-        return make_result(headers=market_headers())
+        raise AssertionError("clock network access is forbidden")
 
     page = make_page(qapp, transport=_slow_ok)
     widgets = locked_controls(page)
@@ -453,9 +446,9 @@ def test_4a_apply_and_stop_work_without_pending_clock_sync(qapp):
     assert page.schedule_lifecycle_state() == SCHEDULE_STATE_STOPPED
 
     assert calls == []
-    assert page.schedule_timing() is None, "the sync revived a cancelled plan"
-    assert not page.countdown_active, "the sync started a cancelled countdown"
-    assert not page._schedule_locked, "the sync re-locked a cancelled plan"
+    assert page.schedule_timing() is None, "a callback revived a cancelled plan"
+    assert not page.countdown_active, "a callback started a cancelled countdown"
+    assert not page._schedule_locked, "a callback re-locked a cancelled plan"
     assert page.apply_schedule_button.text() == APPLY_BUTTON_LABEL
 
     # --- (b) an Apply that is NOT cancelled still completes normally ------
@@ -464,24 +457,24 @@ def test_4a_apply_and_stop_work_without_pending_clock_sync(qapp):
     page2._on_apply_schedule()
     assert page2._schedule_locked
     assert page2.apply_schedule_button.text() == STOP_BUTTON_LABEL
-    assert page2.schedule_timing() is not None, "the pending Apply never landed"
+    assert page2.schedule_timing() is not None
     assert page2.countdown_active
 
 
-def test_4b_apply_without_any_sync_says_so_and_never_fetches(qapp):
+def test_4b_apply_without_clock_sync_dependency_never_fetches(qapp):
     transport = offline_transport()
     page = make_page(qapp, transport=transport)
 
     fill(page, "13:00:00", "13:05:00", "15")
     apply_schedule(page)
 
-    assert transport.calls == [], "Apply must not start a sync on its own"
+    assert transport.calls == [], "Apply must not make a clock request"
     assert page.schedule_timing() is not None
     assert page.schedule_timezone_label.text()
 
 
 # ============================================================
-# 5. Freshness is monotonic: a wall-clock step proves nothing
+# 5. Countdown is anchored monotonically despite wall-clock changes
 # ============================================================
 
 
@@ -501,7 +494,7 @@ def test_5_wall_clock_steps_do_not_move_locked_monotonic_deadlines(qapp):
 
 
 # ============================================================
-# 5b. The freshness DISPLAY ages by itself, without any new request
+# 5b. The system-clock display stays network independent
 # ============================================================
 
 
@@ -629,16 +622,15 @@ def test_7_stop_cancels_the_countdown_unlocks_and_sends_nothing(qapp):
 
 
 # ============================================================
-# 8. A later sync or clock step cannot move an active countdown
+# 8. A clock step cannot move an active countdown
 # ============================================================
 
 
-def test_8_a_later_sync_or_clock_step_cannot_move_the_countdown(qapp):
+def test_8_clock_step_cannot_move_the_countdown(qapp):
     clock = Clock()
     transport = offline_transport()
     page = make_page(qapp, transport=transport, clock=clock)
 
-    sync_clock(page)
     fill(page, "13:00:00", "13:05:00", "15")
     apply_schedule(page)
 
@@ -650,18 +642,18 @@ def test_8_a_later_sync_or_clock_step_cannot_move_the_countdown(qapp):
     label_before = page.countdown_label.text()
     assert target_before is not None
 
-    # --- only the monotonic clock advances the active countdown ----------
-    assert page._countdown_target == target_before, "a sync moved the target"
-    assert page.schedule_times() == times_before, "a sync regenerated the moments"
-    assert page._get_locked_now_tehran() == now_before, "a sync moved the clock"
+    # --- the locked monotonic clock is independent of system display ------
+    assert page._countdown_target == target_before, "clock state moved the target"
+    assert page.schedule_times() == times_before, "clock state regenerated the moments"
+    assert page._get_locked_now_tehran() == now_before, "clock state moved the clock"
     assert page.countdown_active
     assert page.schedule_lifecycle_state() == SCHEDULE_STATE_WAITING
 
     # --- a system-clock step must not move anything either --------------
     clock.step_wall(-3600)
     page._update_countdown()
-    assert page._countdown_target == target_before, "an NTP step moved the target"
-    assert page.countdown_label.text() == label_before, "an NTP step rewound the countdown"
+    assert page._countdown_target == target_before, "a wall-clock step moved the target"
+    assert page.countdown_label.text() == label_before, "a wall-clock step rewound the countdown"
     assert page.countdown_active
     assert page.schedule_lifecycle_state() == SCHEDULE_STATE_WAITING
 
@@ -707,7 +699,6 @@ def test_9_expiry_frees_the_controls_and_the_next_apply_is_clean(qapp):
     widgets = locked_controls(page)
     before = {name: w.isEnabled() for name, w in widgets.items()}
 
-    sync_clock(page)
     fill(page, "13:00:00", "13:00:30", "15")
     apply_schedule(page)
     assert page.countdown_active

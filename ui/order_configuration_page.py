@@ -1231,6 +1231,13 @@ class OrderConfigurationPage(QWidget):
         self._test_runner_instance = None
         self._test_runner_instance_live = False
         self._live_readiness_factory = None
+        self._live_prearm_factory = None
+        self._live_batch_gate_factory = None
+        self._live_batch_validator = None
+        self._prepared_live_batch = None
+        self._live_authorization = None
+        self._live_execution_id = None
+        self._live_batch_gate = None
         self._live_confirmation_handler = None
         self._run_mode = "dry_run"
         self._pending_live_mode = False
@@ -3035,6 +3042,15 @@ class OrderConfigurationPage(QWidget):
         """Inject the existing SafetyGate/readiness composition seam."""
         self._live_readiness_factory = factory
 
+    def set_live_prearm_factory(self, factory):
+        self._live_prearm_factory = factory
+
+    def set_live_batch_gate_factory(self, factory):
+        self._live_batch_gate_factory = factory
+
+    def set_live_batch_validator(self, validator):
+        self._live_batch_validator = validator
+
     def set_live_confirmation_handler(self, handler):
         """Inject confirmation in tests; production uses a modal prompt."""
         self._live_confirmation_handler = handler
@@ -3170,6 +3186,8 @@ class OrderConfigurationPage(QWidget):
                 self._request_schedule_cancel(
                     "نشست کارگزاری تغییر یا باطل شد؛ اجرای زمان‌بندی لغو شد."
                 )
+            elif self._schedule_locked and self._frozen_live_mode:
+                self._request_schedule_cancel("نشست مقصد تغییر کرد؛ اجرای آماده‌شده لغو شد.")
 
     def _ensure_schedule_queue_listener(self):
         queue = self.order_queue
@@ -3272,7 +3290,25 @@ class OrderConfigurationPage(QWidget):
             return None
 
     def _validate_schedule_before_turn(self):
-        return None
+        if not self._frozen_live_mode:
+            return None
+        timing = self._schedule_timing
+        if timing is None or datetime.now().astimezone() >= timing.start_time:
+            return "زمان شروع هنگام آماده‌سازی سپری شد؛ اجرا لغو شد."
+        if self._live_batch_validator is None or self._live_authorization is None:
+            return "مجوز batch در دسترس نیست؛ اجرا لغو شد."
+        result = self._live_batch_validator(
+            authorization=self._live_authorization,
+            targets=self._frozen_targets,
+            prepared_batch=self._prepared_live_batch,
+            timing=timing,
+            interval_ms=self._dispatch_interval_ms,
+            execution_id=self._live_execution_id,
+            queue_revision=self.order_queue.revision,
+            engine=self._live_prearm_factory(self._frozen_targets).engine,
+            now=datetime.now().astimezone(), pre_arm=True,
+        )
+        return None if result.allowed else "snapshot یا مجوز تغییر کرد؛ اجرا لغو شد."
 
     def _request_schedule_cancel(self, reason):
         """Thread-safe, immediate stop; UI notification is queued to Qt."""
@@ -3297,6 +3333,8 @@ class OrderConfigurationPage(QWidget):
                     self._request_schedule_cancel(
                         "صف سفارش هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد."
                     )
+            elif self._schedule_locked and self._frozen_live_mode:
+                self._request_schedule_cancel("صف سفارش تغییر کرد؛ اجرای آماده‌شده لغو شد.")
             elif self._schedule_locked and self._schedule_snapshot is not None:
                 if revision != self._schedule_snapshot.get("queue_revision"):
                     self._request_schedule_cancel(
@@ -3324,29 +3362,32 @@ class OrderConfigurationPage(QWidget):
                 )
 
     def _prepare_live_schedule(self, timing, interval_ms):
-        """Preflight and confirm a stable account/target schedule snapshot."""
+        """Prepare, confirm, then recapture the exact batch authorization."""
         for _attempt in range(3):
-            record = self._active_account_record()
             targets = tuple(self._frozen_dispatch_targets())
             entries = [target.entry for target in targets]
-            rejection = self._live_scope_rejection(entries, record)
-            if rejection:
-                return False, None, None, None, rejection
-
-            readiness = self._live_readiness(record, human_approval=False)
-            if not getattr(readiness, "ready_for_confirmation", False):
-                return False, None, None, None, getattr(
-                    readiness, "reason", STRINGS.LIVE_NOT_READY
-                )
-
+            if not targets or self._live_prearm_factory is None or self._live_batch_gate_factory is None:
+                return False, None, None, None, STRINGS.LIVE_PREREQUISITES_UNKNOWN
+            coordinator = self._live_prearm_factory(targets)
+            execution_id, prepared_batch = coordinator.prepare(targets)
+            if not getattr(prepared_batch, "valid", False) or len(prepared_batch.orders) != len(targets):
+                return False, None, None, None, STRINGS.LIVE_NOT_READY
             snapshot = self._dispatch_snapshot(targets)
-            summary = self._live_schedule_summary(
-                record, len(entries), timing, interval_ms
+            gate_args = dict(
+                targets=targets, prepared_batch=prepared_batch, timing=timing,
+                interval_ms=interval_ms, explicit_live_request=True,
+                human_approval=False, execution_id=execution_id,
+                queue_revision=self.order_queue.revision,
+                engine=coordinator.engine,
             )
+            readiness = self._live_batch_gate_factory(**gate_args)
+            if not getattr(readiness, "ready_for_confirmation", False):
+                return False, None, None, None, getattr(readiness, "reason", STRINGS.LIVE_NOT_READY)
+            maximum = getattr(getattr(readiness, "authorization", None), "snapshot", None)
+            maximum = getattr(getattr(maximum, "schedule", None), "max_submissions", None)
+            summary = f"سفارش‌ها: {len(entries)}؛ حداکثر ارسال‌ها: {maximum}؛ شروع: {timing.start_time:%H:%M:%S}"
             if not self._confirm_live_start(summary):
                 return False, None, None, None, STRINGS.LIVE_CONFIRM_CANCELLED
-
-            current_record = self._active_account_record()
             rejection = self._dispatch_set_rejection()
             current_targets = (
                 tuple(self._frozen_dispatch_targets())
@@ -3354,25 +3395,33 @@ class OrderConfigurationPage(QWidget):
                 else ()
             )
             if (
-                current_record is None
-                or rejection is not None
+                rejection is not None
                 or self._dispatch_snapshot(current_targets) != snapshot
             ):
-                # The modal prompt may have allowed account/queue changes.
-                # Rebuild the exact summary and obtain a new confirmation.
-                continue
-
-            readiness = self._live_readiness(
-                current_record, human_approval=True
-            )
-            if not getattr(readiness, "allowed", False):
-                return False, None, None, None, getattr(
-                    readiness, "reason", STRINGS.LIVE_NOT_READY
-                )
-            gate = getattr(readiness, "gate", None)
-            if gate is None:
-                return False, None, None, None, STRINGS.LIVE_PREREQUISITES_UNKNOWN
-            return True, current_record, current_targets, gate, None
+                return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
+            gate_args.update(targets=current_targets, human_approval=True)
+            approved_args = dict(gate_args)
+            approved_args["queue_revision"] = self.order_queue.revision
+            approved_args["now"] = datetime.now().astimezone()
+            approved = self._live_batch_gate_factory(**approved_args)
+            authorization = getattr(approved, "authorization", None)
+            if not getattr(approved, "allowed", False) or authorization is None:
+                return False, None, None, None, getattr(approved, "reason", STRINGS.LIVE_NOT_READY)
+            check = self._live_batch_validator(
+                authorization=authorization,
+                targets=current_targets, prepared_batch=prepared_batch, timing=timing,
+                interval_ms=interval_ms, execution_id=execution_id,
+                queue_revision=self.order_queue.revision,
+                engine=coordinator.engine,
+                now=datetime.now().astimezone(), pre_arm=True,
+            ) if self._live_batch_validator is not None else None
+            if check is None or not check.allowed:
+                return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
+            self._prepared_live_batch = prepared_batch
+            self._live_authorization = authorization
+            self._live_execution_id = execution_id
+            self._live_batch_gate = getattr(approved, "gate", None)
+            return True, None, current_targets, authorization, None
         return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
 
     def set_test_runner_factory(self, factory):
@@ -5720,7 +5769,7 @@ class OrderConfigurationPage(QWidget):
                 )
                 return
             self._pending_dispatch_targets = targets
-            self._pending_live_gate = gate
+            self._pending_live_gate = self._live_batch_gate
             self._pending_dispatch_snapshot = self._dispatch_snapshot(targets)
 
         self._pending_schedule = None
@@ -5788,7 +5837,10 @@ class OrderConfigurationPage(QWidget):
             self._set_schedule_summary(reason)
             self._set_schedule_state(reason)
             return
-        self._start_dispatch_worker(self._dispatcher)
+        # Task 11.4 arms/counts down only. Prepared submission and firing
+        # belong to Task 11.5; never route Live through the legacy dispatcher.
+        if not self._frozen_live_mode:
+            self._start_dispatch_worker(self._dispatcher)
         if self._frozen_snapshot_summary:
             self._show_queue_status(self._frozen_snapshot_summary)
         self._start_countdown()
@@ -5818,6 +5870,10 @@ class OrderConfigurationPage(QWidget):
         self._start_now_shown = False
         self._pending_live_mode = False
         self._pending_live_gate = None
+        self._prepared_live_batch = None
+        self._live_authorization = None
+        self._live_execution_id = None
+        self._live_batch_gate = None
         self._pending_dispatch_targets = None
         self._pending_dispatch_snapshot = None
         self._frozen_live_mode = False

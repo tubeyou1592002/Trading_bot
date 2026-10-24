@@ -2635,7 +2635,7 @@ Minimum verifications:
 
 **Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
 
-**Status:** IN PROGRESS — Tasks 11.1 and 11.3, including the execution-scoped M6 validity correction, are complete within their contract/core scope; Task 11.2's offline prepare/submit implementation is complete. Tasks 11.4–11.7 remain planned. This does not wire the UI schedule workflow or authorize an owner-run real order.
+**Status:** IN PROGRESS — Tasks 11.1–11.4 are complete within their recorded scopes; Task 11.5 scheduled firing, instrumentation and qualification remain. The countdown fixture now supplies the required offline authenticated destination session; the production session guard remains intact. This does not authorize an owner-run real order.
 
 #### Task 11.1 — Firing Contract and Freshness Policy
 
@@ -2674,8 +2674,9 @@ Replace the current production “missing provider” dead end with a documented
 **Acceptance:** missing, invalid, stale, or mismatched evidence blocks arming; an allowed test permit is scoped to exactly the approved snapshot and cannot authorize another account, changed payload, or unplanned repetition.
 
 **Implementation checkpoint (2026-10-24):** `core/live_order_authorization.py` defines immutable batch, destination, order, schedule, and authorization snapshots. `ui.live_order_gate.check_live_batch_readiness(...)` requires a real `OrderEngine` prepared-evidence validator, checks every queued destination's account/authenticated adapter/local session and resolved account-scoped broker, derives aggregate M6/broker statuses only after complete evidence passes, and issues a permit only after explicit Live request and human approval pass `SafetyGate`. The snapshot binds exact QueueEntry/Order identities and fingerprints, payload/M6 evidence, Account identity/data, broker instance and prepared-submit/live-lock capability, session revision and a one-way token fingerprint, queue revision, schedule window/cadence/turn count, and maximum submissions. Active UI account selection is deliberately not used for destination checks. `validate_live_batch_authorization(...)` locally recaptures the whole snapshot; `OrderEngine.submit_prepared_order(..., live=True)` requires a matching authorization and current snapshot and makes no M6/network call. A thread-safe per-authorization ledger consumes attempts before broker hand-off, enforces the exact total and per-order repetition limits, and prevents replay of claimed ambiguous attempts. M6 evidence is checked when the permit is issued and is not network-refreshed or re-expired within that same schedule; authorization expires at the schedule end. Existing `place_order(order)` and Dry Run paths remain unchanged. Focused verification: **40 offline tests passed** across Task 11.3 plus prepared-order, authorization, Live-readiness, and destination-dispatch regressions; `py_compile` succeeded. An additional Block 10 dispatch selection had 12 fixture failures before reaching changed code because `SimulationHarness` constructs `BrokerManager` without `_account_lock` (10 passed). No network request or real order was used.
+**Task 11.4 checkpoint (2026-10-24):** Added `ui.prearm_service.LivePrearmService` and injected MainWindow factories. Live Apply prepares all frozen targets via `OrderEngine.prepare_batch` with one unique execution ID, checks batch readiness, displays maximum submissions, requires explicit confirmation, then recaptures/compares the batch snapshot via local `pre_arm=True` validation before countdown. Stop drops permit and prepared evidence; queue/session mutations disarm. The local pre-arm seam accepts a matching future-start snapshot but actual `submit_prepared_order` retains its start-time rejection. Live does not start the legacy dispatcher; scheduled firing is Task 11.5. Dry Run remains on its prior path. After updating `make_page` in `test_ui7_task2_countdown_state.py` to inject an offline, logged-in `ACC-SCHED` SessionManager, Task 11.4/prepared-order tests passed **24/24**, and the countdown file passed **17/17**. Clock tests assert no network request and use the injected system clock; no production code or safety lock changed. No network/order was used.
 
-**Operational limitation:** UI Apply/preparation/countdown are not wired here (Task 11.4); that task must supply one execution identity per schedule, create one usage ledger per run and pass a freshly recaptured whole-batch snapshot before each use. The existing UI route is still not authorized to fire prepared payloads. Low-latency dispatcher integration remains Task 11.5.
+**Operational status:** Task 11.4 pre-arm and countdown are wired: Apply prepares and authorizes the frozen batch before countdown, with local snapshot recapture and fail-closed disarm. Scheduled firing/dispatch of prepared payloads is not wired and remains Task 11.5. This checkpoint does not authorize a real order.
 
 #### Task 11.4 — Pre-Arm Workflow and Countdown
 
@@ -2752,7 +2753,7 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1–11.3 core contracts complete; 11.4–11.7 planned) |
+| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1–11.4 complete; 11.5–11.7 remain) |
 | UI | User Interface | Block 10; scheduled Live depends on Block 11 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).
