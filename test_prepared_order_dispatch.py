@@ -60,15 +60,9 @@ def _setup():
 
 
 def _document_test_ttls(engine):
-    from datetime import timedelta
-    engine.PREPARED_SOURCE_TTLS = {
-        "OrderEngine.order.nsc_id/BrokerInstrument.nsc_id": timedelta(minutes=1),
-        "broker.get_trading_state": timedelta(minutes=1),
-        "OrderValidator.validate": timedelta(minutes=1),
-        "broker.get_buy_capacity": timedelta(minutes=1),
-        "broker.get_sell_capacity": timedelta(minutes=1),
-        "OrderEngine._check_capacity": timedelta(minutes=1),
-    }
+    # Kept as a helper for older call sites: Task 11.3 no longer needs
+    # source-specific TTLs for a prepared order within its run snapshot.
+    assert engine.PREPARED_SOURCE_TTLS == {}
 
 
 def test_prepare_submit_reuses_payload_and_rejects_mutation():
@@ -131,17 +125,16 @@ def test_batch_preparation_failure_prevents_any_submit():
     assert broker.submits == []
 
 
-def test_expired_preparation_rejected():
+def test_execution_scoped_preparation_is_not_expired_by_source_ttl():
     order, instrument, account = _setup()
     broker = Broker()
     engine = OrderEngine()
     _document_test_ttls(engine)
     prepared, _ = engine.prepare_order(broker, Provider(instrument), "nsc", order,
         account, "acct", "test")
-    expired_freshness = tuple((source, ended, ended - timedelta(seconds=1))
-                              for source, ended, _ in prepared.freshness)
-    prepared = replace(prepared, freshness=expired_freshness)
-    assert not engine.submit_prepared_order(prepared, broker, account, "acct", "test").success
+    assert engine.submit_prepared_order(prepared, broker, account,
+        "acct", "test").success
+    assert len(broker.submits) == 1
 
 
 def test_two_accounts_and_brokers_receive_only_their_payloads():
@@ -243,48 +236,37 @@ def test_valid_buy_and_sell_preparations_have_side_specific_evidence():
             "acct", "test").success
 
 
-def test_each_source_expiry_is_checked_independently(monkeypatch):
+def test_successful_m6_is_execution_scoped_without_source_ttls(monkeypatch):
     order, instrument, account = _setup()
     broker = Broker()
     engine = OrderEngine()
-    names = {
-        "OrderEngine.order.nsc_id/BrokerInstrument.nsc_id",
-        "broker.get_trading_state", "OrderValidator.validate",
-        "broker.get_buy_capacity", "OrderEngine._check_capacity",
-    }
-    monkeypatch.setattr(engine, "PREPARED_SOURCE_TTLS",
-        {name: timedelta(seconds=60) for name in names})
+    assert engine.PREPARED_SOURCE_TTLS == {}
     prepared, result = engine.prepare_order(broker, Provider(instrument), "nsc",
         order, account, "acct", "test")
-    assert result.success and all(item[2] is not None for item in prepared.freshness)
-    current = tuple((source, ended, ended + timedelta(seconds=60))
-                    for source, ended, _ in prepared.freshness)
-    prepared = replace(prepared, freshness=current)
-    assert engine.submit_prepared_order(prepared, broker, account, "acct", "test").success
-    for index in range(len(prepared.freshness)):
-        stale = list(prepared.freshness)
-        source, ended_at, _ = stale[index]
-        stale[index] = (source, ended_at, datetime.now(timezone.utc) - timedelta(seconds=1))
-        candidate = replace(prepared, freshness=tuple(stale))
-        before = len(broker.submits)
-        assert not engine.submit_prepared_order(candidate, broker, account,
-            "acct", "test").success
-        assert len(broker.submits) == before
+    assert result.success and prepared.scheduled_valid
+    assert prepared.execution_id
+    assert prepared.m6_completed_at == max(item[4] for item in prepared.m6_results)
+    assert all(len(item) == 2 for item in prepared.freshness)
+    assert engine.validate_prepared_order(
+        prepared, broker, account, "acct", "test",
+        now=prepared.m6_completed_at + timedelta(days=30),
+    ) == (True, "")
 
 
-def test_undocumented_source_ttl_disallows_scheduled_use():
+def test_empty_source_ttl_does_not_expire_successful_m6_for_same_execution():
     order, instrument, account = _setup()
     broker = Broker()
     engine = OrderEngine()
     prepared, result = engine.prepare_order(broker, Provider(instrument), "nsc",
         order, account, "acct", "test")
-    assert result.success and any(expiry is None for _, _, expiry in prepared.freshness)
-    assert not engine.submit_prepared_order(prepared, broker, account,
+    assert result.success and prepared.scheduled_valid
+    assert all(len(item) == 2 for item in prepared.freshness)
+    assert engine.submit_prepared_order(prepared, broker, account,
         "acct", "test").success
-    assert broker.submits == []
+    assert len(broker.submits) == 1
 
 
-def test_empty_production_policy_rejects_entire_batch():
+def test_empty_production_policy_accepts_complete_successful_m6_batch():
     order, instrument, account = _setup()
     broker = Broker()
     engine = OrderEngine()
@@ -293,12 +275,13 @@ def test_empty_production_policy_rejects_entire_batch():
         order=order, account=account, account_id="acct", broker_name="test")
     batch = engine.prepare_batch([request])
     assert batch.checks_succeeded
-    assert not batch.valid and batch.orders == ()
-    assert not batch.orders
+    assert batch.valid and len(batch.orders) == 1
+    assert batch.execution_id
+    assert batch.orders[0].execution_id == batch.execution_id
     assert broker.submits == []
 
 
-def test_freshness_source_timestamp_or_expiry_tampering_rejected(monkeypatch):
+def test_m6_source_timestamp_or_execution_evidence_tampering_rejected(monkeypatch):
     order, instrument, account = _setup()
     broker = Broker()
     engine = OrderEngine()
@@ -315,13 +298,18 @@ def test_freshness_source_timestamp_or_expiry_tampering_rejected(monkeypatch):
     assert not engine.submit_prepared_order(tampered, broker, account,
         "acct", "test").success
 
-    changed_expiry = list(prepared.freshness)
-    source, ended, expiry = changed_expiry[0]
-    changed_expiry[0] = (source, ended, expiry + timedelta(seconds=1))
-    tampered = replace(prepared, freshness=tuple(changed_expiry))
+    changed_timestamp = list(prepared.freshness)
+    source, ended = changed_timestamp[0]
+    changed_timestamp[0] = (source, ended + timedelta(seconds=1))
+    tampered = replace(prepared, freshness=tuple(changed_timestamp))
     assert not engine.submit_prepared_order(tampered, broker, account,
         "acct", "test").success
 
     missing = replace(prepared, freshness=prepared.freshness[:-1])
     assert not engine.submit_prepared_order(missing, broker, account,
         "acct", "test").success
+
+    other_execution = replace(prepared, execution_id="")
+    assert not engine.validate_prepared_order(
+        other_execution, broker, account, "acct", "test"
+    )[0]

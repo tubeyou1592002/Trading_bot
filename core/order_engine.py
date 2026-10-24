@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import threading
 from time import perf_counter_ns
 from typing import TYPE_CHECKING, Optional
+from uuid import uuid4
 
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
@@ -79,9 +81,12 @@ class PreparedOrder:
     account_id: str
     broker_name: str
     prepared_at: datetime
+    # No per-source deadline is manufactured; authorization expiry is the
+    # scheduled execution's window end.
     expires_at: datetime | None
     m6_results: tuple
     m6_completed_at: datetime
+    # Source/completion timestamp pairs from M6, without TTL deadlines.
     freshness: tuple
     order_fingerprint: str
     account_fingerprint: str
@@ -92,6 +97,7 @@ class PreparedOrder:
     evidence_broker_name: str
     checks_succeeded: bool
     scheduled_valid: bool
+    execution_id: str = ""
 
     @property
     def payload(self):
@@ -104,22 +110,46 @@ class PreparedBatch:
     valid: bool
     message: str = ""
     checks_succeeded: bool = False
+    execution_id: str | None = None
 
 
 class OrderEngine:
-    # Filled only from a documented source policy. No source-specific M6
-    # validity periods are currently documented in this repository.
+    # Retained as a compatibility/configuration seam for older integrations.
+    # Scheduled authorization validity is execution-scoped and does not use
+    # source TTLs: successful complete M6 evidence is bound to one snapshot.
     PREPARED_SOURCE_TTLS = {}
 
     def __init__(self):
         self.validator = OrderValidator()
+        self._execution_ids_lock = threading.Lock()
+        self._used_execution_ids = set()
+
+    def _claim_execution_id(self, execution_id):
+        if not isinstance(execution_id, str) or not execution_id.strip():
+            return False
+        with self._execution_ids_lock:
+            if execution_id in self._used_execution_ids:
+                return False
+            self._used_execution_ids.add(execution_id)
+        return True
 
     @staticmethod
     def _fingerprint(value):
         return json.dumps(value, sort_keys=True, default=str, separators=(",", ":"))
 
     def prepare_order(self, broker, provider, ins_code, order, account,
-                      account_id, broker_name, max_age=None, broker_timing=None):
+                      account_id, broker_name, max_age=None, broker_timing=None,
+                      execution_id=None, _execution_claimed=False):
+        if execution_id is None:
+            execution_id = uuid4().hex
+            _execution_claimed = self._claim_execution_id(execution_id)
+        elif not _execution_claimed:
+            _execution_claimed = self._claim_execution_id(execution_id)
+        if not _execution_claimed:
+            return None, OrderExecutionResult(
+                False, False, "BLOCKED", order, broker_name=broker_name,
+                message="Scheduled execution identity is missing or already used",
+            )
         if not callable(getattr(broker, "build_order_payload", None)):
             raise ValueError(f"Broker {broker_name} lacks scheduled prepared-order capability")
         try:
@@ -135,24 +165,21 @@ class OrderEngine:
                               evidence=evidence)
         if not result.success:
             return None, result
-        # The repository documents no elapsed-time validity limit for these
-        # sources; do not invent one. Keep successful reads as evidence but
-        # mark their scheduled-use validity unknown so submission fails closed.
+        # M6 evidence is successful only when the full required gate set is
+        # present and each result records a real success and completion time.
+        # Its scheduled validity is scoped by the authorization's execution
+        # snapshot/window, not by guessed per-source TTLs.
         payload = broker.build_order_payload(order)
         now = datetime.now().astimezone()
-        freshness = tuple(
-            (item[3], item[4],
-             item[4] + self.PREPARED_SOURCE_TTLS[item[3]]
-             if item[3] in self.PREPARED_SOURCE_TTLS else None)
-            for item in evidence
-        )
+        freshness = tuple((item[3], item[4]) for item in evidence)
+        m6_succeeded = self._successful_m6_evidence(order, evidence)
+        m6_completed_at = max((item[4] for item in evidence), default=None)
         prepared = PreparedOrder(
             order=order, payload_json=self._fingerprint(payload),
             account_id=account_id, broker_name=broker_name,
             prepared_at=now,
-            expires_at=min((item[2] for item in freshness if item[2] is not None),
-                           default=None),
-            m6_results=tuple(evidence), m6_completed_at=now,
+            expires_at=None,
+            m6_results=tuple(evidence), m6_completed_at=m6_completed_at,
             freshness=freshness,
             order_fingerprint=self._fingerprint(order.to_payload()),
             account_fingerprint=self._fingerprint(vars(account)),
@@ -160,41 +187,44 @@ class OrderEngine:
             evidence_order_fingerprint=self._fingerprint(order.to_payload()),
             evidence_account_id=account_id, evidence_broker_name=broker_name,
             checks_succeeded=True,
-            scheduled_valid=bool(freshness) and all(expiry is not None for _, _, expiry in freshness),
+            scheduled_valid=m6_succeeded,
+            execution_id=execution_id,
         )
         return prepared, result
 
-    def submit_prepared_order(self, prepared, broker, account, account_id,
-                              broker_name, live=False):
-        order = getattr(prepared, "order", None)
-        def blocked(message):
-            return OrderExecutionResult(False, False, "BLOCKED", order,
-                broker_name=broker_name, message=message)
+    def validate_prepared_order(self, prepared, broker, account, account_id,
+                                broker_name, now=None, check_expiry=True):
+        """Validate every immutable binding of one prepared order.
+
+        This is the single validation used by both direct submission and the
+        Task 11.3 batch authorization. It performs no network or broker read.
+        """
         if not isinstance(prepared, PreparedOrder):
-            return blocked("Invalid prepared order")
+            return False, "Invalid prepared order"
+        order = prepared.order
         if not prepared.checks_succeeded or not prepared.scheduled_valid:
-            return blocked("Preparation checks succeeded but scheduled validity is not established")
+            return (False,
+                "Preparation checks succeeded but scheduled validity is not established")
         if (not prepared.payload_json or not prepared.m6_results
                 or prepared.m6_completed_at is None
                 or not prepared.prepared_at
                 or not prepared.order_fingerprint
                 or not prepared.account_fingerprint):
-            return blocked("Prepared order evidence is incomplete")
-        if not prepared.freshness or any(
-                not isinstance(item, tuple) or len(item) != 3
-                or item[2] is None for item in prepared.freshness):
-            return blocked("Scheduled validity is undocumented for one or more M6 sources")
-        if not isinstance(prepared.expires_at, datetime):
-            return blocked("Prepared batch expiry is missing")
-        now = datetime.now().astimezone()
-        if any(now > expires_at for _, _, expires_at in prepared.freshness):
-            return blocked("A prepared source result has expired")
+            return False, "Prepared order evidence is incomplete"
+        if not isinstance(prepared.m6_completed_at, datetime):
+            return False, "Prepared M6 completion time is missing"
+        if not isinstance(prepared.execution_id, str) or not prepared.execution_id.strip():
+            return False, "Prepared execution identity is missing"
+        if now is None:
+            now = datetime.now().astimezone()
+        if now < prepared.m6_completed_at:
+            return False, "Prepared M6 evidence is from the future"
         if any(not isinstance(item, tuple) or len(item) != 6 or item[1] is not True
                or not isinstance(item[2], int) or item[2] < 0
                or not isinstance(item[3], str) or not item[3]
                or not isinstance(item[4], datetime)
                for item in prepared.m6_results):
-            return blocked("Prepared order M6 evidence is invalid")
+            return False, "Prepared order M6 evidence is invalid"
         capacity_gate = (
             "M6-C-buy-capacity" if order.side == BUY
             else "M6-D-sell-capacity" if order.side == SELL
@@ -207,28 +237,114 @@ class OrderEngine:
         names = [item[0] for item in prepared.m6_results]
         if (None in required_gates or len(names) != len(set(names))
                 or set(names) != required_gates):
-            return blocked("Prepared order M6 evidence set is incomplete or inconsistent")
-        expected_freshness = tuple((item[3], item[4],
-            item[4] + self.PREPARED_SOURCE_TTLS[item[3]]
-            if item[3] in self.PREPARED_SOURCE_TTLS else None)
-            for item in prepared.m6_results)
+            return (False,
+                "Prepared order M6 evidence set is incomplete or inconsistent")
+        expected_freshness = tuple((item[3], item[4]) for item in prepared.m6_results)
         if prepared.freshness != expected_freshness:
-            return blocked("Prepared freshness records do not match their M6 source evidence")
+            return (False,
+                "Prepared M6 evidence timestamps do not match their source records")
+        if not self._successful_m6_evidence(order, prepared.m6_results):
+            return False, "Prepared M6 evidence did not succeed for this order"
+        if prepared.m6_completed_at != max(item[4] for item in prepared.m6_results):
+            return False, "Prepared M6 completion timestamp is inconsistent"
         if (prepared.account_id != account_id or prepared.broker_name != broker_name
                 or prepared.broker_identity != id(broker)):
-            return blocked("Prepared destination changed")
+            return False, "Prepared destination changed"
         if getattr(account, "account_id", None) != account_id:
-            return blocked("Prepared account identity changed")
+            return False, "Prepared account identity changed"
         if self._fingerprint(vars(account)) != prepared.account_fingerprint:
-            return blocked("Prepared account changed")
+            return False, "Prepared account changed"
         if self._fingerprint(order.to_payload()) != prepared.order_fingerprint:
-            return blocked("Prepared order changed")
+            return False, "Prepared order changed"
         if (prepared.evidence_order_fingerprint != prepared.order_fingerprint
                 or prepared.evidence_account_id != prepared.account_id
                 or prepared.evidence_broker_name != prepared.broker_name):
-            return blocked("Prepared M6 evidence belongs to another order or destination")
-        if self._fingerprint(prepared.payload) != prepared.payload_json:
-            return blocked("Prepared payload changed")
+            return (False,
+                "Prepared M6 evidence belongs to another order or destination")
+        if not isinstance(prepared.execution_id, str) or not prepared.execution_id.strip():
+            return False, "Prepared execution identity is missing"
+        try:
+            payload_unchanged = (
+                self._fingerprint(prepared.payload) == prepared.payload_json
+            )
+        except Exception:
+            payload_unchanged = False
+        if not payload_unchanged:
+            return False, "Prepared payload changed"
+        return True, ""
+
+    @staticmethod
+    def _successful_m6_evidence(order, evidence):
+        """True only for one complete, successful, side-specific M6 result."""
+        if not isinstance(evidence, (tuple, list)) or not evidence:
+            return False
+        capacity_gate = (
+            "M6-C-buy-capacity" if order.side == BUY
+            else "M6-D-sell-capacity" if order.side == SELL
+            else None
+        )
+        required = {
+            "M6-A-identity", "M6-A-trading-state", "M6-B-validation",
+            capacity_gate, "M6-E-capacity-check",
+        }
+        names = []
+        for item in evidence:
+            if (
+                not isinstance(item, tuple) or len(item) != 6
+                or item[1] is not True
+                or not isinstance(item[2], int) or item[2] < 0
+                or not isinstance(item[3], str) or not item[3]
+                or not isinstance(item[4], datetime)
+            ):
+                return False
+            names.append(item[0])
+        return (
+            None not in required
+            and len(names) == len(set(names))
+            and set(names) == required
+        )
+
+    def submit_prepared_order(self, prepared, broker, account, account_id,
+                              broker_name, live=False, authorization=None,
+                              now=None, current_snapshot=None,
+                              authorization_ledger=None):
+        order = getattr(prepared, "order", None)
+        def blocked(message):
+            return OrderExecutionResult(False, False, "BLOCKED", order,
+                broker_name=broker_name, message=message)
+        now = now or datetime.now().astimezone()
+        valid, message = self.validate_prepared_order(
+            prepared, broker, account, account_id, broker_name, now=now,
+            check_expiry=authorization is None,
+        )
+        if not valid:
+            return blocked(message)
+        if live and authorization is None:
+            return blocked(
+                "Live submission requires a valid batch-scoped authorization")
+        if authorization is not None:
+            if authorization_ledger is None:
+                authorization_ledger = getattr(
+                    authorization, "usage_ledger", None
+                )
+            from core.live_order_authorization import (
+                validate_prepared_submission,
+            )
+            check = validate_prepared_submission(
+                authorization,
+                prepared=prepared,
+                broker=broker,
+                account=account,
+                order=order,
+                account_id=account_id,
+                broker_name=broker_name,
+                now=now,
+                current_snapshot=current_snapshot,
+                usage_ledger=authorization_ledger,
+            )
+            if not check.allowed:
+                return blocked(
+                    f"Live authorization rejected: {check.reason}")
         submit = getattr(broker, "submit_prepared_order", None)
         if not callable(submit):
             return blocked(f"Broker {broker_name} lacks prepared-order submission")
@@ -242,21 +358,35 @@ class OrderEngine:
         return OrderExecutionResult(True, live, "LIVE" if live else "DRY_RUN",
             order, broker_name=broker_name, response=response)
 
-    def prepare_batch(self, requests):
+    def prepare_batch(self, requests, execution_id=None):
         """Prepare all request tuples (kwargs to prepare_order), or reject all."""
+        if execution_id is None:
+            execution_id = uuid4().hex
+        if not self._claim_execution_id(execution_id):
+            return PreparedBatch((), False, "Invalid execution identity", False)
         prepared = []
         for request in requests:
             try:
-                item, result = self.prepare_order(**request)
+                item, result = self.prepare_order(
+                    **{
+                        **request,
+                        "execution_id": execution_id,
+                        "_execution_claimed": True,
+                    }
+                )
             except Exception as exc:
-                return PreparedBatch((), False, str(exc), False)
+                return PreparedBatch((), False, str(exc), False, execution_id)
             if item is None or not result.success:
-                return PreparedBatch((), False, result.message or "Batch preparation failed", False)
+                return PreparedBatch(
+                    (), False, result.message or "Batch preparation failed",
+                    False, execution_id,
+                )
             if not item.scheduled_valid:
                 return PreparedBatch((), False,
-                    "Scheduled validity is undocumented for one or more preparation sources", True)
+                    "One or more orders lack complete successful M6 evidence",
+                    True, execution_id)
             prepared.append(item)
-        return PreparedBatch(tuple(prepared), True, "", True)
+        return PreparedBatch(tuple(prepared), True, "", True, execution_id)
 
     def execute_by_ins_code(
         self,

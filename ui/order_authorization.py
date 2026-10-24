@@ -11,18 +11,19 @@ class AuthorizationResult:
     reason: str
 
 
-def authorize_order(account_store, authentication_service, session_manager,
-                    account_id, broker_name):
+def _authorize(account_store, authentication_service, session_manager,
+               account_id, broker_name, *, require_active):
     """Authorize one account-bound operation without changing any state."""
     try:
         if any(service is None for service in (
             account_store, authentication_service, session_manager
         )):
             return AuthorizationResult(False, "services_unavailable")
-        active_id = account_store.active_account_id()
-        if active_id is None or active_id != account_id:
-            return AuthorizationResult(False, "account_mismatch")
-        record = account_store.get(active_id)
+        if require_active:
+            active_id = account_store.active_account_id()
+            if active_id is None or active_id != account_id:
+                return AuthorizationResult(False, "account_mismatch")
+        record = account_store.get(account_id)
         if (record.account_id != account_id or record.broker_name != broker_name):
             return AuthorizationResult(False, "account_mismatch")
         if not authentication_service.is_logged_in(account_id):
@@ -49,3 +50,29 @@ def authorize_order(account_store, authentication_service, session_manager,
     except Exception:
         # Deliberately omit exception details: they may contain secrets.
         return AuthorizationResult(False, "authorization_error")
+
+
+def authorize_order(account_store, authentication_service, session_manager,
+                    account_id, broker_name):
+    """Authorize one account-bound operation for the active account."""
+    return _authorize(
+        account_store, authentication_service, session_manager,
+        account_id, broker_name, require_active=True,
+    )
+
+
+def authorize_destination(account_store, authentication_service,
+                          session_manager, account_id, broker_name):
+    """Authorize one scheduled destination without requiring it to be active.
+
+    A multi-account scheduled queue is valid when every destination order's
+    own account/session/broker is valid. Which account happens to be selected
+    in the UI is irrelevant to this check.
+    """
+    return _authorize(
+        account_store, authentication_service, session_manager,
+        account_id, broker_name, require_active=False,
+    )
+
+
+__all__ = ["AuthorizationResult", "authorize_destination", "authorize_order"]
