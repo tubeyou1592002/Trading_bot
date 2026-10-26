@@ -3,6 +3,9 @@
 import asyncio
 import threading
 import math
+import time
+from collections import OrderedDict
+from core.latency_instrumentation import ScheduledLatencyReport, ScheduledTicketLatency
 
 
 ASYNC_ORDER_TIMEOUT_SECONDS = 10
@@ -28,9 +31,15 @@ class ScheduledFireRuntime:
     """Own one loop, account-private transports, and one task per ticket."""
 
     def __init__(self, *, monotonic_clock=None, on_complete=None):
-        import time
         self._clock = monotonic_clock or time.monotonic
+        self._clock_injected = monotonic_clock is not None
         self._on_complete = on_complete
+        self._latency_clock = time.monotonic_ns
+        self._latency_records = {}
+        self._latency_report = None
+        self._decision_ids = {}
+        self._pending_nats = OrderedDict()
+        self._max_pending_nats = 512
         self._session_factory_calls = 0
         self._task_factory_calls = 0
         self._ready = threading.Event()
@@ -88,6 +97,45 @@ class ScheduledFireRuntime:
 
     async def _install(self, table, authorization, brokers, session_factory):
         self._authorization = authorization
+        self._latency_report = ScheduledLatencyReport(
+            table.execution_id,
+            [
+                ScheduledTicketLatency(
+                    execution_id=ticket.execution_id,
+                    ticket_id=ticket.ticket_id,
+                    turn_index=ticket.turn_index,
+                    planned_due_ns=int(ticket.due_mono * 1_000_000_000),
+                )
+                for ticket in table.tickets
+            ],
+        )
+        if self._clock_injected:
+            # Convert due_mono to the process monotonic_ns domain only when
+            # sampling both clocks together is available at arm time.
+            mono_s = self._clock()
+            mono_ns = time.monotonic_ns()
+            due_ns_by_ticket = {
+                (ticket.ticket_id, ticket.turn_index):
+                    mono_ns + int((ticket.due_mono - mono_s) * 1_000_000_000)
+                for ticket in table.tickets
+            }
+            self._latency_report.tickets = [
+                __import__("dataclasses").replace(
+                    record,
+                    planned_due_ns=due_ns_by_ticket[(record.ticket_id, record.turn_index)],
+                )
+                for record in self._latency_report.tickets
+            ]
+            self._latency_report.__post_init__()
+        self._latency_records = {
+            (ticket.ticket_id, ticket.turn_index): True
+            for ticket in table.tickets
+        }
+        self._ticket_refs = {
+            ticket.ticket_id: ticket for ticket in table.tickets
+        }
+        self._pending_nats.clear()
+        self._decision_ids.clear()
         from core.live_order_authorization import prepared_fingerprint
         armed = authorization.ticket_ledger.validate_armed_table(
             authorization, table
@@ -153,19 +201,41 @@ class ScheduledFireRuntime:
             await asyncio.sleep(ticket.due_mono - self._clock())
         if self._cancelled:
             return None
+        latency_key = (ticket.ticket_id, ticket.turn_index)
+        self._update_latency(latency_key, scheduler_wake_ns=self._latency_clock())
         self._started.add(ticket.ticket_id)
         broker = self._brokers[key]
         transport = self._transports[key]
         # Broker-owned hand-off checks account ownership and its current Live
         # lock immediately before the HTTP request. No M6/readiness/DB/ledger.
         try:
-            result = await broker.submit_from_async_prepared_transport(
-                transport, ticket.account_id, payload,
-                ticket=ticket, authorization=self._authorization,
-                broker=broker,
-            )
+            self._update_latency(latency_key, handoff_start_ns=self._latency_clock())
+            submit = broker.submit_from_async_prepared_transport
+            kwargs = dict(ticket=ticket, authorization=self._authorization, broker=broker)
+            if getattr(transport, "supports_post_start_callback", False):
+                kwargs["on_post_start"] = lambda: self._update_latency(
+                    latency_key, post_start_ns=self._latency_clock()
+                )
+            result = await submit(transport, ticket.account_id, payload, **kwargs)
+            if self._latency_report.ticket(*latency_key).post_start_ns is None:
+                self._update_latency(latency_key, post_start_ns=self._latency_clock())
         except Exception as exc:
             result = exc
+        finally:
+            self._update_latency(
+                latency_key,
+                http_response_ns=(
+                    self._latency_clock()
+                    if self._latency_report.ticket(*latency_key).post_start_ns is not None
+                    else None
+                ),
+                http_ok=not isinstance(result, Exception),
+            )
+            if (isinstance(result, dict)
+                    and isinstance((data := result.get("data")), dict)):
+                self.bind_decision_id(
+                    ticket.ticket_id, ticket.turn_index, data.get("decisionId")
+                )
         self._outcomes[ticket.ticket_id] = result
         if self._on_complete is not None:
             try:
@@ -208,6 +278,88 @@ class ScheduledFireRuntime:
             return dict(self._outcomes)
         return self._call(snapshot())
 
+    def _update_latency(self, key, **changes):
+        if key in self._latency_records:
+            self._latency_report.update(*key, **changes)
+
+    def record_nats_feedback(self, ticket_id, turn_index, decision_id, timestamp=None):
+        """Attach feedback only when an exact HTTP decision-ID binding exists."""
+        ticket = self._ticket_refs.get(ticket_id)
+        record = self._latency_report.ticket(ticket_id, turn_index)
+        if ticket is None or record is None or not isinstance(decision_id, str):
+            return False
+        ticket_key = self._ticket_refs[ticket_id]
+        decision_key = (ticket_key.account_id, ticket_key.broker_name, decision_id)
+        if self._decision_ids.get(decision_key) != (ticket_id, turn_index):
+            return False
+        stamp = self._latency_clock() if timestamp is None else timestamp
+        if (isinstance(stamp, bool) or not isinstance(stamp, int)
+                or record.post_start_ns is None or stamp < record.post_start_ns):
+            return False
+        if record.nats_feedback_ns is not None:
+            return False
+        self._update_latency(
+            (ticket_id, turn_index), nats_feedback_ns=stamp, nats_correlated=True
+        )
+        return True
+
+    def record_nats_feedback_by_decision(self, account_id, broker_name,
+                                         decision_id, timestamp=None):
+        if (not isinstance(decision_id, str) or not decision_id.strip()
+                or isinstance(timestamp, bool)
+                or (timestamp is not None and not isinstance(timestamp, int))):
+            return False
+        # The UI feedback bridge stamps process monotonic_ns. Do not subtract
+        # it from an injected schedule clock with an unknown clock domain.
+        if self._clock_injected and timestamp is not None:
+            return False
+        # OrderFeedbackService timestamps use the process monotonic clock.
+        # A caller-injected schedule clock has no proven relationship to it.
+        key = (account_id, broker_name, decision_id)
+        location = self._decision_ids.get(key)
+        if location is None:
+            if key in self._pending_nats:
+                return False
+            self._pending_nats[key] = self._latency_clock() if timestamp is None else timestamp
+            while len(self._pending_nats) > self._max_pending_nats:
+                self._pending_nats.popitem(last=False)
+            return False
+        ticket_id, turn_index = location
+        ticket = self._ticket_refs.get(ticket_id)
+        if ticket is None or (ticket.account_id, ticket.broker_name) != (account_id, broker_name):
+            return False
+        return self.record_nats_feedback(ticket_id, turn_index, decision_id, timestamp)
+
+    def bind_decision_id(self, ticket_id, turn_index, decision_id):
+        """Bind a real HTTP response decision ID to exactly one ticket turn."""
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            return False
+        record = self._latency_report.ticket(ticket_id, turn_index)
+        if record is None or record.http_response_ns is None:
+            return False
+        ticket = self._ticket_refs.get(ticket_id)
+        if ticket is None:
+            return False
+        key = (ticket.account_id, ticket.broker_name, decision_id)
+        existing = self._decision_ids.get(key)
+        if existing is not None and existing != (ticket_id, turn_index):
+            return False
+        self._decision_ids[key] = (ticket_id, turn_index)
+        has_pending = key in self._pending_nats
+        pending_timestamp = self._pending_nats.pop(key, None)
+        if has_pending:
+            self.record_nats_feedback(ticket_id, turn_index, decision_id, pending_timestamp)
+        for pending_key in tuple(self._pending_nats):
+            if pending_key[2] == decision_id and pending_key != key:
+                del self._pending_nats[pending_key]
+        return True
+
+    def latency_report(self):
+        return ScheduledLatencyReport(
+            self._latency_report.execution_id,
+            list(self._latency_report.tickets),
+        ) if self._latency_report is not None else ScheduledLatencyReport("", [])
+
     def cancel_pending(self):
         """Cancel future ticket sleeps while preserving already-fired HTTP tasks."""
         self.stop()
@@ -220,6 +372,8 @@ class ScheduledFireRuntime:
         for key, transport in tuple(self._transports.items()):
             await self._brokers[key].close_async_prepared_transport(transport)
         self._transports.clear()
+        self._pending_nats.clear()
+        self._decision_ids.clear()
         self._started.clear()
 
     def close(self):

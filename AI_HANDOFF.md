@@ -2635,7 +2635,7 @@ Minimum verifications:
 
 **Dependencies:** Blocks 2, 3, 5, 6, 7, 8, 9, and 10.
 
-**Status:** IN PROGRESS — Tasks 11.1–11.5 are complete within their recorded scopes. Task 11.6 latency instrumentation/offline verification and Task 11.7 owner-run qualification remain. The Windows/Python 3.13.15 acceptance for the Task 11.5 runtime startup and schedule-send suite passed on 2026-10-26. Automated checks used offline fakes only; this does not authorize or qualify a real order.
+**Status:** IN PROGRESS — Tasks 11.1–11.6 are complete within their recorded scopes. Task 11.7 owner-run qualification remains. Task 11.5 runtime tests passed on Windows/Python 3.13.15, and the required NATS regression for Task 11.6 subsequently passed on that host. Offline tests do not authorize or qualify a real order.
 
 #### Task 11.1 — Firing Contract and Freshness Policy
 
@@ -2680,7 +2680,7 @@ Replace the current production “missing provider” dead end with a documented
 
 **Verification note:** Connector behavior is checked via an offline test that inspects the configured connector limit for the 10-order/80-turn fixture and verifies oversized-capacity rejection before session creation. Existing fake transport tests remain supplementary. Production qualification is not established.
 
-**Operational status:** Task 11.4 pre-arm and countdown are wired, and Task 11.5 scheduled dispatch is wired through the account-bound prearmed runtime after capacity validation. Task 11.6 instrumentation and Task 11.7 owner-run qualification remain. This checkpoint does not authorize a real order.
+**Operational status:** Task 11.4 pre-arm/countdown, Task 11.5 account-bound scheduled dispatch, and Task 11.6 scheduled-path latency instrumentation/offline verification are complete within their recorded scopes. Task 11.7 owner-run qualification remains. This checkpoint does not authorize a real order.
 
 #### Task 11.4 — Pre-Arm Workflow and Countdown
 
@@ -2695,6 +2695,12 @@ At each due time use the prearmed, monotonic schedule to release already-prepare
 **Acceptance:** fake-clock tests prove the firing path performs only bounded local checks and initiates sends at the scheduled turn; a slow response for one submission does not hold up other submissions or later scheduled turns.
 
 #### Task 11.6 — Latency Instrumentation and Offline Verification
+
+**Implementation checkpoint:** `core.latency_instrumentation.py` now contains the additive `ScheduledTicketLatency`/`ScheduledLatencyReport` contracts, reused by `ui/scheduled_fire_runtime.py`. Each record is per execution/ticket/turn and stores monotonic planned due, scheduler wake, hand-off, actual Agah `session.post` invocation, initial HTTP completion and success, and optional NATS receipt. Derived windows separately expose wake lateness, wake-to-handoff, hand-off-to-POST, POST-to-HTTP completion and POST-to-NATS receipt. The HTTP window includes local work, network, broker processing and response handling; it is not pure network or exchange acceptance latency. NATS binds only via exact response `decisionId` and account/broker scope. Missing, early or unmatchable feedback stays absent; reports contain no decision ID, payload or credentials. Reports are accessible from `OrderConfigurationPage.scheduled_latency_report()`.
+
+Corrective Task 11.6 checkpoint: Scheduled timestamp fields and intervals use integer nanoseconds; deterministic assertions confirm exact units. Early NATS observations are kept in an ordered buffer capped at 512 unique `(account_id, broker_name, decisionId)` keys, duplicate pending/received events are ignored, successful exact HTTP binding consumes the pending event, and account/broker mismatch cannot bind it. The buffer and bindings are cleared when a schedule is re-armed or closed. With an injected schedule clock, external NATS monotonic_ns timestamps are not mixed into that unknown clock domain. Fake-clock scheduled suite after these corrections: `python3 -m pytest -q test_schedule_send_table.py` → **20 passed in 2.71s**; `py_compile` passed.
+
+Block 8 comparison: at baseline commit `e4d3a1d6bbf37377e16c1ecccc17197eedc9e4ea` in a separate detached worktree, `python3 -m pytest -q test_block8_task8_2.py test_block8_task8_3.py test_block8_task8_4.py test_block8_task8_5.py` → **44 failed, 33 passed**. On the current worktree with Task 11.6 changes, the same command → **44 failed, 33 passed**. The observed failures are baseline failures, chiefly the account-broker factory fixture assumptions and old `OrderExecutionResult` field assertion; no new failure was detected by count/name-level comparison. The NATS suite initially could not collect in Linux/WSL because `nats` was unavailable. The owner subsequently ran `py -3.13 -m pytest -q test_ui5_task4_stage2_queue_position.py` on Windows/Python 3.13.15 → **39 passed in 1.36s**. With the scheduled-latency suite passing 20/20 and the Block 8 failures confirmed identical to baseline, Task 11.6 is accepted within its offline scope. No real request/order was performed.
 
 Record monotonic timestamps for planned due time, scheduler wake, release, each POST initiation, each initial HTTP response, and each NATS event. Report internal scheduling/release delay separately from network and broker response time. Test Dry Run, preparation, stale/modified plans, NATS unavailable, slow HTTP, no POST replay, repeated-turn counts, and account isolation with local fakes only.
 
@@ -2757,7 +2763,7 @@ Block 0 → Block 1 → Block 2
 | 8 | Latency Measurement & Optimization | Block 7 | COMPLETED (Tasks 8.1-8.5 implemented) |
 | 9 | Stress / Simulation | Block 8 | COMPLETED |
 | 10 | Controlled Live Execution | Block 9 | COMPLETED (10.1–10.4) |
-| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1–11.5 complete; 11.6–11.7 remain) |
+| 11 | Pre-Armed Scheduled Live Dispatch | Blocks 2–10 | IN PROGRESS (11.1–11.6 complete; 11.7 remains) |
 | UI | User Interface | Block 10; scheduled Live depends on Block 11 | IN PROGRESS (UI-1, UI-2, UI-3 through UI-3.2B completed) |
 
 **M6-F — Order Splitting:** Deferred / Future Development (out of scope per Architect decision).

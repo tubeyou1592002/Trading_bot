@@ -1254,6 +1254,7 @@ class OrderConfigurationPage(QWidget):
         self._scheduled_fire_runtime = None
         self._scheduled_broker_manager_factory = None
         self._scheduled_feedback_ids = {}
+        self._scheduled_latency_report = None
         self._schedule_queue_entries = None
         self._schedule_apply_queue_revision = None
         self._schedule_arming = False
@@ -3481,6 +3482,7 @@ class OrderConfigurationPage(QWidget):
             runtime.close()
             raise
         self._scheduled_fire_runtime = runtime
+        self._scheduled_latency_report = runtime.latency_report()
 
     def _scheduled_broker_manager(self):
         """Resolve the injected account-scoped manager without guessing."""
@@ -3500,11 +3502,27 @@ class OrderConfigurationPage(QWidget):
         decision_id = (result.get("data") or {}).get("decisionId")
         if isinstance(decision_id, str) and decision_id.strip():
             self._scheduled_feedback_ids[ticket.ticket_id] = decision_id
+            runtime = self._scheduled_fire_runtime
+            if runtime is not None:
+                runtime.bind_decision_id(
+                    ticket.ticket_id, ticket.turn_index, decision_id
+                )
             key = (ticket.account_id, ticket.broker_name)
             manager = self._scheduled_broker_manager()
             broker = manager.get_for_account(*key) if manager is not None else None
             if broker is not None:
                 broker.on_order_placed(decision_id, ticket.prepared_order.order.nsc_id)
+
+    def _record_scheduled_nats_feedback(self, account_id, broker_name, decision_id):
+        """Record a scheduled NATS event only through its exact account and decision ID."""
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            return False
+        runtime = self._scheduled_fire_runtime
+        if runtime is None:
+            return False
+        return runtime.record_nats_feedback_by_decision(
+            account_id, broker_name, decision_id
+        )
 
     def set_test_runner_factory(self, factory):
         """
@@ -3931,6 +3949,11 @@ class OrderConfigurationPage(QWidget):
         signal.connect(
             self._make_order_registered_handler(account_id, broker_name)
         )
+        latency_signal = getattr(binder, "order_registered_monotonic", None)
+        if latency_signal is not None:
+            latency_signal.connect(
+                self._make_scheduled_latency_feedback_handler(account_id, broker_name)
+            )
         unavailable_signal = getattr(binder, "feedback_unavailable", None)
         if unavailable_signal is not None:
             unavailable_signal.connect(self._on_feedback_unavailable)
@@ -3967,6 +3990,17 @@ class OrderConfigurationPage(QWidget):
             self._on_order_registered_from_feedback(
                 account_id, broker_name, decision_id, accepted_at_ts,
                 order_info,
+            )
+        return handler
+
+    def _make_scheduled_latency_feedback_handler(self, account_id, broker_name):
+        """Capture NATS receipt ticks and bind them by decision ID only."""
+        def handler(decision_id, monotonic_time):
+            runtime = self._scheduled_fire_runtime
+            if runtime is None:
+                return
+            runtime.record_nats_feedback_by_decision(
+                account_id, broker_name, decision_id, monotonic_time
             )
         return handler
 
@@ -4060,6 +4094,11 @@ class OrderConfigurationPage(QWidget):
         self.feedback_status_label.clear()
         self.order_log.update_core_registration(order, accepted_at)
         self._refresh_order_log_display()
+
+    def scheduled_latency_report(self):
+        """Return the current in-memory report for the active scheduled run."""
+        runtime = self._scheduled_fire_runtime
+        return runtime.latency_report() if runtime is not None else self._scheduled_latency_report
 
     @staticmethod
     def _order_log_description(result):

@@ -106,12 +106,13 @@ class AsyncPreparedOrderTransport:
         self._closed = False
         self._used_ticket_ids = set()
         self._used_lock = threading.Lock()
+        self.supports_post_start_callback = True
 
     @property
     def account_id(self):
         return self._account_id
 
-    async def submit(self, payload):
+    async def submit(self, payload, *, on_post_start=None):
         if self._closed:
             raise RuntimeError("Prepared transport is closed")
         if not self._owner.live_trading_enabled:
@@ -122,6 +123,8 @@ class AsyncPreparedOrderTransport:
             "Authorization": f"Bearer {self._access_token}",
             "UserIdentifier": self._user_identifier,
         }
+        if callable(on_post_start):
+            on_post_start()
         async with self._session.post(
             self._owner._url("order"), headers=headers, json=payload,
             timeout=10,
@@ -141,7 +144,8 @@ class AsyncPreparedOrderTransport:
         self._user_identifier = None
         await session.close()
 
-    async def submit_ticket(self, ticket, authorization, broker, payload=None):
+    async def submit_ticket(self, ticket, authorization, broker, payload=None,
+                            on_post_start=None):
         from core.live_order_authorization import LiveBatchAuthorization
         from core.live_order_authorization import ScheduleTicketLedger
         ledger = getattr(authorization, "ticket_ledger", None)
@@ -168,7 +172,7 @@ class AsyncPreparedOrderTransport:
             if ticket.ticket_id in self._used_ticket_ids:
                 raise RuntimeError("Scheduled ticket is single-use")
             self._used_ticket_ids.add(ticket.ticket_id)
-        return await self.submit(body)
+        return await self.submit(body, on_post_start=on_post_start)
 
 
 class AgaahBroker(Broker):
@@ -1384,7 +1388,7 @@ class AgaahBroker(Broker):
 
     async def submit_from_async_prepared_transport(
         self, transport, account_id, payload, *, ticket=None,
-        authorization=None, broker=None,
+        authorization=None, broker=None, on_post_start=None,
     ):
         """Broker-owned Live hand-off; the broker lock is checked at POST time."""
         if not isinstance(payload, dict):
@@ -1409,7 +1413,8 @@ class AgaahBroker(Broker):
                 "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
             )
         return await transport.submit_ticket(
-            ticket, authorization, broker, payload=payload
+            ticket, authorization, broker, payload=payload,
+            on_post_start=on_post_start,
         )
 
     async def close_async_prepared_transport(self, transport):

@@ -217,6 +217,91 @@ class BrokerApiCallTiming:
         object.__setattr__(self, "duration_ns", self.end - self.start)
 
 
+@dataclass(frozen=True)
+class ScheduledTicketLatency:
+    """Block 8 monotonic observations for one scheduled ticket/turn.
+
+    The optional durations are derived only when both endpoints exist on the
+    same monotonic clock. Timestamp fields and derived intervals are integer
+    nanoseconds. The HTTP interval is the complete local HTTP call window,
+    not pure network or exchange-acceptance latency.
+    """
+
+    execution_id: str
+    ticket_id: str
+    turn_index: int
+    planned_due_ns: int
+    scheduler_wake_ns: Optional[int] = None
+    handoff_start_ns: Optional[int] = None
+    post_start_ns: Optional[int] = None
+    http_response_ns: Optional[int] = None
+    nats_feedback_ns: Optional[int] = None
+    http_ok: Optional[bool] = None
+    nats_correlated: bool = False
+
+    @staticmethod
+    def _elapsed(start: Optional[int], end: Optional[int]) -> Optional[int]:
+        if start is None or end is None or end < start:
+            return None
+        return end - start
+
+    @property
+    def wake_lateness_ns(self):
+        return self._elapsed(self.planned_due_ns, self.scheduler_wake_ns)
+
+    @property
+    def wake_to_post_ns(self):
+        return self._elapsed(self.scheduler_wake_ns, self.post_start_ns)
+
+    @property
+    def wake_to_handoff_ns(self):
+        return self._elapsed(self.scheduler_wake_ns, self.handoff_start_ns)
+
+    @property
+    def handoff_to_post_ns(self):
+        return self._elapsed(self.handoff_start_ns, self.post_start_ns)
+
+    @property
+    def http_round_trip_ns(self):
+        return self._elapsed(self.post_start_ns, self.http_response_ns)
+
+    @property
+    def nats_after_post_ns(self):
+        if not self.nats_correlated:
+            return None
+        return self._elapsed(self.post_start_ns, self.nats_feedback_ns)
+
+
+@dataclass
+class ScheduledLatencyReport:
+    """Diagnostic report for scheduled sends; keyed by ticket, then turn."""
+
+    execution_id: str
+    tickets: List[ScheduledTicketLatency] = field(default_factory=list)
+
+    def __post_init__(self):
+        self._identity_index = {
+            (item.ticket_id, item.turn_index): index
+            for index, item in enumerate(self.tickets)
+        }
+
+    def ticket(self, ticket_id: str, turn_index: int) -> Optional[ScheduledTicketLatency]:
+        index = self._identity_index.get((ticket_id, turn_index))
+        return self.tickets[index] if index is not None else None
+
+    def record(self, ticket_id: str, turn_index: int) -> Optional[ScheduledTicketLatency]:
+        return self.ticket(ticket_id, turn_index)
+
+    def update(self, ticket_id: str, turn_index: int, **changes) -> bool:
+        """Replace one immutable record while retaining ticket/turn identity."""
+        index = self._identity_index.get((ticket_id, turn_index))
+        if index is None:
+            return False
+        from dataclasses import replace
+        self.tickets[index] = replace(self.tickets[index], **changes)
+        return True
+
+
 @dataclass
 class OrderLatency:
     """

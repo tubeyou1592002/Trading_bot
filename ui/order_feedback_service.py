@@ -90,6 +90,7 @@ class OrderFeedbackService(QThread):
     """
 
     order_registered = Signal(str, object, object)
+    order_registered_monotonic = Signal(str, int)
     queue_position = Signal(str, int)
     feedback_error = Signal(str)
     started = Signal()
@@ -249,6 +250,8 @@ class OrderFeedbackService(QThread):
         accepted_at_ts = getattr(
             order_info, "accepted_by_bourse_at", None
         )
+        import time
+        self.order_registered_monotonic.emit(decision_id, time.monotonic_ns())
         self.order_registered.emit(decision_id, accepted_at_ts, order_info)
 
     def _on_queue_position(self, decision_id: str, position: int) -> None:

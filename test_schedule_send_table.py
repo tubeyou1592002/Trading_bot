@@ -589,3 +589,208 @@ def test_async_ticket_timeout_is_not_retried_and_slow_prior_ticket_does_not_seri
 
     asyncio.run(exercise())
     assert len(async_started) == len(set(async_started)) == 20
+
+
+def test_scheduled_latency_is_ticket_turn_scoped_and_nats_requires_exact_decision_id(monkeypatch):
+    import asyncio
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, targets, prepared = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    tick = {"seconds": ticket.due_mono - 0.01}
+    def clock():
+        tick["seconds"] += 0.00000001
+        return tick["seconds"]
+
+    class Response:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return None
+        def raise_for_status(self): return None
+        async def json(self): return {"isSuccess": True, "data": {"decisionId": "D-ONE"}}
+
+    class Session:
+        def __init__(self, **_): pass
+        def post(self, *_args, **_kwargs): return Response()
+        async def close(self): pass
+
+    broker = state["brokers"][(ticket.account_id, ticket.broker_name)]
+    key = (ticket.account_id, ticket.broker_name)
+    broker._account_id = key[0]
+    broker._async_prepared_transports = set()
+    async def prepare(account_id, session_factory, *, connector_limit):
+        transport = type("Transport", (), {})()
+        transport.account_id, transport.session = account_id, session_factory()
+        transport.supports_post_start_callback = True
+        broker._async_prepared_transports.add(transport)
+        return transport
+    async def submit(transport, account_id, payload, **kwargs):
+        kwargs["on_post_start"]()
+        kwargs["ticket"].authorization_id
+        kwargs["authorization"].ticket_ledger.consume(authorization, kwargs["ticket"])
+        return {"isSuccess": True, "data": {"decisionId": "D-ONE"}}
+    async def close(transport): pass
+    broker.prepare_async_order_transport = prepare
+    broker.submit_from_async_prepared_transport = submit
+    broker.close_async_prepared_transport = close
+    broker.live_trading_enabled = True
+    one_ticket_table = replace(table, tickets=(ticket,), order_count=1, planned_turns=1)
+    authorization.ticket_ledger._reserved = {ticket.ticket_id: ticket}
+    runtime = ScheduledFireRuntime(monotonic_clock=clock)
+    try:
+        runtime.arm(one_ticket_table, authorization, {key: broker}, Session)
+        runtime._call(asyncio.sleep(0.02))
+        record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+        assert record is not None
+        assert isinstance(record.planned_due_ns, int)
+        assert record.scheduler_wake_ns is not None
+        assert record.handoff_start_ns is not None
+        assert record.post_start_ns is not None
+        assert record.http_response_ns is not None
+        assert record.wake_lateness_ns is not None
+        assert record.wake_to_handoff_ns is not None
+        assert record.handoff_to_post_ns is not None
+        assert record.http_round_trip_ns is not None
+        assert runtime.bind_decision_id(ticket.ticket_id, ticket.turn_index, "D-ONE")
+        assert not runtime.record_nats_feedback(ticket.ticket_id, ticket.turn_index, "D-OTHER")
+        runtime._ticket_refs[ticket.ticket_id] = ticket
+        runtime._decision_ids[(ticket.account_id, ticket.broker_name, "D-ONE")] = (
+            ticket.ticket_id, ticket.turn_index
+        )
+        assert runtime.record_nats_feedback(ticket.ticket_id, ticket.turn_index, "D-ONE")
+        record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+        assert record.nats_after_post_ns is not None
+    finally:
+        runtime.close()
+        runtime.wait_closed()
+
+
+def test_scheduled_latency_early_nats_is_bounded_and_correlated_after_http(monkeypatch):
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    key = (ticket.account_id, ticket.broker_name)
+    now = {"ns": __import__("time").monotonic_ns() + 1_000_000}
+    runtime = ScheduledFireRuntime(monotonic_clock=lambda: now["ns"] / 1_000_000_000)
+    runtime._clock_injected = False
+    runtime._latency_clock = lambda: now["ns"]
+    runtime._ticket_refs[ticket.ticket_id] = ticket
+    runtime._latency_records[(ticket.ticket_id, ticket.turn_index)] = True
+    from core.latency_instrumentation import ScheduledTicketLatency
+    runtime._latency_report = __import__(
+        "core.latency_instrumentation", fromlist=["ScheduledLatencyReport"]
+    ).ScheduledLatencyReport(ticket.execution_id, [ScheduledTicketLatency(
+        ticket.execution_id, ticket.ticket_id, ticket.turn_index,
+            int(ticket.due_mono * 1_000_000_000),
+        post_start_ns=now["ns"], http_response_ns=now["ns"] + 1,
+    )])
+    try:
+        assert not runtime.record_nats_feedback_by_decision(*key, "EARLY", now["ns"] + 1)
+        assert runtime._pending_nats[(key[0], key[1], "EARLY")] == now["ns"] + 1
+        assert not runtime.record_nats_feedback_by_decision(*key, "EARLY", now["ns"] + 2)
+        assert runtime.bind_decision_id(ticket.ticket_id, ticket.turn_index, "EARLY")
+        record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+        assert record.nats_feedback_ns == now["ns"] + 1
+        assert record.nats_after_post_ns == 1
+        assert not runtime.record_nats_feedback_by_decision(
+            *key, "EARLY", record.post_start_ns - 1
+        )
+        assert not runtime.record_nats_feedback_by_decision(*key, "EARLY", 102)
+
+        other = runtime.record_nats_feedback_by_decision(
+            "OTHER", key[1], "MISMATCH", now["ns"] + 3
+        )
+        assert not other
+        assert len(runtime._pending_nats) == 1
+        runtime._pending_nats.clear()
+        for index in range(runtime._max_pending_nats + 1):
+            runtime.record_nats_feedback_by_decision(
+                key[0], key[1], f"D-{index}", now["ns"] + 10 + index
+            )
+        assert len(runtime._pending_nats) == runtime._max_pending_nats
+        assert (key[0], key[1], "D-0") not in runtime._pending_nats
+        runtime._pending_nats.clear()
+        assert runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index).nats_feedback_ns == now["ns"] + 1
+    finally:
+        runtime.close()
+        runtime.wait_closed()
+
+
+def test_scheduled_latency_durations_are_integer_nanoseconds():
+    from core.latency_instrumentation import ScheduledTicketLatency
+
+    record = ScheduledTicketLatency(
+        "execution", "ticket", 2, 1_000_000_000,
+        scheduler_wake_ns=1_000_000_007,
+        handoff_start_ns=1_000_000_011,
+        post_start_ns=1_000_000_013,
+        http_response_ns=1_000_000_019,
+        nats_feedback_ns=1_000_000_023,
+        nats_correlated=True,
+    )
+    assert record.wake_lateness_ns == 7
+    assert record.wake_to_handoff_ns == 4
+    assert record.handoff_to_post_ns == 2
+    assert record.http_round_trip_ns == 6
+    assert record.nats_after_post_ns == 10
+    assert all(isinstance(value, int) for value in (
+        record.wake_lateness_ns, record.wake_to_handoff_ns,
+        record.handoff_to_post_ns, record.http_round_trip_ns,
+        record.nats_after_post_ns,
+    ))
+
+
+@pytest.mark.parametrize("failure", ["http_error", "timeout"])
+def test_scheduled_latency_records_failed_http_and_never_retries(monkeypatch, failure):
+    import asyncio
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, targets, prepared = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    tick = {"seconds": ticket.due_mono - 0.01}
+    def clock():
+        tick["seconds"] += 0.00000001
+        return tick["seconds"]
+
+    key = (ticket.account_id, ticket.broker_name)
+    broker = state["brokers"][key]
+    broker._account_id = key[0]
+    broker._async_prepared_transports = set()
+    class Transport:
+        def __init__(self):
+            self.account_id = key[0]
+            self.supports_post_start_callback = True
+    async def prepare(account_id, *_args, **_kwargs):
+        transport = Transport()
+        broker._async_prepared_transports.add(transport)
+        return transport
+    calls = []
+    async def submit(_transport, _account_id, _payload, **kwargs):
+        calls.append(kwargs["ticket"].ticket_id)
+        kwargs["on_post_start"]()
+        if failure == "timeout":
+            raise TimeoutError("ambiguous")
+        raise RuntimeError("HTTP failed")
+    async def close(_transport): pass
+    broker.prepare_async_order_transport = prepare
+    broker.submit_from_async_prepared_transport = submit
+    broker.close_async_prepared_transport = close
+    broker.live_trading_enabled = True
+    one_ticket_table = replace(table, tickets=(ticket,), order_count=1, planned_turns=1)
+    authorization.ticket_ledger._reserved = {ticket.ticket_id: ticket}
+    runtime = ScheduledFireRuntime(monotonic_clock=clock)
+    try:
+        runtime.arm(one_ticket_table, authorization, {key: broker}, lambda **_: None)
+        runtime._call(asyncio.sleep(0.02))
+        record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+        assert len(calls) == 1
+        assert record.post_start_ns is not None
+        assert record.http_response_ns is not None
+        assert record.http_round_trip_ns is not None
+        assert record.http_ok is False
+        assert record.nats_after_post_ns is None
+        runtime._call(asyncio.sleep(0))
+        assert calls == [ticket.ticket_id]
+    finally:
+        runtime.close()
+        runtime.wait_closed()
