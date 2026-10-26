@@ -29,6 +29,7 @@ from core.live_order_authorization import (
     payload_fingerprint,
     prepared_fingerprint,
     validate_authorization,
+    reserve_schedule_table,
 )
 
 
@@ -39,6 +40,7 @@ class LiveReadiness:
     gate: Optional[Any] = None
     ready_for_confirmation: bool = False
     authorization: Optional[Any] = None
+    send_table: Optional[Any] = None
 
 
 def check_live_readiness(
@@ -472,6 +474,7 @@ def check_live_batch_readiness(
     queue_revision=None,
     engine=None,
     now=None,
+    first_due_mono=None,
 ) -> LiveReadiness:
     """Derive batch readiness from real evidence, then issue one permit.
 
@@ -543,11 +546,21 @@ def check_live_batch_readiness(
             gate,
         )
 
+    table = None
+    if first_due_mono is not None:
+        try:
+            table = reserve_schedule_table(
+                authorization, targets, _prepared_orders(prepared_batch),
+                first_due_mono, interval_ms,
+            )
+        except Exception as exc:
+            return LiveReadiness(False, f"جدول ارسال رزرو نشد: {exc}", gate)
     return LiveReadiness(
         True,
         "آمادگی و مجوز Live برای همین snapshot تأیید شد.",
         gate=gate,
         authorization=authorization,
+        send_table=table,
     )
 
 

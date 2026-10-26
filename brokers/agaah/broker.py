@@ -34,6 +34,143 @@ REFERER = "https://online.agah.com/"
 CLIENT_KEY = "634e0572-a4a3-4fd6-b033-82211dba74f1"
 
 
+class PreparedOrderSender:
+    """One-shot order sender backed by a transport private to this sender."""
+
+    def __init__(self, *, owner, account_id, user_identifier, access_token,
+                 transport):
+        self._owner = owner
+        self._account_id = account_id
+        self._user_identifier = user_identifier
+        self._access_token = access_token
+        self._transport = transport
+        self._lock = threading.Lock()
+        self._used = False
+        self._closed = False
+
+    @property
+    def owner(self):
+        return self._owner
+
+    @property
+    def account_id(self):
+        return self._account_id
+
+    def _submit_once(self, payload):
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("Prepared sender is closed")
+            if self._used:
+                raise RuntimeError("Prepared sender is single-use")
+            self._used = True
+            transport = self._transport
+            headers = {
+                "Authorization": f"Bearer {self._access_token}",
+                "UserIdentifier": self._user_identifier,
+            }
+            # Keep close() from closing an in-flight transport. This lock is
+            # per sender; separate senders never contend or share a Session.
+            response = transport.post(
+                self._owner._url("order"), headers=headers, json=payload,
+                timeout=10,
+            )
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("isSuccess"):
+                raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
+            return data
+
+    def _close(self):
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            transport, self._transport = self._transport, None
+            self._access_token = None
+            self._user_identifier = None
+        close = getattr(transport, "close", None)
+        if callable(close):
+            close()
+
+
+class AsyncPreparedOrderTransport:
+    """Account-private aiohttp session shared safely by scheduled ticket tasks."""
+
+    def __init__(self, *, owner, account_id, user_identifier, access_token,
+                 session):
+        self._owner = owner
+        self._account_id = account_id
+        self._user_identifier = user_identifier
+        self._access_token = access_token
+        self._session = session
+        self._closed = False
+        self._used_ticket_ids = set()
+        self._used_lock = threading.Lock()
+
+    @property
+    def account_id(self):
+        return self._account_id
+
+    async def submit(self, payload):
+        if self._closed:
+            raise RuntimeError("Prepared transport is closed")
+        if not self._owner.live_trading_enabled:
+            raise RuntimeError(
+                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
+            )
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "UserIdentifier": self._user_identifier,
+        }
+        async with self._session.post(
+            self._owner._url("order"), headers=headers, json=payload,
+            timeout=10,
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        if not data.get("isSuccess"):
+            raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
+        return data
+
+    async def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        session, self._session = self._session, None
+        self._access_token = None
+        self._user_identifier = None
+        await session.close()
+
+    async def submit_ticket(self, ticket, authorization, broker, payload=None):
+        from core.live_order_authorization import LiveBatchAuthorization
+        from core.live_order_authorization import ScheduleTicketLedger
+        ledger = getattr(authorization, "ticket_ledger", None)
+        prepared = getattr(ticket, "prepared_order", None)
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or ticket.authorization_id != authorization.authorization_id
+                or ticket.execution_id != authorization.snapshot.execution_id
+                or ticket.account_id != getattr(prepared, "account_id", None)
+                or ticket.broker_name != getattr(prepared, "broker_name", None)
+                or getattr(prepared, "broker_identity", None) != id(self)
+                or ticket.payload_json != getattr(prepared, "payload_json", None)
+                or not isinstance(ledger, ScheduleTicketLedger)
+                or (reserved := ledger._reserved.get(ticket.ticket_id)) is None
+                or reserved.execution_id != ticket.execution_id
+                or reserved.account_id != ticket.account_id
+                or reserved.broker_name != ticket.broker_name
+                or reserved.turn_index != ticket.turn_index
+                or reserved.payload_json != ticket.payload_json
+                or reserved.prepared_fingerprint != ticket.prepared_fingerprint
+                or broker is not self):
+            raise RuntimeError("ticket payload or destination binding is invalid")
+        body = ticket.payload if payload is None else payload
+        with self._used_lock:
+            if ticket.ticket_id in self._used_ticket_ids:
+                raise RuntimeError("Scheduled ticket is single-use")
+            self._used_ticket_ids.add(ticket.ticket_id)
+        return await self.submit(body)
+
+
 class AgaahBroker(Broker):
 
     def __init__(self):
@@ -62,6 +199,13 @@ class AgaahBroker(Broker):
         # 401 recovery support (Stage 2C.1)
         self._unauthorized_recovery = None
         self._token_lock = threading.Lock()
+        # Prepared order senders own independent HTTP sessions. They are
+        # deliberately created only through this broker so authentication
+        # material never crosses the broker boundary.
+        self._prepared_senders = set()
+        self._async_prepared_transports = set()
+        self._prepared_sender_lock = threading.Lock()
+        self._account_id = None
 
         # ---------------------------------------------
         # Safety
@@ -1161,6 +1305,169 @@ class AgaahBroker(Broker):
         if not data.get("isSuccess"):
             raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
         return data
+
+    def prepare_order_sender(self, account_id, transport_factory=None):
+        """Create a single-use, account-labeled sender with an isolated session.
+
+        The sender captures this broker's current authenticated identity and
+        uses a fresh transport. It is single-use so its requests.Session is
+        never concurrently shared. The broker retains ownership and enforces
+        its existing Live lock for every hand-off.
+
+        ``transport_factory`` is an internal/test seam; production defaults to
+        ``requests.Session``. The supplied account ID is retained only as a
+        binding label because this broker's historical authentication contract
+        does not itself receive the application's account ID.
+        """
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("A non-empty account_id is required")
+        with self._prepared_sender_lock:
+            if self._account_id != account_id:
+                message = ("Broker is already bound to another account"
+                           if self._account_id is not None
+                           else "Broker is not bound to this account")
+                raise RuntimeError(message)
+        access_token = self.access_token
+        user_identifier = self.user_identifier
+        if not access_token or not user_identifier:
+            raise RuntimeError("Broker has no complete authenticated identity")
+        factory = transport_factory or requests.Session
+        transport = factory()
+        try:
+            # Match the broker's API client defaults without sharing its
+            # mutable Session, cookies, adapters, or connection pool.
+            transport.headers.update(dict(self.session.headers))
+            sender = PreparedOrderSender(
+                owner=self,
+                account_id=account_id,
+                user_identifier=user_identifier,
+                access_token=access_token,
+                transport=transport,
+            )
+        except Exception:
+            close = getattr(transport, "close", None)
+            if callable(close):
+                close()
+            raise
+        with self._prepared_sender_lock:
+            self._prepared_senders.add(sender)
+        return sender
+
+    async def prepare_async_order_transport(self, account_id, session_factory, *, connector_limit=1, connector_factory=None):
+        """Create one account-isolated async transport before schedule firing."""
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("A non-empty account_id is required")
+        with self._prepared_sender_lock:
+            if self._account_id != account_id:
+                raise RuntimeError("Broker is not bound to this account")
+        if not self.access_token or not self.user_identifier:
+            raise RuntimeError("Broker has no complete authenticated identity")
+        if not isinstance(connector_limit, int) or connector_limit < 1:
+            raise ValueError("connector_limit must be a positive integer")
+        from aiohttp import ClientTimeout
+        if connector_factory is None:
+            from aiohttp import TCPConnector
+            connector_factory = TCPConnector
+        session = session_factory(
+            headers=dict(self.session.headers),
+            timeout=ClientTimeout(total=10),
+            connector=connector_factory(limit=connector_limit),
+        )
+        transport = AsyncPreparedOrderTransport(
+            owner=self, account_id=account_id,
+            user_identifier=self.user_identifier,
+            access_token=self.access_token, session=session,
+        )
+        with self._prepared_sender_lock:
+            self._async_prepared_transports.add(transport)
+        return transport
+
+    async def submit_from_async_prepared_transport(
+        self, transport, account_id, payload, *, ticket=None,
+        authorization=None, broker=None,
+    ):
+        """Broker-owned Live hand-off; the broker lock is checked at POST time."""
+        if not isinstance(payload, dict):
+            raise TypeError("payload باید از نوع dict باشد.")
+        with self._prepared_sender_lock:
+            valid_owner = (
+                transport in self._async_prepared_transports
+                and transport._owner is self
+                and transport.account_id == account_id
+                and self._account_id == account_id
+            )
+        if not valid_owner:
+            raise RuntimeError("Prepared transport does not belong to this broker/account")
+        if not self.live_trading_enabled:
+            raise RuntimeError(
+                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
+            )
+        if ticket is None:
+            raise RuntimeError("A reserved scheduled ticket is required")
+        if not self.live_trading_enabled:
+            raise RuntimeError(
+                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
+            )
+        return await transport.submit_ticket(
+            ticket, authorization, broker, payload=payload
+        )
+
+    async def close_async_prepared_transport(self, transport):
+        with self._prepared_sender_lock:
+            self._async_prepared_transports.discard(transport)
+        await transport.close()
+
+    async def close_async_prepared_transports(self):
+        with self._prepared_sender_lock:
+            transports = tuple(self._async_prepared_transports)
+            self._async_prepared_transports.clear()
+        for transport in transports:
+            await transport.close()
+
+    def bind_account_identity(self, account_id):
+        """Bind a newly account-scoped broker to its owning account once.
+
+        Account composition must call this when it creates the account-owned
+        broker. Rebinding is rejected, including after sender closure.
+        """
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("A non-empty account_id is required")
+        with self._prepared_sender_lock:
+            if self._account_id is not None and self._account_id != account_id:
+                raise RuntimeError("Broker is already bound to another account")
+            self._account_id = account_id
+
+    def submit_from_prepared_sender(self, sender, account_id, payload):
+        """Broker-owned one-shot hand-off from an already prepared sender."""
+        if not isinstance(payload, dict):
+            raise TypeError("payload باید از نوع dict باشد.")
+        if not self.live_trading_enabled:
+            raise RuntimeError(
+                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
+            )
+        if (not isinstance(sender, PreparedOrderSender)
+                or sender.owner is not self
+                or self._account_id != account_id
+                or sender.account_id != account_id
+                or sender not in self._prepared_senders):
+            raise RuntimeError("Prepared sender does not belong to this broker/account")
+        return sender._submit_once(payload)
+
+    def close_prepared_sender(self, sender):
+        """Close and release one sender; safe to call repeatedly."""
+        with self._prepared_sender_lock:
+            if sender not in self._prepared_senders:
+                return
+            self._prepared_senders.remove(sender)
+        sender._close()
+
+    def close_prepared_senders(self):
+        """Close all outstanding prepared senders owned by this broker."""
+        with self._prepared_sender_lock:
+            senders = tuple(self._prepared_senders)
+            self._prepared_senders.clear()
+        for sender in senders:
+            sender._close()
 
     def place_order(
         self,

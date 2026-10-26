@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import threading
+from uuid import uuid4
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Tuple
@@ -254,7 +255,225 @@ class LiveBatchAuthorization:
     gate_mode: str
     gate_reason: str
     usage_ledger: Any = field(default=None, compare=False, repr=False)
+    ticket_ledger: Any = field(default=None, compare=False, repr=False)
 
+
+@dataclass(frozen=True)
+class ScheduledSendTicket:
+    """One immutable, independently consumable cell in a planned send table."""
+
+    execution_id: str
+    ticket_id: str
+    queue_entry: Any = field(compare=False, repr=False)
+    prepared_order: Any = field(compare=False, repr=False)
+    turn_index: int
+    due_mono: float
+    payload_json: str
+    account_id: str
+    broker_name: str
+    authorization_id: str
+    order_fingerprint: str
+    prepared_fingerprint: str
+
+    @property
+    def payload(self):
+        return json.loads(self.payload_json)
+
+
+@dataclass(frozen=True)
+class ScheduledSendTable:
+    """Complete immutable schedule: exactly one ticket per order and turn."""
+
+    execution_id: str
+    authorization_id: str
+    tickets: Tuple[ScheduledSendTicket, ...]
+    order_count: int
+    planned_turns: int
+
+    def __post_init__(self):
+        expected = self.order_count * self.planned_turns
+        if self.order_count <= 0 or self.planned_turns <= 0:
+            raise LiveAuthorizationError("table dimensions must be positive")
+        if len(self.tickets) != expected:
+            raise LiveAuthorizationError("ticket table is incomplete")
+        if len({ticket.ticket_id for ticket in self.tickets}) != expected:
+            raise LiveAuthorizationError("ticket identities must be unique")
+        if any(ticket.execution_id != self.execution_id
+               or ticket.authorization_id != self.authorization_id
+               for ticket in self.tickets):
+            raise LiveAuthorizationError("ticket authorization binding differs")
+        cells = [(ticket.turn_index, id(ticket.queue_entry)) for ticket in self.tickets]
+        if len(set(cells)) != expected:
+            raise LiveAuthorizationError("ticket table contains duplicate cells")
+        if {ticket.turn_index for ticket in self.tickets} != set(range(self.planned_turns)):
+            raise LiveAuthorizationError("ticket table cadence is incomplete")
+
+    def tickets_for_turn(self, turn_index: int) -> Tuple[ScheduledSendTicket, ...]:
+        return tuple(ticket for ticket in self.tickets if ticket.turn_index == turn_index)
+
+
+class ScheduleTicketLedger:
+    """All-or-nothing table reservation with single-use ticket consumption."""
+
+    def __init__(self, authorization: LiveBatchAuthorization):
+        self._authorization_id = authorization.authorization_id
+        self._maximum = authorization.snapshot.schedule.max_submissions
+        self._reserved: dict[str, ScheduledSendTicket] = {}
+        self._consumed = set()
+        self._armed_ids = frozenset()
+        self._lock = threading.Lock()
+
+    def reserve(self, authorization: LiveBatchAuthorization, table: ScheduledSendTable):
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or authorization.authorization_id != self._authorization_id
+                or not isinstance(table, ScheduledSendTable)):
+            return AuthorizationCheck(False, "invalid table reservation")
+        expected = authorization.snapshot.schedule.max_submissions
+        approved = {item.entry_identity for item in authorization.snapshot.orders}
+        approved_by_entry = {item.entry_identity: item
+                             for item in authorization.snapshot.orders}
+        if (table.execution_id != authorization.snapshot.execution_id
+                or table.authorization_id != authorization.authorization_id
+                or table.order_count != authorization.snapshot.schedule.order_count
+                or table.planned_turns != authorization.snapshot.schedule.planned_turns
+                or len(table.tickets) != expected
+                or any(id(ticket.queue_entry) not in approved for ticket in table.tickets)
+                or len({ticket.ticket_id for ticket in table.tickets}) != expected
+                or len({(id(ticket.queue_entry), ticket.turn_index) for ticket in table.tickets}) != expected
+                or any(sum(id(ticket.queue_entry) == entry_id for ticket in table.tickets)
+                       != authorization.snapshot.schedule.planned_turns
+                       for entry_id in approved)):
+            return AuthorizationCheck(False, "table does not match the approved full schedule")
+        for ticket in table.tickets:
+            item = approved_by_entry.get(id(ticket.queue_entry))
+            if (item is None
+                    or ticket.account_id != item.account_id
+                    or ticket.broker_name != item.broker_name
+                    or ticket.payload_json != item.payload_json
+                    or ticket.order_fingerprint != item.order_fingerprint
+                    or ticket.prepared_fingerprint != item.prepared_fingerprint
+                    or not isinstance(ticket.due_mono, (int, float))):
+                return AuthorizationCheck(False, "ticket payload or destination differs from authorization")
+        if len({ticket.turn_index for ticket in table.tickets}) != table.planned_turns:
+            return AuthorizationCheck(False, "table cadence is incomplete")
+        ids = frozenset(ticket.ticket_id for ticket in table.tickets)
+        with self._lock:
+            if self._reserved:
+                return AuthorizationCheck(False, "a schedule table is already reserved")
+            if len(ids) > self._maximum:
+                return AuthorizationCheck(False, "maximum submissions exceeded")
+            self._reserved = {ticket.ticket_id: ticket for ticket in table.tickets}
+            self._armed_ids = ids
+        return AuthorizationCheck(True, "")
+
+    def validate_armed_table(self, authorization, table):
+        """Validate the full ticket table before countdown, never at firing."""
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or authorization.authorization_id != self._authorization_id
+                or not isinstance(table, ScheduledSendTable)):
+            return AuthorizationCheck(False, "invalid table authorization")
+        with self._lock:
+            valid = (
+                table.authorization_id == self._authorization_id
+                and table.execution_id == authorization.snapshot.execution_id
+                and frozenset(ticket.ticket_id for ticket in table.tickets)
+                == frozenset(self._reserved)
+                and len(self._reserved) == len(table.tickets)
+                and all(
+                    (reserved := self._reserved.get(ticket.ticket_id)) is not None
+                    and reserved.execution_id == ticket.execution_id
+                    and reserved.account_id == ticket.account_id
+                    and reserved.broker_name == ticket.broker_name
+                    and reserved.turn_index == ticket.turn_index
+                    and reserved.payload_json == ticket.payload_json
+                    and reserved.prepared_fingerprint == ticket.prepared_fingerprint
+                    for ticket in table.tickets
+                )
+            )
+        return AuthorizationCheck(valid, "" if valid else "armed table differs")
+
+    def consume(self, authorization: LiveBatchAuthorization, ticket: ScheduledSendTicket):
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or authorization.authorization_id != self._authorization_id
+                or not isinstance(ticket, ScheduledSendTicket)
+                or ticket.authorization_id != self._authorization_id):
+            return AuthorizationCheck(False, "ticket is outside this reservation")
+        with self._lock:
+            if self._reserved.get(ticket.ticket_id) is not ticket:
+                return AuthorizationCheck(False, "ticket was not reserved")
+            if ticket.ticket_id in self._consumed:
+                return AuthorizationCheck(False, "ticket was already consumed")
+            self._consumed.add(ticket.ticket_id)
+        return AuthorizationCheck(True, "")
+
+
+def reserve_schedule_table(authorization, targets, prepared_orders, first_due_mono,
+                           interval_ms):
+    """Build and reserve every approved order/turn cell in one ledger operation."""
+    if not isinstance(authorization, LiveBatchAuthorization):
+        raise LiveAuthorizationError("a valid authorization is required")
+    if (authorization.explicit_live_request is not True
+            or authorization.human_approval is not True
+            or authorization.gate_mode != MODE_ALLOWED):
+        raise LiveAuthorizationError("final approved Live authorization is required")
+    targets = tuple(targets or ())
+    prepared_orders = tuple(prepared_orders or ())
+    schedule = authorization.snapshot.schedule
+    if len(targets) != schedule.order_count or len(prepared_orders) != schedule.order_count:
+        raise LiveAuthorizationError("table order count differs from authorization")
+    if not isinstance(first_due_mono, (int, float)) or not isinstance(interval_ms, (int, float)):
+        raise LiveAuthorizationError("monotonic cadence is unavailable")
+    if float(interval_ms) != float(schedule.interval_ms):
+        raise LiveAuthorizationError("table cadence differs from authorization")
+    prepared_by_identity = {id(item.order): item for item in prepared_orders}
+    if len(prepared_by_identity) != len(prepared_orders):
+        raise LiveAuthorizationError("prepared order is duplicated")
+    tickets = []
+    for turn_index in range(schedule.planned_turns):
+        due_mono = float(first_due_mono) + turn_index * float(interval_ms) / 1000.0
+        for target in targets:
+            entry = target.entry
+            order = entry.order
+            prepared = prepared_by_identity.get(id(order))
+            if (prepared is None or prepared.order is not order
+                    or prepared.execution_id != authorization.snapshot.execution_id
+                    or prepared.account_id != target.account_id
+                    or prepared.broker_name != target.broker_name):
+                raise LiveAuthorizationError("prepared order/destination binding differs")
+            approved = next((item for item in authorization.snapshot.orders
+                             if item.entry_identity == id(entry)
+                             and item.order_identity == id(order)), None)
+            if (approved is None or approved.prepared_identity != id(prepared)
+                    or approved.payload_json != prepared.payload_json):
+                raise LiveAuthorizationError("prepared payload is not approved")
+            tickets.append(ScheduledSendTicket(
+                execution_id=authorization.snapshot.execution_id,
+                ticket_id=uuid4().hex,
+                queue_entry=entry,
+                prepared_order=prepared,
+                turn_index=turn_index,
+                due_mono=due_mono,
+                payload_json=prepared.payload_json,
+                account_id=target.account_id,
+                broker_name=target.broker_name,
+                authorization_id=authorization.authorization_id,
+                order_fingerprint=approved.order_fingerprint,
+                prepared_fingerprint=approved.prepared_fingerprint,
+            ))
+    table = ScheduledSendTable(
+        execution_id=authorization.snapshot.execution_id,
+        authorization_id=authorization.authorization_id,
+        tickets=tuple(tickets),
+        order_count=schedule.order_count,
+        planned_turns=schedule.planned_turns,
+    )
+    ledger = authorization.ticket_ledger
+    if not isinstance(ledger, ScheduleTicketLedger):
+        raise LiveAuthorizationError("schedule ticket ledger is missing")
+    reserved = ledger.reserve(authorization, table)
+    if not reserved.allowed:
+        raise LiveAuthorizationError(reserved.reason)
+    return table
 
 @dataclass(frozen=True)
 class AuthorizationCheck:
@@ -466,6 +685,9 @@ def issue_authorization(
     )
     object.__setattr__(
         authorization, "usage_ledger", LiveAuthorizationLedger(authorization)
+    )
+    object.__setattr__(
+        authorization, "ticket_ledger", ScheduleTicketLedger(authorization)
     )
     return authorization
 
@@ -728,6 +950,10 @@ __all__ = [
     "MODE_BLOCKED",
     "OrderAuthorizationSnapshot",
     "ScheduleSnapshot",
+    "ScheduledSendTable",
+    "ScheduledSendTicket",
+    "ScheduleTicketLedger",
+    "reserve_schedule_table",
     "authorization_diagnostics",
     "build_snapshot",
     "fingerprint",

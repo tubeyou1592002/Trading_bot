@@ -1232,6 +1232,7 @@ class OrderConfigurationPage(QWidget):
         self._test_runner_instance_live = False
         self._live_readiness_factory = None
         self._live_prearm_factory = None
+        self._scheduled_runtime_factory = None
         self._live_batch_gate_factory = None
         self._live_batch_validator = None
         self._prepared_live_batch = None
@@ -1249,6 +1250,10 @@ class OrderConfigurationPage(QWidget):
         self._frozen_snapshot_summary = ""
         self._frozen_targets = ()
         self._schedule_snapshot = None
+        self._scheduled_send_table = None
+        self._scheduled_fire_runtime = None
+        self._scheduled_broker_manager_factory = None
+        self._scheduled_feedback_ids = {}
         self._schedule_queue_entries = None
         self._schedule_apply_queue_revision = None
         self._schedule_arming = False
@@ -3045,6 +3050,12 @@ class OrderConfigurationPage(QWidget):
     def set_live_prearm_factory(self, factory):
         self._live_prearm_factory = factory
 
+    def set_scheduled_runtime_factory(self, factory):
+        self._scheduled_runtime_factory = factory
+
+    def set_scheduled_broker_manager_factory(self, factory):
+        self._scheduled_broker_manager_factory = factory
+
     def set_live_batch_gate_factory(self, factory):
         self._live_batch_gate_factory = factory
 
@@ -3161,9 +3172,16 @@ class OrderConfigurationPage(QWidget):
 
     def set_session_manager(self, manager):
         """Use the application's existing local session state for schedules."""
+        if callable(manager):
+            self._session_manager_factory = manager
+            return
         self._session_manager = manager
         if manager is not None and hasattr(manager, "add_change_listener"):
             manager.add_change_listener(self._on_session_revision_changed)
+
+    def _get_session_manager(self):
+        factory = getattr(self, "_session_manager_factory", None)
+        return factory() if callable(factory) else self._session_manager
 
     def _on_active_account_changed(self, previous_id, current_id):
         with self._schedule_cancel_lock:
@@ -3217,7 +3235,7 @@ class OrderConfigurationPage(QWidget):
         snapshot = self._schedule_snapshot
         if snapshot is None:
             return "snapshot زمان‌بندی در دسترس نیست؛ اجرای زمان‌بندی لغو شد."
-        manager = self._session_manager
+        manager = self._get_session_manager()
         if manager is None:
             return "وضعیت نشست داخلی در دسترس نیست؛ اجرای زمان‌بندی لغو شد."
         for account_id, expected in snapshot.get("sessions", {}).items():
@@ -3243,7 +3261,7 @@ class OrderConfigurationPage(QWidget):
 
     def _schedule_session_rejection(self):
         """Validate every queued destination's local account session."""
-        manager = self._session_manager
+        manager = self._get_session_manager()
         entries = (self._schedule_queue_entries if self._schedule_queue_entries is not None
                    else tuple(self.order_queue.list_pending()))
         if self._schedule_queue_entries is None:
@@ -3279,7 +3297,7 @@ class OrderConfigurationPage(QWidget):
         return None
 
     def _schedule_session_identity(self, active_id):
-        manager = self._session_manager
+        manager = self._get_session_manager()
         if manager is None:
             return None
         try:
@@ -3318,6 +3336,9 @@ class OrderConfigurationPage(QWidget):
                 return
             if dispatcher is not None:
                 dispatcher.cancel(str(reason))
+            runtime = self._scheduled_fire_runtime
+            if runtime is not None:
+                runtime.cancel_pending()
             self._schedule_cancel_event.set()
             self._schedule_cancel_reason = str(reason)
             stop_event = self._dispatch_stop_event
@@ -3403,6 +3424,12 @@ class OrderConfigurationPage(QWidget):
             approved_args = dict(gate_args)
             approved_args["queue_revision"] = self.order_queue.revision
             approved_args["now"] = datetime.now().astimezone()
+            if (self._locked_base_time is not None
+                    and self._locked_mono_anchor is not None):
+                approved_args["first_due_mono"] = (
+                    self._locked_mono_anchor
+                    + (timing.start_time - self._locked_base_time).total_seconds()
+                )
             approved = self._live_batch_gate_factory(**approved_args)
             authorization = getattr(approved, "authorization", None)
             if not getattr(approved, "allowed", False) or authorization is None:
@@ -3419,10 +3446,65 @@ class OrderConfigurationPage(QWidget):
                 return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
             self._prepared_live_batch = prepared_batch
             self._live_authorization = authorization
+            self._scheduled_send_table = getattr(approved, "send_table", None)
             self._live_execution_id = execution_id
             self._live_batch_gate = getattr(approved, "gate", None)
             return True, None, current_targets, authorization, None
         return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
+
+    def _arm_scheduled_fire_runtime(self):
+        """Start loop, account sessions and every ticket task before countdown."""
+        from aiohttp import ClientSession
+
+        if (self._scheduled_send_table is None
+                or self._scheduled_runtime_factory is None):
+            raise RuntimeError("scheduled sender table/runtime is unavailable")
+        brokers = {}
+        manager_factory = getattr(self, "_scheduled_broker_manager_factory", None)
+        manager = manager_factory() if callable(manager_factory) else None
+        if manager is None:
+            raise RuntimeError("account-scoped broker manager is unavailable")
+        for target in self._frozen_targets:
+            key = (target.account_id, target.broker_name)
+            brokers.setdefault(key, manager.get_for_account(*key))
+        runtime = self._scheduled_runtime_factory(
+            on_complete=self._on_scheduled_ticket_complete
+        )
+        try:
+            count = runtime.arm(
+                self._scheduled_send_table, self._live_authorization,
+                brokers, ClientSession,
+            )
+            if count != (len(brokers), len(self._scheduled_send_table.tickets)):
+                raise RuntimeError("scheduled resources are incomplete")
+        except Exception:
+            runtime.close()
+            raise
+        self._scheduled_fire_runtime = runtime
+
+    def _scheduled_broker_manager(self):
+        """Resolve the injected account-scoped manager without guessing."""
+        factory = getattr(self, "_scheduled_broker_manager_factory", None)
+        if callable(factory):
+            return factory()
+        main_window = self.window()
+        resolver = getattr(main_window, "_shared_broker_manager", None)
+        return resolver() if callable(resolver) else None
+
+    def _on_scheduled_ticket_complete(self, ticket, result):
+        """Collect one async result away from the firing cadence."""
+        if isinstance(result, Exception):
+            return
+        if not isinstance(result, dict):
+            return
+        decision_id = (result.get("data") or {}).get("decisionId")
+        if isinstance(decision_id, str) and decision_id.strip():
+            self._scheduled_feedback_ids[ticket.ticket_id] = decision_id
+            key = (ticket.account_id, ticket.broker_name)
+            manager = self._scheduled_broker_manager()
+            broker = manager.get_for_account(*key) if manager is not None else None
+            if broker is not None:
+                broker.on_order_placed(decision_id, ticket.prepared_order.order.nsc_id)
 
     def set_test_runner_factory(self, factory):
         """
@@ -5151,7 +5233,7 @@ class OrderConfigurationPage(QWidget):
         self._pending_dispatch_targets = None
         self._pending_dispatch_snapshot = None
         timing = self._schedule_timing
-        manager = self._session_manager
+        manager = self._get_session_manager()
         session_identity = None
         sessions = {}
         try:
@@ -5253,6 +5335,9 @@ class OrderConfigurationPage(QWidget):
         if self._dispatcher is not None:
             self._dispatcher.stop()
         self._stop_dispatch_worker()
+        runtime, self._scheduled_fire_runtime = self._scheduled_fire_runtime, None
+        if runtime is not None:
+            runtime.close()
         self._dispatcher = None
         self._dispatch_interval_ms = None
         self._pending_dispatch_interval_ms = None
@@ -5841,6 +5926,15 @@ class OrderConfigurationPage(QWidget):
         # belong to Task 11.5; never route Live through the legacy dispatcher.
         if not self._frozen_live_mode:
             self._start_dispatch_worker(self._dispatcher)
+        else:
+            try:
+                self._arm_scheduled_fire_runtime()
+            except Exception as exc:
+                self._clear_accepted_schedule()
+                self._set_schedule_summary(
+                    STRINGS.LIVE_START_REJECTED.format(reason=str(exc))
+                )
+                return
         if self._frozen_snapshot_summary:
             self._show_queue_status(self._frozen_snapshot_summary)
         self._start_countdown()
@@ -5872,6 +5966,7 @@ class OrderConfigurationPage(QWidget):
         self._pending_live_gate = None
         self._prepared_live_batch = None
         self._live_authorization = None
+        self._scheduled_send_table = None
         self._live_execution_id = None
         self._live_batch_gate = None
         self._pending_dispatch_targets = None

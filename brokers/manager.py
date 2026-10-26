@@ -113,6 +113,12 @@ class BrokerManager:
                     or any(broker is existing for existing in self.account_brokers.values())):
                 raise ValueError("Broker factory returned an invalid or reused instance")
 
+            # Optional additive account-binding contract used by brokers
+            # that provide account-owned prepared senders.
+            bind_identity = getattr(broker, "bind_account_identity", None)
+            if callable(bind_identity):
+                bind_identity(account_id)
+
             self.account_brokers[key] = broker
             return broker
 

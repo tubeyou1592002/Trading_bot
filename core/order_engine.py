@@ -358,6 +358,52 @@ class OrderEngine:
         return OrderExecutionResult(True, live, "LIVE" if live else "DRY_RUN",
             order, broker_name=broker_name, response=response)
 
+    def submit_reserved_ticket(self, ticket, authorization, broker, account,
+                               live=True):
+        """Hand off one pre-reserved ticket without invoking the legacy claim path."""
+        from core.live_order_authorization import (
+            ScheduleTicketLedger, prepared_fingerprint,
+        )
+
+        prepared = getattr(ticket, "prepared_order", None)
+        order = getattr(prepared, "order", None)
+        def blocked(message):
+            return OrderExecutionResult(False, False, "BLOCKED", order,
+                broker_name=getattr(ticket, "broker_name", None), message=message)
+        if not live:
+            return blocked("reserved Live tickets require explicit Live hand-off")
+        from core.live_order_authorization import LiveBatchAuthorization
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or getattr(ticket, "authorization_id", None)
+                != getattr(authorization, "authorization_id", None)
+                or getattr(ticket, "execution_id", None)
+                != getattr(authorization.snapshot, "execution_id", None)):
+            return blocked("ticket authorization binding is invalid")
+        if (getattr(ticket, "account_id", None) != getattr(prepared, "account_id", None)
+                or getattr(ticket, "broker_name", None) != getattr(prepared, "broker_name", None)
+                or getattr(prepared, "broker_identity", None) != id(broker)
+                or getattr(ticket, "payload_json", None) != getattr(prepared, "payload_json", None)
+                or prepared_fingerprint(prepared)
+                != getattr(ticket, "prepared_fingerprint", None)):
+            return blocked("ticket payload or destination binding is invalid")
+        if getattr(broker, "live_trading_enabled", False) is not True:
+            return blocked("ارسال زنده سفارش غیرفعال است")
+        if not callable(getattr(broker, "submit_prepared_order", None)):
+            return blocked("broker lacks prepared-order submission")
+        ledger = getattr(authorization, "ticket_ledger", None)
+        if not isinstance(ledger, ScheduleTicketLedger):
+            return blocked("reserved ticket ledger is unavailable")
+        consumed = ledger.consume(authorization, ticket)
+        if not consumed.allowed:
+            return blocked(consumed.reason)
+        try:
+            response = broker.submit_prepared_order(ticket.payload, live=True)
+        except Exception as exc:
+            return OrderExecutionResult(False, False, "ERROR", order,
+                broker_name=ticket.broker_name, message=str(exc))
+        return OrderExecutionResult(True, True, "LIVE", order,
+            broker_name=ticket.broker_name, response=response)
+
     def prepare_batch(self, requests, execution_id=None):
         """Prepare all request tuples (kwargs to prepare_order), or reject all."""
         if execution_id is None:

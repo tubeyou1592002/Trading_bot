@@ -270,7 +270,7 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_trading_state_query_factory(
             self._real_tsetmc_trading_state_query
         )
-        self.order_configuration_page.set_session_manager(self.session_manager)
+        self.order_configuration_page.set_session_manager(lambda: self.session_manager)
         self.order_configuration_page.set_order_identity_factory(
             self._real_order_identity_resolver
         )
@@ -302,6 +302,12 @@ class MainWindow(QMainWindow):
         )
         self.order_configuration_page.set_live_prearm_factory(
             self._real_live_prearm
+        )
+        self.order_configuration_page.set_scheduled_runtime_factory(
+            self._real_scheduled_runtime
+        )
+        self.order_configuration_page.set_scheduled_broker_manager_factory(
+            self._shared_broker_manager
         )
         self.order_configuration_page.set_live_batch_gate_factory(
             self._real_live_batch_gate
@@ -461,6 +467,12 @@ class MainWindow(QMainWindow):
         return LivePrearmService(
             self.account_store, self.session_manager, self._shared_broker_manager()
         )
+
+    def _real_scheduled_runtime(self, **kwargs):
+        """Create a fresh private async runtime for one approved schedule."""
+        from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+        return ScheduledFireRuntime(**kwargs)
 
     def _real_live_batch_gate(self, **kwargs):
         from ui.live_order_gate import check_live_batch_readiness
