@@ -30,6 +30,7 @@ from core.live_order_authorization import (
     prepared_fingerprint,
     validate_authorization,
     reserve_schedule_table,
+    ManualLivePermit,
 )
 
 
@@ -41,6 +42,124 @@ class LiveReadiness:
     ready_for_confirmation: bool = False
     authorization: Optional[Any] = None
     send_table: Optional[Any] = None
+
+
+def issue_manual_live_permit(*, execution_id, account_id, broker_name, broker,
+                             entries, prepared_batch, gate_decision,
+                             confirmation_acknowledged, include_missing_broker_ack=False):
+    """Create one manual execution permit from verified prepared evidence."""
+    from core.live_order_authorization import fingerprint as stable_fingerprint
+    from core.order_engine import PreparedBatch
+    entries = tuple(entries or ())
+    if not entries or not isinstance(prepared_batch, PreparedBatch):
+        raise LiveAuthorizationError("manual batch preparation is unavailable")
+    if confirmation_acknowledged is not True:
+        raise LiveAuthorizationError("explicit final confirmation is missing")
+    if prepared_batch.valid is not True or prepared_batch.checks_succeeded is not True:
+        raise LiveAuthorizationError("manual batch preparation failed")
+    if prepared_batch.execution_id != execution_id or len(entries) != len(prepared_batch.orders):
+        raise LiveAuthorizationError("manual batch identity or count mismatch")
+    for entry, prepared in zip(entries, prepared_batch.orders):
+        if (getattr(entry, "account_id", None) != account_id
+                or getattr(entry, "broker_name", None) != broker_name
+                or getattr(prepared, "order", None) is not entry.order
+                or prepared.account_id != account_id
+                or prepared.broker_name != broker_name
+                or prepared.broker_identity != id(broker)
+                or not prepared.scheduled_valid):
+            raise LiveAuthorizationError("manual queue or prepared destination mismatch")
+    queue_fingerprint = stable_fingerprint(tuple(
+        (id(entry), id(entry.order), entry.account_id, entry.broker_name,
+         entry.order.to_payload(), prepared_fingerprint(prepared))
+        for entry, prepared in zip(entries, prepared_batch.orders)
+    ))
+    return ManualLivePermit(
+        execution_id=execution_id, account_id=account_id,
+        broker_name=broker_name, broker=broker,
+        queue_fingerprint=queue_fingerprint,
+        prepared_fingerprints=tuple(prepared_fingerprint(item)
+                                    for item in prepared_batch.orders),
+        gate_decision=gate_decision,
+        missing_broker_acknowledged=include_missing_broker_ack,
+        _issuer=__import__("core.live_order_authorization",
+                           fromlist=["_MANUAL_PERMIT_ISSUER"])._MANUAL_PERMIT_ISSUER,
+    ), queue_fingerprint
+
+
+def check_manual_live_preflight(*, account_store, authentication_service,
+                                session_manager, broker_manager, account_id,
+                                broker_name, execution_id, entries,
+                                prepared_batch, engine, live_selected,
+                                human_approval, include_missing_broker_ack=False,
+                                confirmation_acknowledged=False):
+    """Check real prepared evidence + local destination and SafetyGate."""
+    from core.safety_gate import SafetyGate
+    from ui.order_authorization import authorize_order
+    from core.live_order_authorization import fingerprint as stable_fingerprint
+    entries = tuple(entries or ())
+    if live_selected is not True or not entries:
+        return LiveReadiness(False, "Live mode or a non-empty queue is required.")
+    if confirmation_acknowledged is not True or human_approval is not True:
+        return LiveReadiness(False, "تأیید نهایی صریح لازم است.")
+    if any(entry.account_id != account_id or entry.broker_name != broker_name
+           for entry in entries):
+        return LiveReadiness(False, "صف چندحسابی/چندکارگزاری پشتیبانی نمی‌شود.")
+    local = authorize_order(account_store, authentication_service,
+                            session_manager, account_id, broker_name)
+    if not local.authorized:
+        return LiveReadiness(False, "حساب مقصد یا نشست معتبر نیست.")
+    try:
+        broker = broker_manager.get_for_account(account_id, broker_name)
+        record = account_store.get(account_id)
+        if record.account is None or record.broker_name != broker_name:
+            raise LiveAuthorizationError("destination account mismatch")
+        if not callable(getattr(broker, "submit_manual_prepared_order", None)):
+            raise LiveAuthorizationError("broker lacks manual one-shot capability")
+        if (not isinstance(prepared_batch.orders, tuple)
+                or len(prepared_batch.orders) != len(entries)
+                or prepared_batch.valid is not True
+                or prepared_batch.checks_succeeded is not True
+                or prepared_batch.execution_id != execution_id):
+            raise LiveAuthorizationError("M6 prepared batch is incomplete")
+        for entry, prepared in zip(entries, prepared_batch.orders):
+            valid, reason = engine.validate_prepared_order(
+                prepared, broker, record.account, account_id, broker_name,
+                now=datetime.now().astimezone(), check_expiry=False,
+            )
+            if (not valid or prepared.order is not entry.order
+                    or not prepared.scheduled_valid):
+                raise LiveAuthorizationError(reason or "prepared order does not match queue")
+        session = session_manager.get(account_id)
+        token = session_manager.get_token(account_id)
+        if (getattr(session.state, "value", str(session.state)) != "logged_in"
+                or session.account_id != account_id
+                or session.broker_name != broker_name
+                or not isinstance(token, str) or not token.strip()):
+            raise LiveAuthorizationError("account session changed or is invalid")
+        from core.live_order_authorization import prepared_fingerprint
+        queue_fp = stable_fingerprint(tuple(
+            (id(entry), id(entry.order), entry.account_id, entry.broker_name,
+             entry.order.to_payload(), prepared_fingerprint(prepared))
+            for entry, prepared in zip(entries, prepared_batch.orders)
+        ))
+        gate = SafetyGate(
+            live_block9_state="COMPLETED", explicit_live_request=live_selected,
+            human_approval=human_approval, live_state="KNOWN",
+            m6_status=M6_EVIDENCE_PASSED,
+            acceptable_m6_statuses=(M6_EVIDENCE_PASSED,),
+            broker_status=None,
+            acceptable_broker_statuses=(),
+        )
+        decision = gate.evaluate(manual_broker_acknowledged=include_missing_broker_ack)
+        if not decision.allowed:
+            if decision.blocked_by == "human_approval" and human_approval is not True:
+                return LiveReadiness(False, "تأیید نهایی صریح لازم است.", gate,
+                                     ready_for_confirmation=True)
+            return LiveReadiness(False, decision.reason, gate)
+        return LiveReadiness(True, "Manual one-shot preflight passed.", gate,
+                             send_table=(queue_fp, decision, broker))
+    except Exception as exc:
+        return LiveReadiness(False, f"آمادگی Live قابل‌تأیید نیست: {exc}")
 
 
 def check_live_readiness(

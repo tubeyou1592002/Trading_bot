@@ -2,6 +2,7 @@ import base64
 import logging
 import math
 import threading
+import json
 from typing import TYPE_CHECKING, Optional
 
 import requests
@@ -38,7 +39,7 @@ class PreparedOrderSender:
     """One-shot order sender backed by a transport private to this sender."""
 
     def __init__(self, *, owner, account_id, user_identifier, access_token,
-                 transport):
+                 transport, manual_live=False):
         self._owner = owner
         self._account_id = account_id
         self._user_identifier = user_identifier
@@ -47,6 +48,7 @@ class PreparedOrderSender:
         self._lock = threading.Lock()
         self._used = False
         self._closed = False
+        self._manual_live = manual_live
 
     @property
     def owner(self):
@@ -62,6 +64,8 @@ class PreparedOrderSender:
                 raise RuntimeError("Prepared sender is closed")
             if self._used:
                 raise RuntimeError("Prepared sender is single-use")
+            if self._manual_live:
+                raise RuntimeError("Manual sender requires its scoped permit")
             self._used = True
             transport = self._transport
             headers = {
@@ -76,6 +80,35 @@ class PreparedOrderSender:
             )
             response.raise_for_status()
             data = response.json()
+            if not data.get("isSuccess"):
+                raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
+            return data
+
+    def _submit_manual_once(self, payload, permit):
+        from core.live_order_authorization import ManualLivePermit
+        if not isinstance(permit, ManualLivePermit):
+            raise RuntimeError("Manual Live permit is invalid")
+        with self._lock:
+            if self._closed or self._used:
+                raise RuntimeError("Prepared sender is closed or already used")
+            if self._manual_live is not True:
+                raise RuntimeError("Sender is not authorized for manual Live")
+            self._used = True
+            post_started = False
+            try:
+                post_started = True
+                response = self._transport.post(
+                    self._owner._url("order"),
+                    headers={"Authorization": f"Bearer {self._access_token}",
+                             "UserIdentifier": self._user_identifier},
+                    json=payload, timeout=10,
+                )
+                response.raise_for_status()
+                data = response.json()
+            except Exception as exc:
+                if post_started:
+                    raise RuntimeError("MANUAL_LIVE_UNKNOWN: " + str(exc)) from exc
+                raise
             if not data.get("isSuccess"):
                 raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
             return data
@@ -1309,6 +1342,75 @@ class AgaahBroker(Broker):
         if not data.get("isSuccess"):
             raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
         return data
+
+    def submit_manual_prepared_order(self, payload, *, permit, prepared,
+                                     account_id, broker_name,
+                                     queue_fingerprint, index):
+        """Broker-owned manual Live POST authorized by one scoped permit."""
+        from core.live_order_authorization import ManualLivePermit, prepared_fingerprint
+        if not isinstance(payload, dict) or not isinstance(permit, ManualLivePermit):
+            raise RuntimeError("Manual Live permit or payload is invalid")
+        if (not permit.matches(
+                execution_id=prepared.execution_id,
+                account_id=account_id, broker_name=broker_name, broker=self,
+                queue_fingerprint=queue_fingerprint,
+                prepared_fingerprint=prepared_fingerprint(prepared), index=index)):
+            raise RuntimeError("Manual Live permit binding invalid or already consumed")
+        if (getattr(prepared, "account_id", None) != account_id
+                or getattr(prepared, "broker_name", None) != broker_name
+                or getattr(prepared, "broker_identity", None) != id(self)
+                or prepared.payload_json != json.dumps(
+                    payload, sort_keys=True, default=str, separators=(",", ":")
+                )):
+            raise RuntimeError("Prepared payload or destination binding changed")
+        if self.live_trading_enabled is True:
+            raise RuntimeError("Manual one-shot path requires the global Live lock to remain closed")
+        with self._prepared_sender_lock:
+            if self._account_id != account_id:
+                raise RuntimeError("Broker is not bound to this account")
+        if not self.access_token or not self.user_identifier:
+            raise RuntimeError("Broker has no complete authenticated identity")
+        if not permit.claim(
+            execution_id=prepared.execution_id,
+            account_id=account_id, broker_name=broker_name, broker=self,
+            queue_fingerprint=queue_fingerprint,
+            prepared_fingerprint=prepared_fingerprint(prepared), index=index,
+        ):
+            raise RuntimeError("Manual Live permit invalid or already consumed")
+        sender = self.prepare_manual_order_sender(account_id)
+        try:
+            # Do not toggle the public lock; the dedicated sender is the
+            # broker-owned boundary for this approved manual capability.
+            return sender._submit_manual_once(payload, permit)
+        finally:
+            self.close_prepared_sender(sender)
+
+    def prepare_manual_order_sender(self, account_id, transport_factory=None):
+        """Build an account-private sender only for manual scoped permits."""
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise ValueError("A non-empty account_id is required")
+        with self._prepared_sender_lock:
+            if self._account_id != account_id:
+                raise RuntimeError("Broker is not bound to this account")
+        if not self.access_token or not self.user_identifier:
+            raise RuntimeError("Broker has no complete authenticated identity")
+        transport = (transport_factory or requests.Session)()
+        try:
+            transport.headers.update(dict(self.session.headers))
+            sender = PreparedOrderSender(
+                owner=self, account_id=account_id,
+                user_identifier=self.user_identifier,
+                access_token=self.access_token, transport=transport,
+                manual_live=True,
+            )
+        except Exception:
+            close = getattr(transport, "close", None)
+            if callable(close):
+                close()
+            raise
+        with self._prepared_sender_lock:
+            self._prepared_senders.add(sender)
+        return sender
 
     def prepare_order_sender(self, account_id, transport_factory=None):
         """Create a single-use, account-labeled sender with an isolated session.

@@ -178,6 +178,8 @@ class SafetyGate:
         self,
         m6_status: Optional[str] = None,
         broker_status: Optional[str] = None,
+        *,
+        manual_broker_acknowledged: bool = False,
     ) -> SafetyGateDecision:
         """
         Decide whether entry into Live execution is permitted.
@@ -199,7 +201,10 @@ class SafetyGate:
                 ),
                 (
                     "broker_status",
-                    lambda: self._check_broker_status(broker_status),
+                    lambda: self._check_broker_status(
+                        broker_status,
+                        manual_broker_acknowledged=manual_broker_acknowledged,
+                    ),
                 ),
                 ("explicit_live_request", self._check_explicit_request),
                 ("human_approval", self._check_human_approval),
@@ -299,9 +304,16 @@ class SafetyGate:
     def _check_broker_status(
         self,
         broker_status: Optional[str],
+        *,
+        manual_broker_acknowledged: bool = False,
     ) -> Optional[str]:
         """Consume the live-capable broker readiness RESULT as supplied
         data only — no broker is resolved, read, or interpreted here."""
+        if (manual_broker_acknowledged is True
+                and self.explicit_live_request is True
+                and self.human_approval is True
+                and self.m6_status in self.acceptable_m6_statuses):
+            return None
         status = (
             broker_status
             if broker_status is not None

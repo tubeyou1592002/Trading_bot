@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Optional, Tuple
 
+_MANUAL_PERMIT_ISSUER = object()
+
 
 # Status values derived ONLY from actual successful prepared-order evidence.
 # They are not generic "READY"/"ACTIVE" aliases and are never supplied when
@@ -43,6 +45,65 @@ MODE_BLOCKED = "BLOCKED"
 
 class LiveAuthorizationError(ValueError):
     """Raised when an authorization cannot be issued from the evidence."""
+
+
+class ManualLivePermit:
+    """Opaque, process-local, one-use permission for one manual Live batch."""
+
+    __slots__ = ("execution_id", "account_id", "broker_name", "broker_identity",
+                 "queue_fingerprint", "prepared_fingerprints", "gate_decision",
+                 "_missing_broker_ack", "_used", "_closed", "_lock")
+
+    def __init__(self, *, execution_id, account_id, broker_name, broker,
+                 queue_fingerprint, prepared_fingerprints, gate_decision,
+                 missing_broker_acknowledged=False, _issuer=None):
+        from core.safety_gate import SafetyGateDecision
+        if _issuer is not _MANUAL_PERMIT_ISSUER:
+            raise LiveAuthorizationError("manual Live permit must be issued by the readiness gate")
+        if not isinstance(gate_decision, SafetyGateDecision) or gate_decision.allowed is not True:
+            raise LiveAuthorizationError("manual Live requires an allowed SafetyGateDecision")
+        self.execution_id = execution_id
+        self.account_id = account_id
+        self.broker_name = broker_name
+        self.broker_identity = id(broker)
+        self.queue_fingerprint = queue_fingerprint
+        self.prepared_fingerprints = tuple(prepared_fingerprints)
+        self.gate_decision = gate_decision
+        self._missing_broker_ack = missing_broker_acknowledged
+        self._used = set()
+        self._closed = False
+        self._lock = threading.Lock()
+
+    def claim(self, *, execution_id, account_id, broker_name, broker,
+              queue_fingerprint, prepared_fingerprint, index):
+        with self._lock:
+            if not self.matches(
+                execution_id=execution_id, account_id=account_id,
+                broker_name=broker_name, broker=broker,
+                queue_fingerprint=queue_fingerprint,
+                prepared_fingerprint=prepared_fingerprint, index=index,
+            ) or index in self._used:
+                return False
+            self._used.add(index)
+            return True
+
+    def matches(self, *, execution_id, account_id, broker_name, broker,
+                queue_fingerprint, prepared_fingerprint, index):
+        if self._closed:
+            return False
+        return (
+            execution_id == self.execution_id and account_id == self.account_id
+            and broker_name == self.broker_name
+            and id(broker) == self.broker_identity
+            and queue_fingerprint == self.queue_fingerprint
+            and isinstance(index, int) and not isinstance(index, bool)
+            and 0 <= index < len(self.prepared_fingerprints)
+            and prepared_fingerprint == self.prepared_fingerprints[index]
+        )
+
+    def close(self):
+        with self._lock:
+            self._closed = True
 
 
 def fingerprint(value: Any) -> str:

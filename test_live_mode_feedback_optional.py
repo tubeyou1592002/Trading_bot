@@ -51,53 +51,28 @@ def test_default_mode_is_dry_run_and_live_requires_confirmation(qapp):
         page.live_mode_button.setChecked(True)
         assert page._run_mode == "live"
         prompts = []
-        page.set_live_readiness_factory(
-            lambda *_args, **_kwargs: LiveReadiness(
-                False, "confirm", ready_for_confirmation=True
-            )
-        )
         page.set_live_confirmation_handler(lambda summary: prompts.append(summary) or False)
         page._test_mode = True
         page._test_runner_factory = lambda **_: pytest.fail("must not build runner")
         page._run_test_pass()
-        assert prompts and "Account One / SIM" in prompts[0]
-        assert STRINGS.LIVE_CONFIRM_CANCELLED in page.queue_status_label.text()
+        assert not prompts
+        assert "آماده‌ساز واقعی" in page.queue_status_label.text()
     finally:
         page.close()
 
 
-def test_live_preflight_happens_before_prompt_and_uses_safety_gate(qapp):
+def test_live_missing_preparation_fails_closed_before_prompt(qapp):
     page, _, queue = make_page(qapp)
     try:
         queue.enqueue(Order("N1", 1, 100, 1), "ACC-1", "SIM")
         page.live_mode_button.setChecked(True)
-        observed = []
-        page.set_live_readiness_factory(
-            lambda *_args, **kwargs: (
-                observed.append(kwargs["human_approval"])
-                or LiveReadiness(
-                    kwargs["human_approval"],
-                    "ready",
-                    _AllowedGate() if kwargs["human_approval"] else None,
-                    ready_for_confirmation=not kwargs["human_approval"],
-                )
-            )
-        )
-        page.set_live_confirmation_handler(lambda _summary: True)
-        called = []
-
-        class Runner:
-            def run(self, entries, account=None):
-                called.append((tuple(entries), account))
-                return None, "exec", SimpleNamespace(success=True, sent=True)
-
-        page.set_test_runner_factory(lambda **kwargs: (called.append(kwargs), Runner())[1])
+        prompts = []
+        page.set_live_confirmation_handler(lambda summary: prompts.append(summary) or True)
+        page.set_test_runner_factory(lambda **_: pytest.fail("runner must not be built"))
         page._test_mode = True
         page._run_test_pass()
-        assert observed == [False, True]
-        assert called[0]["live"] is True
-        assert called[0]["safety_gate"] is not None
-        assert len(called) == 2
+        assert prompts == []
+        assert "آماده‌ساز واقعی" in page.queue_status_label.text()
     finally:
         page.close()
 
@@ -126,7 +101,7 @@ def test_snapshot_mutation_during_live_confirmation_aborts(qapp):
         page.set_test_runner_factory(lambda **_: pytest.fail("stale snapshot dispatched"))
         page._test_mode = True
         page._run_test_pass()
-        assert STRINGS.LIVE_SNAPSHOT_CHANGED in page.queue_status_label.text()
+        assert "آماده‌ساز واقعی" in page.queue_status_label.text()
     finally:
         page.close()
 

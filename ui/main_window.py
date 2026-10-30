@@ -303,6 +303,10 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_live_prearm_factory(
             self._real_live_prearm
         )
+        self.order_configuration_page.set_manual_live_services(
+            self._shared_broker_manager,
+            lambda: self.authentication_service,
+        )
         self.order_configuration_page.set_scheduled_runtime_factory(
             self._real_scheduled_runtime
         )
