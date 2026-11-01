@@ -8,9 +8,10 @@ and schedule scope, derives the M6/broker statuses only from that evidence,
 and returns an immutable authorization bound to that exact snapshot.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import hashlib
+import math
 from typing import Any, Optional
 
 from core.live_order_authorization import (
@@ -32,6 +33,7 @@ from core.live_order_authorization import (
     reserve_schedule_table,
     ManualLivePermit,
 )
+from models.order import BUY
 
 
 @dataclass(frozen=True)
@@ -91,28 +93,108 @@ def check_manual_live_preflight(*, account_store, authentication_service,
                                 broker_name, execution_id, entries,
                                 prepared_batch, engine, live_selected,
                                 human_approval, include_missing_broker_ack=False,
-                                confirmation_acknowledged=False):
+                                confirmation_acknowledged=False, trace_callback=None):
     """Check real prepared evidence + local destination and SafetyGate."""
     from core.safety_gate import SafetyGate
     from ui.order_authorization import authorize_order
     from core.live_order_authorization import fingerprint as stable_fingerprint
     entries = tuple(entries or ())
+    trace_reasons = set()
+    def trace(stage, classification=None, reason_code=None):
+        try:
+            if callable(trace_callback):
+                trace_callback(stage, classification=classification,
+                               reason_code=reason_code)
+            if reason_code:
+                trace_reasons.add(reason_code)
+        except Exception:
+            pass
     if live_selected is not True or not entries:
+        trace("readiness_input_validation", "BLOCKED", "READINESS_INPUT_INVALID")
         return LiveReadiness(False, "Live mode or a non-empty queue is required.")
     if confirmation_acknowledged is not True or human_approval is not True:
+        trace("readiness_confirmation_validation", "BLOCKED", "READINESS_CONFIRMATION_INVALID")
         return LiveReadiness(False, "تأیید نهایی صریح لازم است.")
     if any(entry.account_id != account_id or entry.broker_name != broker_name
            for entry in entries):
+        trace("readiness_scope_validation", "BLOCKED", "READINESS_SCOPE_MISMATCH")
         return LiveReadiness(False, "صف چندحسابی/چندکارگزاری پشتیبانی نمی‌شود.")
+    trace("readiness_auth_session_start")
     local = authorize_order(account_store, authentication_service,
                             session_manager, account_id, broker_name)
     if not local.authorized:
+        trace("readiness_auth_session_result", "BLOCKED", "READINESS_AUTH_REJECTED")
         return LiveReadiness(False, "حساب مقصد یا نشست معتبر نیست.")
+    trace("readiness_auth_session_result", "ALLOWED")
     try:
+        trace("readiness_broker_resolve_start")
         broker = broker_manager.get_for_account(account_id, broker_name)
+        trace("readiness_broker_resolve_result", "OK")
         record = account_store.get(account_id)
         if record.account is None or record.broker_name != broker_name:
             raise LiveAuthorizationError("destination account mismatch")
+
+        # Refresh T1 tradable balance from the authenticated session of THIS
+        # account only, for this preflight only. Never fall back to the cached
+        # account_store balance, never substitute zero/stale/guessed value,
+        # and never mix accounts or sessions. If the session cannot provide a
+        # fresh balance, preflight is fail-closed.
+        fresh_balance = None
+        getter = getattr(authentication_service, "get_purchase_power", None)
+        if callable(getter):
+            trace("readiness_balance_start")
+            try:
+                fresh_balance = getter(account_id)
+            except Exception:
+                fresh_balance = None
+        else:
+            adapter = getattr(authentication_service, "get_adapter", None)
+            if callable(adapter):
+                adapter_instance = adapter(account_id)
+                if adapter_instance is not None:
+                    for name in ("get_purchase_power", "get_tradable_balance"):
+                        method = getattr(adapter_instance, name, None)
+                        if callable(method):
+                            try:
+                                fresh_balance = method()
+                            except Exception:
+                                fresh_balance = None
+                            break
+
+        if (
+            fresh_balance is None
+            or isinstance(fresh_balance, bool)
+            or not isinstance(fresh_balance, (int, float))
+            or not math.isfinite(fresh_balance)
+            or fresh_balance < 0
+        ):
+            trace("readiness_balance_result", "BLOCKED", "READINESS_BALANCE_INVALID")
+            return LiveReadiness(
+                False,
+                "ط­ط³ط§ط¨ ظ…ط¹طھط¨ط± ظ†غŒط³طھط› ط¸ط±ظپغŒطھ ط®ط±غŒط¯ (T1) ط­ط§ط³ط¨ظ‡ ظ†غŒط³طھ — refresh balance نامisiert."
+            )
+        trace("readiness_balance_result", "OK")
+
+        # For a BUY order, the fresh session balance must cover the order
+        # cost. This is an additional preflight gate on top of the cached
+        # balance already used while building the prepared batch.
+        if any(getattr(entry.order, "side", None) == BUY for entry in entries):
+            needed = sum(
+                (getattr(entry.order, "price", 0) or 0)
+                * (getattr(entry.order, "quantity", 0) or 0)
+                for entry in entries
+            )
+            if fresh_balance < needed:
+                return LiveReadiness(
+                    False,
+                    "ط­ط³ط§ط¨ ظ…ط¹طھط¨ط± ظ†غŒط³طھط› ط¸ط±ظپغŒطھ ط®ط±غŒط¯ (T1) ط­ظ…غŒظ„ط§ط± ظ…ط­ط§ط³ط¨ظ‡ ظ†غŒط³طھ."
+                )
+
+        # سnapshot موقت همین حساب فعال برای اعتبارسنجی خرید: فقط
+        # tradable_balance_t1 با مقدار تازه جایگزین می‌شود؛ هویت‌ها و سایر
+        # فیلدها حفظ می‌شوند و شیء پایدار record.account تغییر نمی‌کند.
+        fresh_account = replace(record.account, tradable_balance_t1=fresh_balance)
+
         if not callable(getattr(broker, "submit_manual_prepared_order", None)):
             raise LiveAuthorizationError("broker lacks manual one-shot capability")
         if (not isinstance(prepared_batch.orders, tuple)
@@ -122,20 +204,29 @@ def check_manual_live_preflight(*, account_store, authentication_service,
                 or prepared_batch.execution_id != execution_id):
             raise LiveAuthorizationError("M6 prepared batch is incomplete")
         for entry, prepared in zip(entries, prepared_batch.orders):
+            trace("readiness_engine_validation_start")
+            fresh_prepared = replace(
+                prepared,
+                account_fingerprint=engine._fingerprint(vars(fresh_account)),
+            )
             valid, reason = engine.validate_prepared_order(
-                prepared, broker, record.account, account_id, broker_name,
+                fresh_prepared, broker, fresh_account, account_id, broker_name,
                 now=datetime.now().astimezone(), check_expiry=False,
             )
             if (not valid or prepared.order is not entry.order
                     or not prepared.scheduled_valid):
+                trace("readiness_engine_validation_result", "BLOCKED", "READINESS_ENGINE_VALIDATION_FAILED")
                 raise LiveAuthorizationError(reason or "prepared order does not match queue")
+            trace("readiness_engine_validation_result", "OK")
         session = session_manager.get(account_id)
         token = session_manager.get_token(account_id)
         if (getattr(session.state, "value", str(session.state)) != "logged_in"
                 or session.account_id != account_id
                 or session.broker_name != broker_name
                 or not isinstance(token, str) or not token.strip()):
+            trace("readiness_session_binding", "BLOCKED", "READINESS_SESSION_BINDING_INVALID")
             raise LiveAuthorizationError("account session changed or is invalid")
+        trace("readiness_session_binding", "OK")
         from core.live_order_authorization import prepared_fingerprint
         queue_fp = stable_fingerprint(tuple(
             (id(entry), id(entry.order), entry.account_id, entry.broker_name,
@@ -152,13 +243,17 @@ def check_manual_live_preflight(*, account_store, authentication_service,
         )
         decision = gate.evaluate(manual_broker_acknowledged=include_missing_broker_ack)
         if not decision.allowed:
+            trace("readiness_safety_gate", "BLOCKED", "READINESS_SAFETY_GATE_REJECTED")
             if decision.blocked_by == "human_approval" and human_approval is not True:
                 return LiveReadiness(False, "تأیید نهایی صریح لازم است.", gate,
                                      ready_for_confirmation=True)
             return LiveReadiness(False, decision.reason, gate)
+        trace("readiness_safety_gate", "ALLOWED")
         return LiveReadiness(True, "Manual one-shot preflight passed.", gate,
-                             send_table=(queue_fp, decision, broker))
+                              send_table=(queue_fp, decision, broker))
     except Exception as exc:
+        if not trace_reasons:
+            trace("readiness_preflight_exception", "BLOCKED", "READINESS_PREFLIGHT_EXCEPTION")
         return LiveReadiness(False, f"آمادگی Live قابل‌تأیید نیست: {exc}")
 
 

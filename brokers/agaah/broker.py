@@ -35,6 +35,14 @@ REFERER = "https://online.agah.com/"
 CLIENT_KEY = "634e0572-a4a3-4fd6-b033-82211dba74f1"
 
 
+class ManualLiveNotSentError(RuntimeError):
+    """A manual Live attempt failed before invoking the transport."""
+
+
+class ManualLiveUnknownError(RuntimeError):
+    """The transport was invoked but no definite broker outcome is known."""
+
+
 class PreparedOrderSender:
     """One-shot order sender backed by a transport private to this sender."""
 
@@ -84,7 +92,7 @@ class PreparedOrderSender:
                 raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
             return data
 
-    def _submit_manual_once(self, payload, permit):
+    def _submit_manual_once(self, payload, permit, *, trace_id=None, index=None):
         from core.live_order_authorization import ManualLivePermit
         if not isinstance(permit, ManualLivePermit):
             raise RuntimeError("Manual Live permit is invalid")
@@ -94,21 +102,65 @@ class PreparedOrderSender:
             if self._manual_live is not True:
                 raise RuntimeError("Sender is not authorized for manual Live")
             self._used = True
-            post_started = False
             try:
-                post_started = True
+                url = self._owner._url("order")
+                headers = {"Authorization": f"Bearer {self._access_token}",
+                           "UserIdentifier": self._user_identifier}
+            except Exception as exc:
+                raise ManualLiveNotSentError("Manual Live setup failed") from exc
+            # Calling post() is the transport handoff boundary. It does not
+            # prove that any request bytes reached the broker.
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id or "unknown", "transport_call_started", order_index=index, extra={"note": "entry to transport only"})
+            except Exception:
+                pass
+            try:
                 response = self._transport.post(
-                    self._owner._url("order"),
-                    headers={"Authorization": f"Bearer {self._access_token}",
-                             "UserIdentifier": self._user_identifier},
-                    json=payload, timeout=10,
+                    url, headers=headers, json=payload, timeout=10,
                 )
+            except Exception as exc:
+                try:
+                    from ui.manual_live_trace import log_event
+                    log_event(
+                        trace_id or "unknown", "transport_result",
+                        order_index=index, reason_code="TRANSPORT_EXCEPTION",
+                        extra={"classification": "UNKNOWN"},
+                    )
+                except Exception:
+                    pass
+                raise ManualLiveUnknownError("Manual Live transport outcome is unknown") from exc
+            try:
                 response.raise_for_status()
                 data = response.json()
             except Exception as exc:
-                if post_started:
-                    raise RuntimeError("MANUAL_LIVE_UNKNOWN: " + str(exc)) from exc
-                raise
+                try:
+                    from ui.manual_live_trace import log_event
+                    log_event(trace_id or "unknown", "http_response", order_index=index, extra={"http_status": getattr(response, "status_code", None)})
+                except Exception:
+                    pass
+                try:
+                    from ui.manual_live_trace import log_event
+                    log_event(trace_id or "unknown", "http_response", order_index=index, reason_code="HTTP_PARSE_FAILED", extra={"classification": "UNKNOWN"})
+                except Exception:
+                    pass
+                raise ManualLiveUnknownError("Manual Live response outcome is unknown") from exc
+            if not isinstance(data, dict) or type(data.get("isSuccess")) is not bool:
+                try:
+                    from ui.manual_live_trace import log_event
+                    log_event(trace_id or "unknown", "api_result", order_index=index,
+                              reason_code="API_RESPONSE_INVALID",
+                              extra={"classification": "UNKNOWN"})
+                except Exception:
+                    pass
+                raise ManualLiveUnknownError("Manual Live response outcome is unknown")
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id or "unknown", "http_response", order_index=index, extra={"http_status": getattr(response, "status_code", None)})
+                classification = "ACCEPTED" if data.get("isSuccess") else "REJECTED"
+                log_event(trace_id or "unknown", "api_result", order_index=index, extra={"classification": classification})
+            except Exception:
+                pass
             if not data.get("isSuccess"):
                 raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
             return data
@@ -1344,11 +1396,16 @@ class AgaahBroker(Broker):
         return data
 
     def submit_manual_prepared_order(self, payload, *, permit, prepared,
-                                     account_id, broker_name,
-                                     queue_fingerprint, index):
+                                    account_id, broker_name,
+                                    queue_fingerprint, index, trace_id=None):
         """Broker-owned manual Live POST authorized by one scoped permit."""
         from core.live_order_authorization import ManualLivePermit, prepared_fingerprint
         if not isinstance(payload, dict) or not isinstance(permit, ManualLivePermit):
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id or "unknown", "broker_validation", order_index=index, reason_code="BROKER_VALIDATION_FAILED")
+            except Exception:
+                pass
             raise RuntimeError("Manual Live permit or payload is invalid")
         if (not permit.matches(
                 execution_id=prepared.execution_id,
@@ -1376,12 +1433,30 @@ class AgaahBroker(Broker):
             queue_fingerprint=queue_fingerprint,
             prepared_fingerprint=prepared_fingerprint(prepared), index=index,
         ):
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id or "unknown", "broker_permit_claim", order_index=index, reason_code="BROKER_PERMIT_CLAIM_FAILED")
+            except Exception:
+                pass
             raise RuntimeError("Manual Live permit invalid or already consumed")
-        sender = self.prepare_manual_order_sender(account_id)
+        try:
+            sender = self.prepare_manual_order_sender(account_id)
+        except Exception:
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id or "unknown", "sender_setup", order_index=index, reason_code="SENDER_SETUP_FAILED")
+            except Exception:
+                pass
+            raise
+        try:
+            from ui.manual_live_trace import log_event
+            log_event(trace_id or "unknown", "sender_setup", order_index=index, extra={"classification": "OK"})
+        except Exception:
+            pass
         try:
             # Do not toggle the public lock; the dedicated sender is the
             # broker-owned boundary for this approved manual capability.
-            return sender._submit_manual_once(payload, permit)
+            return sender._submit_manual_once(payload, permit, trace_id=trace_id, index=index)
         finally:
             self.close_prepared_sender(sender)
 

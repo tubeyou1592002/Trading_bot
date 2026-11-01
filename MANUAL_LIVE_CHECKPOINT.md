@@ -20,21 +20,23 @@ This checkpoint supersedes older completion/readiness statements for this invest
 - Independent source review found remaining gaps: logger health APIs have no confirmed UI consumer; some Engine early returns lack terminal results/reason codes; sanitizer allows arbitrary values under permitted keys; relative trace-directory overrides remain CWD-dependent; valid non-object JSON can become ERROR rather than UNKNOWN.
 - Earlier package acceptance was based on agent reports and was premature for these remaining requirements. Passing focused tests does not prove complete branch coverage or broker receipt.
 
-## Pending task A — clarify order outcomes
-Status: OPEN. Do not mark complete until implementation, offline tests and independent review are recorded.
+## Task A — clarify order outcomes
+Status: COMPLETE within offline scope (2026-11-01).
 - Treat uninterpretable responses, including valid JSON arrays/null/scalars, as UNKNOWN without retry.
 - Record fixed reasons and terminal Engine results for every pre-POST rejection, including SafetyGate/ack rejection.
 - Preserve completed outcomes and existing permit/account/safety checks.
 - Offline acceptance: fake responses for all malformed shapes; zero POST on pre-POST rejection; exactly one POST on ambiguous transport outcomes; correlated trace/index and terminal events.
-Completion record: date / commit / changed files / exact test commands and results / reviewer findings: PENDING.
+Completion record: 2026-11-01; included in the implementation commit containing this update; see final acceptance below.
 
-## Pending task B — make diagnostics reliable and visible
-Status: OPEN. Do not mark complete until implementation, offline tests and independent review are recorded.
+## Task B — make diagnostics reliable and visible
+Status: COMPLETE within offline scope (2026-11-01).
 - Show active absolute log path and logger write failures through a nonblocking UI diagnostic consumer; logger/display failures must not affect order behavior.
 - Restrict metadata values by type and allowed enum/range; reject arbitrary nested values and sensitive free text.
 - Resolve configured relative TRADING_BOT_TRACE_DIR once against a documented stable base; trace_path must always return the effective absolute path.
 - Offline acceptance: logger I/O failures and recovery, UI visibility, CWD changes with default/relative/absolute overrides, secret exclusion, unchanged fake-order outcomes.
-Completion record: date / commit / changed files / exact test commands and results / reviewer findings: PENDING.
+Completion record: 2026-11-01; included in the implementation commit containing this update; see final acceptance below.
+
+Implementation note (2026-11-01): diagnostic UI now renders the effective absolute logger path and a non-modal, nonblocking health message; health distinguishes prior successful write, current error, and no successful write yet. Metadata accepts only fixed classification/UI-result enums and integer HTTP statuses; free-text/nested extras are discarded. Relative trace overrides resolve once against the project root and absolute overrides remain supported. `python -m pytest -q test_manual_live_trace_reliability.py test_manual_live_trace_instrumentation.py test_manual_live_ui_gate_trace.py test_manual_live_unknown.py test_live_preflight_t1_balance.py` => 64 passed, 0 failed; `python -m py_compile ui/manual_live_trace.py ui/order_configuration_page.py test_manual_live_trace_reliability.py` and `git diff --check` passed. Architectural review remains pending; no commit was made.
 
 ## Trace location and safety boundary
 Default: `C:\Users\hp\Documents\Trading_bot\traces\manual_live_trace.jsonl`. TRADING_BOT_TRACE_DIR can override it at import. The actual owner-process environment/path has not been verified.
@@ -42,3 +44,14 @@ No broker login/refresh, network request, real order, Dry Run, Live run or sched
 
 ## Version-control boundary
 This checkpoint documents work currently present in a dirty worktree. The documentation commit does not include or certify the uncommitted production/test changes. Preserve unrelated changes; commit task implementations separately after review.
+
+## Final offline acceptance — 2026-11-01
+Tasks A and B are complete within the reviewed offline scope. Task A validates response shape and boolean isSuccess, retains UNKNOWN for uninterpretable outcomes, and centrally emits blocked Engine results with fixed reasons. Task B adds Persian diagnostic UI health/path messages, fixed typed metadata, stable absolute destinations and I/O health/recovery tests.
+
+Independent reviewer execution: the five-file selection below passed **66/66 in 1.94s**, with socket connect/create_connection replaced by a rejecting guard:
+`python -m pytest -q test_manual_live_trace_reliability.py test_manual_live_trace_instrumentation.py test_manual_live_ui_gate_trace.py test_manual_live_unknown.py test_live_preflight_t1_balance.py`
+The reviewer used pytest.main with a unique workspace-local basetemp. No broker operation/network/order was performed. The final logger-failure regression compares healthy and actual failed writes with an independent fake transport: both return LIVE, invoke POST once and close the transport; WRITE_FAILED remains observable. The earlier test incorrectly expected UNKNOWN due to a test-transport dependency on trace events; that was corrected without changing production order behavior.
+
+Earlier 64-test and awaiting-review notes above are historical and superseded by this acceptance. Four baseline failures remain open; full-suite success and actual broker receipt are not claimed. The cause of the original owner-run incident remains unproven. Actual owner-process trace path and real-order qualification are still unverified.
+
+This implementation commit includes the related manual-Live tracing code/tests accumulated since the documentation checkpoint. Unrelated symbol mapping/search, account runtime and diagnostic scripts remain outside this commit.

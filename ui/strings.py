@@ -69,6 +69,11 @@ __all__ = [
     "LIVE_NOT_READY",
     "LIVE_LOCK_DISABLED",
     "LIVE_PREREQUISITES_UNKNOWN",
+    "TRACE_LOG_PATH",
+    "TRACE_LOG_WRITE_FAILED",
+    "TRACE_LOG_WRITE_OK",
+    "TRACE_LOG_NOT_WRITTEN",
+    "TRACE_LOG_STATUS_UNAVAILABLE",
     "FEEDBACK_UNAVAILABLE",
     "SCHEDULE_STOPPED_IN_FLIGHT",
     "SUMMARY_TOTAL_POSSIBLE_SENDS",
@@ -128,6 +133,10 @@ __all__ = [
     "SUMMARY_DURATION_SECONDS",
     "NO_ACTIVE_ACCOUNT",
     "RESULT_EMPTY_STATE",
+    "RESULT_STATUS_LIVE_SUCCESS",
+    "RESULT_STATUS_NOT_SENT",
+    "RESULT_REASON_LIVE_SUCCESS",
+    "RESULT_REASON_NOT_SENT",
     "DIAGNOSTIC_EMPTY_STATE",
     "DIAGNOSTIC_LATENCY_TOTAL_LABEL",
     "BUTTON_APPLY_SCHEDULE",
@@ -372,6 +381,11 @@ LIVE_NOT_READY = (
 )
 LIVE_LOCK_DISABLED = "قفل ارسال زندهٔ کارگزار غیرفعال است."
 LIVE_PREREQUISITES_UNKNOWN = "منبع معتبر وضعیت M6-A…M6-E پیش از ارسال و منبع رسمی آمادگی Live کارگزار متصل نیستند؛ M6 فعلی فقط در OrderEngine.prepare اجرا می‌شود."
+TRACE_LOG_PATH = "مسیر فایل گزارش: {path}"
+TRACE_LOG_WRITE_FAILED = "ثبت گزارش با خطا روبه‌رو شد؛ ممکن است رویدادهای تشخیصی ثبت نشده باشند."
+TRACE_LOG_WRITE_OK = "ثبت گزارش با موفقیت انجام شد."
+TRACE_LOG_NOT_WRITTEN = "وضعیت گزارش: هنوز نوشتن موفقی انجام نشده است."
+TRACE_LOG_STATUS_UNAVAILABLE = "مسیر فایل گزارش: نامشخص\nوضعیت ثبت گزارش در دسترس نیست."
 FEEDBACK_UNAVAILABLE = "بازخورد از سازمان بورس دریافت نشده"
 SCHEDULE_STOPPED_IN_FLIGHT = (
     "زمان‌بندی متوقف شد؛ نوبت‌های بعدی شروع نمی‌شوند. "
@@ -485,6 +499,10 @@ NO_ACTIVE_ACCOUNT = "حساب فعالی وجود ندارد - یکی را در 
 RESULT_EMPTY_STATE = (
     "هنوز نتیجه‌ای ثبت نشده است - ابتدا آزمایش را اجرا کنید."
 )
+RESULT_STATUS_LIVE_SUCCESS = "ارسال زنده پذیرفته شد"
+RESULT_STATUS_NOT_SENT = "ارسال نشد"
+RESULT_REASON_LIVE_SUCCESS = "کارگزاری ارسال سفارش را تأیید کرد"
+RESULT_REASON_NOT_SENT = "درخواست پیش از ارسال رد شد: {reason}"
 DIAGNOSTIC_EMPTY_STATE = "هنوز حالت آزمایشی اجرا نشده است."
 DIAGNOSTIC_LATENCY_TOTAL_LABEL = "زمان کل ارسال: "
 

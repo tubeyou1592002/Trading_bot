@@ -31,8 +31,9 @@ def test_engine_maps_unknown_exception():
     engine = OrderEngine()
     broker = MagicMock()
     broker.live_trading_enabled = False
-    broker.submit_manual_prepared_order.side_effect = RuntimeError(
-        "MANUAL_LIVE_UNKNOWN: timeout"
+    from brokers.agaah.broker import ManualLiveUnknownError
+    broker.submit_manual_prepared_order.side_effect = ManualLiveUnknownError(
+        "Manual Live transport outcome is unknown"
     )
     engine.validate_prepared_order = lambda *a, **k: (True, "")
     prepared = MagicMock()
@@ -136,3 +137,103 @@ def test_full_timeout_path_unknown():
     assert res2.mode in ("BLOCKED", "ERROR")
     assert transport.posts == 1
     assert broker.live_trading_enabled is False
+
+
+def test_pre_transport_setup_error_is_definite_error():
+    from brokers.agaah.broker import PreparedOrderSender
+    from core.live_order_authorization import ManualLivePermit, _MANUAL_PERMIT_ISSUER
+    from core.safety_gate import SafetyGateDecision
+
+    class Owner:
+        def _url(self, _): raise RuntimeError("setup failed")
+
+    class Transport:
+        def post(self, *_args, **_kwargs): raise AssertionError("POST must not run")
+
+    sender = PreparedOrderSender(
+        owner=Owner(), account_id="acct", user_identifier="uid",
+        access_token="token", transport=Transport(), manual_live=True,
+    )
+    permit = ManualLivePermit(
+        execution_id="e", account_id="acct", broker_name="b", broker=sender._owner,
+        queue_fingerprint="q", prepared_fingerprints=(),
+        gate_decision=SafetyGateDecision(True, "ALLOWED", None, "ok"),
+        _issuer=_MANUAL_PERMIT_ISSUER,
+    )
+    try:
+        sender._submit_manual_once({}, permit)
+    except RuntimeError as exc:
+        from brokers.agaah.broker import ManualLiveNotSentError
+        assert isinstance(exc, ManualLiveNotSentError)
+        assert str(exc) == "Manual Live setup failed"
+    else:
+        raise AssertionError("expected pre-handoff setup failure")
+
+
+def test_definitive_broker_rejection_is_error():
+    from brokers.agaah.broker import PreparedOrderSender
+    from core.live_order_authorization import ManualLivePermit, _MANUAL_PERMIT_ISSUER
+    from core.safety_gate import SafetyGateDecision
+
+    class Owner:
+        def _url(self, _): return "offline://order"
+
+    class Response:
+        def raise_for_status(self): pass
+        def json(self): return {"isSuccess": False, "message": "rejected"}
+
+    class Transport:
+        headers = {}
+        def post(self, *_args, **_kwargs): return Response()
+        def close(self): pass
+
+    sender = PreparedOrderSender(
+        owner=Owner(), account_id="acct", user_identifier="uid",
+        access_token="token", transport=Transport(), manual_live=True,
+    )
+    permit = ManualLivePermit(
+        execution_id="e", account_id="acct", broker_name="b", broker=sender._owner,
+        queue_fingerprint="q", prepared_fingerprints=(),
+        gate_decision=SafetyGateDecision(True, "ALLOWED", None, "ok"),
+        _issuer=_MANUAL_PERMIT_ISSUER,
+    )
+    try:
+        sender._submit_manual_once({}, permit)
+    except RuntimeError as exc:
+        from brokers.agaah.broker import ManualLiveUnknownError
+        assert not isinstance(exc, ManualLiveUnknownError)
+        assert str(exc) == "rejected"
+    else:
+        raise AssertionError("expected definitive rejection")
+
+
+
+def test_partial_executor_failure_preserves_completed_outcomes():
+    from concurrent.futures import Future
+    from core.order_engine import OrderExecutionResult
+    from ui.order_configuration_page import _collect_manual_live_results
+
+    entries = [
+        type("Entry", (), {"order": _FakeOrder(), "broker_name": "b"})()
+        for _ in range(3)
+    ]
+    prepared = [object(), object(), object()]
+    known = OrderExecutionResult(True, True, "LIVE", entries[0].order)
+    class Pool:
+        def __init__(self): self.calls = 0
+        def submit(self, fn, arg):
+            self.calls += 1
+            if self.calls == 3:
+                raise RuntimeError("executor unavailable")
+            future = Future()
+            if self.calls == 1:
+                future.set_result(known)
+            else:
+                future.set_exception(RuntimeError("worker failed after handoff"))
+            return future
+
+    results = _collect_manual_live_results(
+        Pool(), entries, prepared, lambda pair: None, OrderExecutionResult,
+    )
+    assert results[0] is known
+    assert [result.mode for result in results] == ["LIVE", "UNKNOWN", "NOT_SENT"]

@@ -118,10 +118,13 @@ always fail-closed: without a selected Instrument, side, price,
 quantity, resolved nsc_id and an active account nothing is queued.
 """
 
+from dataclasses import replace
+
 import math
 import threading
 import inspect
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -412,6 +415,10 @@ QUEUE_STATUS_QUEUED = STRINGS.QUEUE_STATUS_QUEUED
 # Fail-closed: nothing except an actually-successful result is ever shown
 # as "موفق".
 RESULT_STATUS_SUCCESS = "\u0645\u0648\u0641\u0642"
+RESULT_STATUS_LIVE_SUCCESS = STRINGS.RESULT_STATUS_LIVE_SUCCESS
+RESULT_STATUS_NOT_SENT = STRINGS.RESULT_STATUS_NOT_SENT
+RESULT_REASON_LIVE_SUCCESS = STRINGS.RESULT_REASON_LIVE_SUCCESS
+RESULT_REASON_NOT_SENT = STRINGS.RESULT_REASON_NOT_SENT
 RESULT_STATUS_BLOCKED = "\u0645\u0633\u062f\u0648\u062f\u0634\u062f\u0647"
 RESULT_STATUS_FAILED = "\u0646\u0627\u0645\u0648\u0641\u0642"
 RESULT_STATUS_UNKNOWN = "\u0646\u0627\u0645\u0634\u062e\u0635; \u0645\u0645\u06a9\u0646 \u0627\u0633\u062a \u0633\u0641\u0627\u0631\u0634 \u062b\u0628\u062a \u0634\u062f\u0647 \u0628\u0627\u0634\u062f"
@@ -579,7 +586,41 @@ def _epoch_to_local_datetime(value):
         return None
 
 
-def _result_status_label(result):
+def _collect_manual_live_results(pool, entries, prepared_orders, submit_one, result_type):
+    """Collect one aligned result per order across partial executor failures."""
+    results = [None] * len(entries)
+    futures = {}
+    submitted = set()
+    try:
+        for index, prepared in enumerate(prepared_orders):
+            future = pool.submit(submit_one, (index, prepared))
+            futures[future] = index
+            submitted.add(index)
+    except Exception:
+        pass
+    for future, index in futures.items():
+        try:
+            results[index] = future.result()
+        except Exception:
+            mode = "UNKNOWN" if index in submitted else "NOT_SENT"
+            results[index] = result_type(
+                False, False, mode, entries[index].order,
+                broker_name=entries[index].broker_name,
+                message=("Manual Live outcome is unknown" if mode == "UNKNOWN"
+                         else "Order was not submitted"),
+            )
+    for index, entry in enumerate(entries):
+        if results[index] is None:
+            mode = "UNKNOWN" if index in submitted else "NOT_SENT"
+            results[index] = result_type(
+                False, False, mode, entry.order, broker_name=entry.broker_name,
+                message=("Manual Live outcome is unknown" if mode == "UNKNOWN"
+                         else "Order was not submitted"),
+            )
+    return results
+
+
+def _result_status_label(result, run_mode="dry_run"):
     """
     User-facing per-order verdict from the REAL ``OrderExecutionResult``.
 
@@ -589,6 +630,8 @@ def _result_status_label(result):
     ``ناموفق``. No per-order message/mode is ever shown raw.
     """
     if getattr(result, "success", None) is True:
+        if run_mode == "live":
+            return RESULT_STATUS_LIVE_SUCCESS if getattr(result, "sent", False) else RESULT_STATUS_NOT_SENT
         return RESULT_STATUS_SUCCESS
     if getattr(result, "mode", None) == "BLOCKED":
         return RESULT_STATUS_BLOCKED
@@ -597,8 +640,26 @@ def _result_status_label(result):
     return RESULT_STATUS_FAILED
 
 
-def _result_reason_for_status(status):
+def _manual_live_final_status(result):
+    """Map an execution result to a fixed, non-sensitive trace status."""
+    mode = getattr(result, "mode", None)
+    if mode == "UNKNOWN":
+        return "UNKNOWN"
+    if mode == "NOT_SENT":
+        return "NOT_SENT"
+    if mode == "BLOCKED":
+        return "BLOCKED"
+    if getattr(result, "success", None) is True and getattr(result, "sent", False):
+        return "SUCCESS"
+    return "ERROR"
+
+
+def _result_reason_for_status(status, result=None):
     """Fixed, user-facing reason string for one rendered status."""
+    if status == RESULT_STATUS_LIVE_SUCCESS:
+        return RESULT_REASON_LIVE_SUCCESS
+    if status == RESULT_STATUS_NOT_SENT:
+        return RESULT_REASON_NOT_SENT.format(reason=STRINGS.LIVE_NOT_READY)
     if status == RESULT_STATUS_SUCCESS:
         return RESULT_REASON_SUCCESS
     if status == RESULT_STATUS_BLOCKED:
@@ -606,6 +667,68 @@ def _result_reason_for_status(status):
     if status == RESULT_STATUS_UNKNOWN:
         return RESULT_REASON_UNKNOWN
     return RESULT_REASON_FAILED
+
+
+def _safe_diagnostic_value(value):
+    if value is None:
+        return "-"
+    text = str(value).strip()
+    if not text or len(text) > 160 or any(ord(char) < 32 for char in text):
+        return "-"
+    return text
+
+
+def _diagnostic_error_category(message):
+    text = str(message).lower()
+    if "401" in text or "unauthorized" in text:
+        return "authorization"
+    if "timeout" in text or "timed out" in text:
+        return "timeout"
+    if "json" in text or "decode" in text:
+        return "invalid_response"
+    if "not found" in text or "no instrument" in text:
+        return "not_found"
+    return "lookup_failed"
+
+
+def _symbol_diagnostic_text(result, instrument=None, error=None):
+    fields = (
+        ("Symbol", getattr(instrument, "symbol", None) or result.get("symbol")),
+        ("Name", getattr(instrument, "name", None) or result.get("name")),
+        ("TSETMC ins_code", getattr(instrument, "ins_code", None) or result.get("ins_code")),
+        ("TSETMC instrument_id", getattr(instrument, "instrument_id", None)),
+        ("TSETMC ISIN", getattr(instrument, "isin", None)),
+        ("Agah lookup stage", "not reported by symbol resolve"),
+        ("Agah status", "not available in selection flow"),
+        ("Agah candidate nscId", None),
+        ("Agah candidate tseId", None),
+        ("Match outcome", "resolve failed" if error else "TSETMC instrument resolved"),
+        ("Exception category", _diagnostic_error_category(error) if error else "-"),
+        ("Exception", type(error).__name__ if error else "-"),
+    )
+    return "\n".join(f"{key}: {_safe_diagnostic_value(value)}" for key, value in fields)
+
+
+class _SymbolDiagnosticDialog(QDialog):
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Symbol selection diagnostic")
+        layout = QVBoxLayout(self)
+        self.text_view = QPlainTextEdit(self)
+        self.text_view.setReadOnly(True)
+        self.text_view.setPlainText(text)
+        layout.addWidget(self.text_view)
+        buttons = QHBoxLayout()
+        self.copy_button = QPushButton("Copy", self)
+        self.copy_button.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.text_view.toPlainText())
+        )
+        close_button = QPushButton("Close", self)
+        close_button.clicked.connect(self.accept)
+        buttons.addWidget(self.copy_button)
+        buttons.addWidget(close_button)
+        layout.addLayout(buttons)
+        self.resize(520, 360)
 
 
 def _account_record_or_none(account_store, account_id):
@@ -1667,6 +1790,8 @@ class OrderConfigurationPage(QWidget):
             DIAGNOSTIC_EMPTY_STATE, self.diagnostic_section
         )
         diagnostic_layout.addWidget(self.diagnostic_status_label)
+        self.trace_logger_status_label = QLabel(self.diagnostic_section)
+        diagnostic_layout.addWidget(self.trace_logger_status_label)
 
         # UI-9 Task 2: the Diagnostic section is placed LAST in the
         # assembly below (after Order Log). Its NORMAL/DIAGNOSTIC
@@ -3611,6 +3736,21 @@ class OrderConfigurationPage(QWidget):
             self._test_runner_instance_live = False
         return self._test_runner_instance
 
+    def _show_live_not_sent(self, entries, reason):
+        """Replace stale rows with the fail-closed outcome of a rejected Live run."""
+        from types import SimpleNamespace
+        ui_execution_id = f"exec-ui-{uuid.uuid4().hex}"
+        self._active_result_execution_id = ui_execution_id
+        self._last_test_run = None
+        self._last_test_run_mode = "live"
+        self._last_test_entries = list(entries)
+        self._last_order_results = [SimpleNamespace(
+            success=False, sent=False, mode="NOT_SENT", order=entry.order,
+            message=reason,
+        ) for entry in entries]
+        self._last_test_trace_id = getattr(self, "_manual_live_trace_id", None)
+        self._refresh_result_display()
+
     def _run_test_pass(self):
         """
         Issue exactly one dry-run execution pass for the pending entries.
@@ -3646,12 +3786,54 @@ class OrderConfigurationPage(QWidget):
         if not self._test_mode:
             return
 
+        live = self._run_mode == "live"
+        try:
+            from ui.manual_live_trace import new_trace_id
+            trace_id = new_trace_id() if live else None
+        except Exception:
+            trace_id = "unknown" if live else None
+        if live:
+            self._manual_live_trace_id = trace_id
+            self._last_test_trace_id = trace_id
+
+        def early_trace(stage, reason_code, indices=None):
+            if not live:
+                return
+            try:
+                from ui.manual_live_trace import log_event
+                if indices is None:
+                    indices = range(len(self.order_queue.list_pending()))
+                for order_index in indices:
+                    try:
+                        log_event(trace_id, stage, order_index=order_index,
+                                  reason_code=reason_code,
+                                  extra={"classification": "ALLOWED" if reason_code.endswith("_ALLOWED") else "BLOCKED"})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+        early_entries = list(self.order_queue.list_pending())
+
         record = self._active_account_record()
         if record is None:
+            early_trace("account_resolve", "ACCOUNT_UNAVAILABLE", range(len(early_entries)))
+            if live and early_entries:
+                self._show_live_not_sent(early_entries, STRINGS.TEST_SKIPPED_NO_ACCOUNT)
             self._show_queue_status(STRINGS.TEST_SKIPPED_NO_ACCOUNT)
             return
-        authorization = self._order_authorization(record.account_id, record.broker_name)
+        try:
+            authorization = self._order_authorization(record.account_id, record.broker_name)
+        except Exception:
+            early_trace("ui_authorization", "UI_AUTHORIZATION_EXCEPTION", range(len(early_entries)))
+            if live and early_entries:
+                self._show_live_not_sent(early_entries, STRINGS.ORDER_AUTHORIZATION_REQUIRED)
+            self._show_queue_status(STRINGS.ORDER_AUTHORIZATION_REQUIRED)
+            return
         if not authorization.authorized:
+            early_trace("ui_authorization", "UI_AUTHORIZATION_REJECTED", range(len(early_entries)))
+            if live and early_entries:
+                self._show_live_not_sent(early_entries, STRINGS.ORDER_AUTHORIZATION_REQUIRED)
             self._show_queue_status(STRINGS.ORDER_AUTHORIZATION_REQUIRED)
             return
 
@@ -3661,22 +3843,20 @@ class OrderConfigurationPage(QWidget):
             return
 
         account = record.account
-        live = self._run_mode == "live"
+        run_mode = self._run_mode
+        live = run_mode == "live"
         if live and (getattr(self, "_schedule_locked", False) or getattr(
             self, "_schedule_state", SCHEDULE_STATE_CONFIG
         ) != SCHEDULE_STATE_CONFIG):
-            self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                reason="Live زمان‌بندی‌شده غیرفعال است؛ زمان‌بندی هر نوبت کل صف را دوباره ارسال می‌کند."))
-            return
-        if live and getattr(self, "_live_prearm_factory", None) is None:
-            self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                reason="آماده‌ساز واقعی سفارش/M6 برای اجرای دستی متصل نیست."))
+            early_trace("schedule_gate", "SCHEDULE_ACTIVE", range(len(entries)))
+            self._show_live_not_sent(entries, "Live زمان‌بندی‌شده غیرفعال است؛ زمان‌بندی هر نوبت کل صف را دوباره ارسال می‌کند.")
             return
         for entry in entries:
             if (
                 entry.account_id != account.account_id
                 or entry.broker_name != record.broker_name
             ):
+                early_trace("entry_scope", "ENTRY_SCOPE_MISMATCH", range(len(entries)))
                 self._show_queue_status(
                     STRINGS.TEST_SKIPPED_ACCOUNT_MISMATCH
                 )
@@ -3689,40 +3869,123 @@ class OrderConfigurationPage(QWidget):
         live_execution_id = None
         coordinator = None
         manager = None
-        if live:
-            rejection = self._live_scope_rejection(entries, record)
-            if rejection:
-                self._show_queue_status(
-                    STRINGS.LIVE_START_REJECTED.format(reason=rejection)
-                )
+        def trace_gate(stage, *, indices=None, reason_code=None, classification=None):
+            if not live:
                 return
-            snapshot = self._live_snapshot(entries, record)
+            try:
+                from ui.manual_live_trace import log_event
+                for trace_index in (indices if indices is not None else range(len(entries))):
+                    extra = {"classification": classification} if classification else None
+                    try:
+                        log_event(trace_id or "unknown", stage, order_index=trace_index,
+                                  reason_code=reason_code, extra=extra)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        if live:
+            early_trace("schedule_gate", "SCHEDULE_ALLOWED", range(len(entries)))
+            early_trace("entry_scope", "ENTRY_SCOPE_ALLOWED", range(len(entries)))
+            if any(entry.account_id != record.account_id or entry.broker_name != record.broker_name
+                   for entry in entries):
+                trace_gate("scope_check", reason_code="SCOPE_REJECTED", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.TEST_SKIPPED_ACCOUNT_MISMATCH)
+                return
+            trace_gate("scope_check_start")
+            try:
+                rejection = self._live_scope_rejection(entries, record)
+            except Exception:
+                trace_gate("scope_check_result", reason_code="SCOPE_CHECK_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
+                return
+            if rejection:
+                trace_gate("scope_check", reason_code="SCOPE_REJECTED", classification="BLOCKED")
+                self._show_live_not_sent(entries, rejection)
+                return
+            trace_gate("scope_check_result", classification="ALLOWED")
+            if getattr(self, "_live_prearm_factory", None) is None:
+                trace_gate("prearm_factory", reason_code="PREARM_FACTORY_UNAVAILABLE", classification="BLOCKED")
+                reason = "آماده‌ساز واقعی سفارش/M6 برای اجرای دستی متصل نیست."
+                self._show_live_not_sent(entries, reason)
+                return
+            trace_gate("snapshot_initial_start")
+            try:
+                snapshot = self._live_snapshot(entries, record)
+            except Exception:
+                trace_gate("snapshot_initial_result", reason_code="SNAPSHOT_INITIAL_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_SNAPSHOT_CHANGED)
+                return
+            trace_gate("snapshot_initial_result", classification="OK")
             from ui.order_authorization import authorize_order
             auth_factory = getattr(self, "_authentication_service_factory", None)
-            auth_service = auth_factory() if callable(auth_factory) else None
-            auth_result = authorize_order(
-                self.store, auth_service, self._get_session_manager(),
-                record.account_id, record.broker_name,
-            )
-            if not auth_result.authorized:
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                    reason="احراز هویت حساب مقصد یا نشست معتبر نیست."))
+            try:
+                auth_service = auth_factory() if callable(auth_factory) else None
+                trace_gate("auth_initial_start")
+                auth_result = authorize_order(
+                    self.store, auth_service, self._get_session_manager(),
+                    record.account_id, record.broker_name,
+                )
+            except Exception:
+                trace_gate("auth_initial_result", reason_code="AUTH_INITIAL_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
                 return
+            trace_gate("auth_initial_result", classification="ALLOWED" if auth_result.authorized else "BLOCKED",
+                       reason_code=None if auth_result.authorized else "AUTH_INITIAL_REJECTED")
+            if not auth_result.authorized:
+                self._show_live_not_sent(entries, "ط§ط­ط±ط§ط² ظ‡ظˆغŒطھ ط­ط³ط§ط¨ ظ…ظ‚طµط¯ غŒط§ ظ†ط´ط³طھ ظ…ط¹طھط¨ط± ظ†غŒط³طھ.")
+                return
+
+            # Fetch fresh T1 tradable balance from the authenticated session of
+            # the active account BEFORE preparing the Live batch. Fail-closed
+            # if the session cannot provide a valid, finite, non-negative
+            # balance; never fall back to cached/stale/zero/guessed value.
+            fresh_balance = None
+            if callable(getattr(auth_service, "get_purchase_power", None)):
+                trace_gate("balance_initial_start")
+                try:
+                    fresh_balance = auth_service.get_purchase_power(record.account_id)
+                except Exception:
+                    fresh_balance = None
+            balance_valid = (
+                fresh_balance is not None and not isinstance(fresh_balance, bool)
+                and isinstance(fresh_balance, (int, float))
+                and math.isfinite(fresh_balance) and fresh_balance >= 0
+            )
+            trace_gate("balance_initial_result", classification="OK" if balance_valid else "BLOCKED",
+                       reason_code=None if balance_valid else "BALANCE_INITIAL_INVALID")
+            if (
+                fresh_balance is None
+                or isinstance(fresh_balance, bool)
+                or not isinstance(fresh_balance, (int, float))
+                or not math.isfinite(fresh_balance)
+                or fresh_balance < 0
+            ):
+                self._show_live_not_sent(entries, "ط­ط³ط§ط¨ ظ…ط¹طھط¨ط± ظ†غŒط³طھط› ط¸ط±ظپغŒطھ ط®ط±غŒط¯ (T1) ط­ط§ط³ط¨ظ‡ ظ†غŒط³طھ — refresh balance نامisiert.")
+                return
+
+            # Temporary account copy for THIS prepare/preflight only: T1
+            # replaced with the fresh session balance; identity and other
+            # fields preserved; persistent record.account is never mutated.
+            temp_account = replace(record.account, tradable_balance_t1=fresh_balance)
+
             targets = tuple(DispatchTarget(
                 entry=entry, account_id=record.account_id,
-                broker_name=record.broker_name, account=record.account,
+                broker_name=record.broker_name, account=temp_account,
             ) for entry in entries)
             try:
+                trace_gate("prearm_m6_start")
                 coordinator = self._live_prearm_factory(targets)
                 live_execution_id, prepared_batch = coordinator.prepare(targets)
-            except Exception as exc:
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(reason=str(exc)))
+            except Exception:
+                trace_gate("prearm_m6_result", reason_code="PREARM_M6_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_NOT_READY)
                 return
             if (not getattr(prepared_batch, "valid", False)
                     or not getattr(prepared_batch, "checks_succeeded", False)):
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                    reason=getattr(prepared_batch, "message", STRINGS.LIVE_NOT_READY)))
+                trace_gate("prearm_m6_result", reason_code="PREARM_M6_REJECTED", classification="BLOCKED")
+                self._show_live_not_sent(entries, getattr(prepared_batch, "message", STRINGS.LIVE_NOT_READY))
                 return
+            trace_gate("prearm_m6_result", classification="OK")
             summary = STRINGS.LIVE_CONFIRM_ONCE_SUMMARY.format(
                 destination=self._live_destination(record),
                 orders=STRINGS.format_persian_digits(len(entries)),
@@ -3734,43 +3997,67 @@ class OrderConfigurationPage(QWidget):
                 ),
             )
             if not self._confirm_live_start(summary):
-                self._show_queue_status(STRINGS.LIVE_CONFIRM_CANCELLED)
+                trace_gate("confirm_no", reason_code="CONFIRMATION_DECLINED", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_CONFIRM_CANCELLED)
                 return
-            if not self._live_snapshot_unchanged(snapshot, record):
-                self._show_queue_status(STRINGS.LIVE_SNAPSHOT_CHANGED)
+            trace_gate("confirm_yes")
+            trace_gate("snapshot_post_confirm_start")
+            try:
+                snapshot_current = self._live_snapshot_unchanged(snapshot, record)
+            except Exception:
+                trace_gate("snapshot_post_confirm_result", reason_code="SNAPSHOT_POST_CONFIRM_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_SNAPSHOT_CHANGED)
                 return
-            current_auth = authorize_order(
-                self.store, auth_service, self._get_session_manager(),
-                record.account_id, record.broker_name,
-            )
+            trace_gate("snapshot_post_confirm_result", classification="OK" if snapshot_current else "BLOCKED",
+                       reason_code=None if snapshot_current else "SNAPSHOT_POST_CONFIRM_CHANGED")
+            if not snapshot_current:
+                self._show_live_not_sent(entries, STRINGS.LIVE_SNAPSHOT_CHANGED)
+                return
+            trace_gate("auth_session_post_confirm_start")
+            try:
+                current_auth = authorize_order(
+                    self.store, auth_service, self._get_session_manager(),
+                    record.account_id, record.broker_name,
+                )
+            except Exception:
+                trace_gate("auth_session_post_confirm_result", reason_code="AUTH_POST_CONFIRM_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
+                return
+            trace_gate("auth_session_post_confirm_result", classification="ALLOWED" if current_auth.authorized else "BLOCKED",
+                       reason_code=None if current_auth.authorized else "AUTH_POST_CONFIRM_REJECTED")
             if not current_auth.authorized:
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                    reason="نشست یا احراز هویت حساب مقصد تغییر کرده است."))
+                self._show_live_not_sent(entries, "نشست یا احراز هویت حساب مقصد تغییر کرده است.")
                 return
             manager_factory = getattr(self, "_manual_broker_manager_factory", None)
-            manager = manager_factory() if callable(manager_factory) else None
-            from ui.live_order_gate import check_manual_live_preflight
-            readiness = check_manual_live_preflight(
+            trace_gate("readiness_preflight_start")
+            try:
+                manager = manager_factory() if callable(manager_factory) else None
+                from ui.live_order_gate import check_manual_live_preflight
+                readiness = check_manual_live_preflight(
                 account_store=self.store, authentication_service=auth_service,
                 session_manager=self._get_session_manager(), broker_manager=manager,
                 account_id=record.account_id, broker_name=record.broker_name,
                 execution_id=live_execution_id, entries=entries,
                 prepared_batch=prepared_batch, engine=coordinator.engine,
                 live_selected=True, human_approval=True,
-                include_missing_broker_ack=True,
-                confirmation_acknowledged=True,
-            )
-            if not getattr(readiness, "allowed", False):
-                self._show_queue_status(
-                    STRINGS.LIVE_START_REJECTED.format(
-                        reason=getattr(readiness, "reason", STRINGS.LIVE_NOT_READY)
-                    )
+                    include_missing_broker_ack=True,
+                    confirmation_acknowledged=True,
+                    trace_callback=lambda stage, **kwargs: trace_gate(stage, **kwargs),
                 )
+            except Exception:
+                trace_gate("readiness_preflight_result", reason_code="READINESS_PREFLIGHT_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_NOT_READY)
+                return
+            trace_gate("readiness_preflight_result", classification="ALLOWED" if getattr(readiness, "allowed", False) else "BLOCKED",
+                       reason_code=None if getattr(readiness, "allowed", False) else "READINESS_PREFLIGHT_REJECTED")
+            if not getattr(readiness, "allowed", False):
+                self._show_live_not_sent(entries, getattr(readiness, "reason", STRINGS.LIVE_NOT_READY))
                 return
             manual_queue_fingerprint = readiness.send_table[0]
             from ui.live_order_gate import issue_manual_live_permit
             from core.live_order_authorization import ManualLivePermit
             try:
+                trace_gate("permit_issue_start")
                 manual_live_permit, manual_queue_fingerprint = issue_manual_live_permit(
                     execution_id=live_execution_id, account_id=record.account_id,
                     broker_name=record.broker_name, broker=readiness.send_table[2],
@@ -3779,39 +4066,53 @@ class OrderConfigurationPage(QWidget):
                     confirmation_acknowledged=True,
                     include_missing_broker_ack=True,
                 )
-            except Exception as exc:
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(reason=str(exc)))
+            except Exception:
+                trace_gate("permit_issue_result", reason_code="PERMIT_ISSUE_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
                 return
-            current_auth = authorize_order(
+            trace_gate("permit_issue_result", classification="ALLOWED")
+            trace_gate("auth_session_final_start")
+            try:
+                current_auth = authorize_order(
                 self.store, auth_service, self._get_session_manager(),
                 record.account_id, record.broker_name,
-            )
+                )
+            except Exception:
+                manual_live_permit.close()
+                trace_gate("auth_session_final_result", reason_code="AUTH_FINAL_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
+                return
+            trace_gate("auth_session_final_result", classification="ALLOWED" if current_auth.authorized else "BLOCKED",
+                       reason_code=None if current_auth.authorized else "AUTH_FINAL_REJECTED")
             if not current_auth.authorized:
                 manual_live_permit.close()
-                self._show_queue_status(STRINGS.LIVE_START_REJECTED.format(
-                    reason="نشست یا احراز هویت حساب مقصد تغییر کرده است."))
+                self._show_live_not_sent(entries, "نشست یا احراز هویت حساب مقصد تغییر کرده است.")
                 return
-            if not self._live_snapshot_unchanged(snapshot, record):
+            trace_gate("snapshot_final_start")
+            try:
+                final_snapshot_current = self._live_snapshot_unchanged(snapshot, record)
+            except Exception:
                 manual_live_permit.close()
-                self._show_queue_status(STRINGS.LIVE_SNAPSHOT_CHANGED)
+                trace_gate("snapshot_final_result", reason_code="SNAPSHOT_FINAL_EXCEPTION", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_SNAPSHOT_CHANGED)
+                return
+            trace_gate("snapshot_final_result", classification="OK" if final_snapshot_current else "BLOCKED",
+                       reason_code=None if final_snapshot_current else "SNAPSHOT_FINAL_CHANGED")
+            if not final_snapshot_current:
+                manual_live_permit.close()
+                self._show_live_not_sent(entries, STRINGS.LIVE_SNAPSHOT_CHANGED)
                 return
             live_gate = getattr(readiness, "gate", None)
             if live_gate is None or not isinstance(manual_live_permit, ManualLivePermit):
-                self._show_queue_status(
-                    STRINGS.LIVE_START_REJECTED.format(
-                        reason=STRINGS.LIVE_PREREQUISITES_UNKNOWN
-                    )
-                )
+                trace_gate("permit_validation", reason_code="PERMIT_POST_ISSUE_INVALID", classification="BLOCKED")
+                self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
                 return
+            trace_gate("permit_validation", classification="ALLOWED")
 
         try:
             runner = None if live else self._test_runner()
         except Exception:
-            self._show_queue_status(
-                STRINGS.LIVE_START_REJECTED.format(
-                    reason=STRINGS.LIVE_PREREQUISITES_UNKNOWN
-                )
-            )
+            self._show_live_not_sent(entries, STRINGS.LIVE_PREREQUISITES_UNKNOWN)
             return
         if runner is None and not live:
             # No runner wired (tests, or UI-only usage): pure UI action.
@@ -3822,6 +4123,14 @@ class OrderConfigurationPage(QWidget):
         # / exchange timestamp, never a latency measurement, and never read
         # again after the send (the send itself never waits for it).
         sent_at = datetime.now()
+        ui_execution_id = f"exec-ui-{uuid.uuid4().hex}"
+        self._active_result_execution_id = ui_execution_id
+        self._last_test_run = None
+        self._last_test_entries = list(entries)
+        self._last_order_results = None
+        self._last_test_run_mode = run_mode
+        self.result_list.clear()
+        self.result_status_label.setText(RESULT_EMPTY_STATE)
 
         # UI-5 Task 4 Stage 3 Task 3 — corrective contract: the feedback
         # binding is established BEFORE the send pass starts (lazily, once,
@@ -3830,34 +4139,84 @@ class OrderConfigurationPage(QWidget):
         # page's listener connected — never a lost event.
         self._ensure_feedback_binding()
 
+        live_results = None
+        engine_entered = False
         try:
             if live:
                 if not self._live_snapshot_unchanged(snapshot, record):
                     raise RuntimeError(STRINGS.LIVE_SNAPSHOT_CHANGED)
-                broker = manager.get_for_account(record.account_id, record.broker_name)
+                trace_gate("broker_resolve_start")
+                try:
+                    broker = manager.get_for_account(record.account_id, record.broker_name)
+                except Exception:
+                    trace_gate("broker_resolve_result", reason_code="BROKER_RESOLVE_EXCEPTION", classification="BLOCKED")
+                    raise
+                trace_gate("broker_resolve_result", classification="OK")
                 from concurrent.futures import ThreadPoolExecutor
                 from core.live_order_authorization import ManualLivePermit
+                from core.order_engine import OrderExecutionResult
                 permit = manual_live_permit
                 if not isinstance(permit, ManualLivePermit):
+                    trace_gate("permit_validation_final", reason_code="PERMIT_FINAL_INVALID", classification="BLOCKED")
                     raise RuntimeError("مجوز یک‌بارهٔ ارسال زنده معتبر نیست.")
+                trace_gate("permit_validation_final", classification="ALLOWED")
                 def submit_one(pair):
                     index, prepared = pair
+                    nonlocal engine_entered
+                    engine_entered = True
                     return coordinator.engine.submit_manual_prepared_order(
                         prepared, permit=permit, broker=broker,
                         account=account, account_id=record.account_id,
                         broker_name=record.broker_name,
                         queue_fingerprint=manual_queue_fingerprint, index=index,
+                        trace_id=getattr(self, "_manual_live_trace_id", None),
                         acknowledge_missing_broker_readiness=True,
                     )
                 with ThreadPoolExecutor(max_workers=len(prepared_batch.orders)) as pool:
-                    futures = [pool.submit(submit_one, item)
-                               for item in enumerate(prepared_batch.orders)]
-                    results = [future.result() for future in futures]
-                execution_id, plan, result = live_execution_id, None, results
+                    live_results = _collect_manual_live_results(
+                        pool, entries, prepared_batch.orders, submit_one,
+                        OrderExecutionResult,
+                    )
                 permit.close()
+                results = live_results
+                execution_id, plan, result = live_execution_id, None, results
             else:
                 plan, execution_id, result = runner.run(entries, account=account)
         except Exception as exc:  # fail-closed: surface, never crash the UI
+            if live:
+                trace_gate("live_dispatch_exception", reason_code="LIVE_DISPATCH_EXCEPTION", classification="ERROR")
+            if live:
+                from core.order_engine import OrderExecutionResult
+                # Preserve any completed/UNKNOWN outcomes. If the exception
+                # happened before Engine entry, untouched orders are NOT_SENT;
+                # after Engine entry their outcome cannot be inferred safely.
+                if live_results is not None:
+                    results = [item if item is not None else OrderExecutionResult(
+                        False, False, "UNKNOWN", entry.order,
+                        broker_name=entry.broker_name,
+                        message="Manual Live outcome is unknown",
+                    ) for item, entry in zip(live_results, entries)]
+                else:
+                    results = [OrderExecutionResult(
+                        False, False, "UNKNOWN" if engine_entered else "NOT_SENT", entry.order,
+                        broker_name=entry.broker_name,
+                        message=("Manual Live outcome is unknown" if engine_entered
+                                 else "Order was not submitted"),
+                    ) for entry in entries]
+            if live and self._active_result_execution_id != ui_execution_id:
+                return
+            if live:
+                self._last_order_results = results
+                self._last_test_run = (None, live_execution_id, results)
+                self._last_test_run_mode = "live"
+                self._last_test_trace_id = trace_id
+                self._last_test_entries = list(entries)
+                self._last_test_error = None
+                self._refresh_result_display()
+                self._last_latency_report = None
+                self._refresh_diagnostic_trace_display()
+                self._refresh_diagnostic_latency_display()
+                return
             self._last_test_error = str(exc)
             self._show_queue_status(
                 STRINGS.TEST_ISSUE_FAILED.format(exc=exc)
@@ -3873,7 +4232,11 @@ class OrderConfigurationPage(QWidget):
             self._refresh_diagnostic_latency_display()
             return
 
+        if self._active_result_execution_id != ui_execution_id:
+            return
         self._last_test_run = (plan, execution_id, result)
+        self._last_test_run_mode = run_mode
+        self._last_test_trace_id = trace_id
         self._last_test_entries = list(entries)
         self._last_test_error = None
         # UI-6 Task 3: THIS run's EXISTING Block 8 report — the runner's
@@ -4282,6 +4645,34 @@ class OrderConfigurationPage(QWidget):
         # seen.
         self._refresh_diagnostic_trace_display()
         self._refresh_diagnostic_latency_display()
+        self._refresh_trace_logger_status()
+
+    def _refresh_trace_logger_status(self):
+        """Render logger health without affecting dispatch or result state."""
+        try:
+            from ui.manual_live_trace import diagnostic_status
+            from ui import strings as STRINGS
+            status = diagnostic_status()
+            path = status.get("path") or "نامشخص"
+            error = status.get("error") or {}
+            code = error.get("code")
+            writable = status.get("writable")
+            if code:
+                message = STRINGS.TRACE_LOG_WRITE_FAILED
+            elif writable is True:
+                message = STRINGS.TRACE_LOG_WRITE_OK
+            else:
+                message = STRINGS.TRACE_LOG_NOT_WRITTEN
+            self.trace_logger_status_label.setText(
+                STRINGS.TRACE_LOG_PATH.format(path=path) + "\n" + message
+            )
+        except Exception:
+            try:
+                self.trace_logger_status_label.setText(
+                    "مسیر فایل گزارش: نامشخص\nوضعیت ثبت گزارش در دسترس نیست."
+                )
+            except Exception:
+                pass
 
     def is_diagnostic_visible(self):
         """The current diagnostic-section visibility (the page boundary)."""
@@ -4393,6 +4784,7 @@ class OrderConfigurationPage(QWidget):
         # lets them be seen).
         self._refresh_diagnostic_trace_display()
         self._refresh_diagnostic_latency_display()
+        self._refresh_trace_logger_status()
 
     def _diagnostic_latency_report(self):
         """
@@ -4644,6 +5036,31 @@ class OrderConfigurationPage(QWidget):
         self.result_list.clear()
         entries = self._last_test_entries or []
         results = self._last_order_results
+        if getattr(self, "_last_test_run_mode", None) == "live":
+            trace_id = getattr(self, "_last_test_trace_id", None)
+            execution_id = getattr(self, "_active_result_execution_id", None)
+            emitted = getattr(self, "_manual_live_final_events", None)
+            if emitted is None:
+                emitted = self._manual_live_final_events = set()
+            try:
+                from ui.manual_live_trace import log_event
+                for index, entry in enumerate(entries):
+                    key = (execution_id or trace_id, index)
+                    if key in emitted:
+                        continue
+                    result = results[index] if isinstance(results, list) and index < len(results) else None
+                    if result is None or not trace_id:
+                        continue
+                    status = _manual_live_final_status(result)
+                    # Mark before invoking the fail-open logger to prevent refresh retries.
+                    emitted.add(key)
+                    try:
+                        log_event(trace_id, "ui_final_result", order_index=index,
+                                  extra={"ui_result": status})
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         for index, entry in enumerate(entries):
             result = None
             if isinstance(results, list) and 0 <= index < len(results):
@@ -4657,11 +5074,11 @@ class OrderConfigurationPage(QWidget):
                 getattr(order, "side", None),
                 str(getattr(order, "side", "")),
             )
-            status = _result_status_label(result)
+            status = _result_status_label(result, getattr(self, "_last_test_run_mode", "dry_run"))
             text = (
                 f"\u062d\u0633\u0627\u0628 {entry.account_id} | {symbol} | "
                 f"{side_label} | {status} | "
-                f"{_result_reason_for_status(status)}"
+                f"{_result_reason_for_status(status, result)}"
             )
             QListWidgetItem(text, self.result_list)
         if entries:

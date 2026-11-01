@@ -405,29 +405,51 @@ class OrderEngine:
             broker_name=ticket.broker_name, response=response)
 
     def submit_manual_prepared_order(self, prepared, *, permit, broker, account,
-                                     account_id, broker_name, queue_fingerprint,
-                                     index, acknowledge_missing_broker_readiness=False):
+                                    account_id, broker_name, queue_fingerprint,
+                                    index, acknowledge_missing_broker_readiness=False,
+                                    trace_id=None):
         """Validate and hand off one prepared order under a manual-only permit."""
+        try:
+            from ui.manual_live_trace import log_event
+            log_event(trace_id, "engine_entry", order_index=index)
+        except Exception:
+            pass
         from core.live_order_authorization import ManualLivePermit, prepared_fingerprint
         order = getattr(prepared, "order", None)
-        def blocked(message):
+        def blocked(message, reason_code):
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "engine_result", order_index=index,
+                          reason_code=reason_code, extra={"classification": "BLOCKED"})
+            except Exception:
+                pass
             return OrderExecutionResult(False, False, "BLOCKED", order,
                 broker_name=broker_name, message=message)
         if not isinstance(permit, ManualLivePermit):
-            return blocked("Manual Live permit is missing")
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "permit_invalid", order_index=index, reason_code="PERMIT_INVALID")
+            except Exception:
+                pass
+            return blocked("Manual Live permit is missing", "PERMIT_INVALID")
         from core.safety_gate import SafetyGateDecision
         gate_decision = getattr(permit, "gate_decision", None)
         if (not isinstance(gate_decision, SafetyGateDecision)
                 or gate_decision.allowed is not True
                 or getattr(permit, "_missing_broker_ack", None)
                 and acknowledge_missing_broker_readiness is not True):
-            return blocked("SafetyGate or explicit broker-readiness acknowledgment is invalid")
+            return blocked("SafetyGate or explicit broker-readiness acknowledgment is invalid", "SAFETY_GATE_OR_ACK_INVALID")
         valid, message = self.validate_prepared_order(
             prepared, broker, account, account_id, broker_name,
             now=datetime.now().astimezone(), check_expiry=False,
         )
         if not valid:
-            return blocked(message)
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "engine_validation", order_index=index, reason_code="ENGINE_VALIDATION_FAILED")
+            except Exception:
+                pass
+            return blocked(message, "ENGINE_VALIDATION_FAILED")
         if not permit.matches(
             execution_id=prepared.execution_id,
             account_id=account_id,
@@ -437,22 +459,52 @@ class OrderEngine:
             prepared_fingerprint=prepared_fingerprint(prepared),
             index=index,
         ):
-            return blocked("Manual Live permit binding invalid or already consumed")
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "permit_binding", order_index=index, reason_code="PERMIT_INVALID")
+            except Exception:
+                pass
+            return blocked("Manual Live permit binding invalid or already consumed", "PERMIT_BINDING_INVALID")
         if getattr(broker, "live_trading_enabled", None) is not False:
-            return blocked("Global broker Live lock must remain closed for manual permit")
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "global_live_lock", order_index=index, reason_code="GLOBAL_LIVE_LOCK")
+            except Exception:
+                pass
+            return blocked("Global broker Live lock must remain closed for manual permit", "GLOBAL_LIVE_LOCK")
         try:
             response = broker.submit_manual_prepared_order(
                 prepared.payload, permit=permit, prepared=prepared,
                 account_id=account_id, broker_name=broker_name,
                 queue_fingerprint=queue_fingerprint, index=index,
+                trace_id=trace_id,
             )
         except Exception as exc:
-            text = str(exc)
-            if text.startswith("MANUAL_LIVE_UNKNOWN:"):
+            from brokers.agaah.broker import (
+                ManualLiveNotSentError, ManualLiveUnknownError,
+            )
+            if isinstance(exc, ManualLiveUnknownError):
+                try:
+                    from ui.manual_live_trace import log_event
+                    log_event(trace_id, "engine_result", order_index=index, extra={"classification": "UNKNOWN"})
+                except Exception:
+                    pass
                 return OrderExecutionResult(False, False, "UNKNOWN", order,
-                    broker_name=broker_name, message=text.split(":", 1)[1].strip() or text)
+                    broker_name=broker_name, message="Manual Live outcome is unknown")
+            if isinstance(exc, ManualLiveNotSentError):
+                return blocked("Manual Live failed before transport handoff", "BROKER_PRE_HANDOFF_FAILED")
+            try:
+                from ui.manual_live_trace import log_event
+                log_event(trace_id, "engine_result", order_index=index, extra={"classification": "ERROR"})
+            except Exception:
+                pass
             return OrderExecutionResult(False, False, "ERROR", order,
-                broker_name=broker_name, message=text)
+                broker_name=broker_name, message="Manual Live submission failed")
+        try:
+            from ui.manual_live_trace import log_event
+            log_event(trace_id, "engine_result", order_index=index, extra={"classification": "LIVE"})
+        except Exception:
+            pass
         return OrderExecutionResult(True, True, "LIVE", order,
             broker_name=broker_name, response=response)
 
