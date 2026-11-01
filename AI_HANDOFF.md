@@ -1,3 +1,5 @@
+> **Current manual Live investigation checkpoint (2026-11-01):** See [MANUAL_LIVE_CHECKPOINT.md](MANUAL_LIVE_CHECKPOINT.md) for work completed/reported, independent review gaps, evidence limits and pending tasks A/B. Real-order qualification remains unproven; older offline-complete statements do not close these tasks.
+
 # PROJECT STATE
 
 > **AUTHORITATIVE CURRENT HANDOFF — updated 2026-10-17.** This section supersedes older checkpoint/status statements elsewhere in this long historical handoff when they conflict.
