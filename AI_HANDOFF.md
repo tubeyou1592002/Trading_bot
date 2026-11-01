@@ -1,3 +1,5 @@
+> **2026-11-01 owner-operated manual Live milestone:** Owner confirms broker receipt after the fresh-account snapshot fix. Independent offline review: 72 tests passed with network blocked. See [MANUAL_LIVE_CHECKPOINT.md](MANUAL_LIVE_CHECKPOINT.md). This confirms one manual attempt, not exchange fill, scheduled Live or general production readiness.
+
 > **2026-11-01 acceptance update:** Manual Live corrective tasks A/B are complete within offline scope; independent guarded review: 66 tests passed. See [MANUAL_LIVE_CHECKPOINT.md](MANUAL_LIVE_CHECKPOINT.md). Original incident cause and actual broker qualification remain unproven.
 
 > **Current manual Live investigation checkpoint (2026-11-01):** See [MANUAL_LIVE_CHECKPOINT.md](MANUAL_LIVE_CHECKPOINT.md) for work completed/reported, independent review gaps, evidence limits and pending tasks A/B. Real-order qualification remains unproven; older offline-complete statements do not close these tasks.

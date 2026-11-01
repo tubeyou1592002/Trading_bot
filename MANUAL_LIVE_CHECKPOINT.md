@@ -55,3 +55,20 @@ The reviewer used pytest.main with a unique workspace-local basetemp. No broker 
 Earlier 64-test and awaiting-review notes above are historical and superseded by this acceptance. Four baseline failures remain open; full-suite success and actual broker receipt are not claimed. The cause of the original owner-run incident remains unproven. Actual owner-process trace path and real-order qualification are still unverified.
 
 This implementation commit includes the related manual-Live tracing code/tests accumulated since the documentation checkpoint. Unrelated symbol mapping/search, account runtime and diagnostic scripts remain outside this commit.
+
+## Task — manual Live account snapshot and result message
+Status: ACCEPTED after independent offline review and owner-reported manual broker receipt (2026-11-01).
+- Offline reproduction with real OrderEngine validation confirmed that fresh balance preflight rejected a batch prepared from the cached account with exact validation reason `Prepared account changed`; the account fingerprint in `PreparedOrder` is compared to `vars(account)`.
+- The UI now carries the same ephemeral fresh account snapshot through prepare, preflight, and submit. Persistent account data is not mutated; Engine snapshot validation, confirmation snapshot, session, permit, and SafetyGate remain active.
+- Engine/preflight trace validation failures use fixed reason codes (such as `ENGINE_ACCOUNT_SNAPSHOT_CHANGED`); no account values, financial values, or raw exception text are added to the trace.
+- Live result status no longer uses the dry-run `TEST_ISSUED` message. It reports broker-confirmed LIVE, pre-acknowledgement stop, or UNKNOWN without treating internal queue acceptance as broker acceptance.
+- Offline validation: the five test modules `test_live_preflight_t1_balance.py test_manual_live_ui_gate_trace.py test_manual_live_trace_instrumentation.py test_manual_live_unknown.py test_manual_live_permit.py` passed 64 tests. Compile and diff checks passed. No network, authentication/refresh, real order, Dry Run, Live execution, or scheduling was performed.
+
+## Owner-operated manual receipt confirmed — 2026-11-01
+The owner reported: the manually submitted Live order finally reached the broker, after the account snapshot correction. This is owner testimony of broker receipt for that manual attempt, not an assertion of exchange execution/fill, scheduled-Live qualification, burst acceptance, or general production readiness. No broker response body, account identifier or order details are stored in this checkpoint.
+
+For the failed attempt inspected immediately before the correction, trace `mlt-ac10e73a623047bbb14e3b604de4ca6e` showed confirmation and preflight success followed by ENGINE_VALIDATION_FAILED and BLOCKED, with no transport_call_started for that trace. Offline real-Engine tests reproduced the stale/fresh account fingerprint mismatch. The earlier historical incident remains distinct; its exact original version/cause was not independently established.
+
+Independent architectural review ran six modules with socket connect/create_connection blocked: `test_live_preflight_t1_balance.py test_manual_live_ui_gate_trace.py test_manual_live_trace_instrumentation.py test_manual_live_unknown.py test_manual_live_permit.py test_manual_live_trace_reliability.py` => **72 passed in 2.13s**. No reviewer-initiated broker request/order occurred. The subsequent real manual action was performed by the owner, not an agent.
+
+The current checkpoint supersedes prior awaiting-review and manual-receipt-pending statements only for this successful owner-operated manual attempt. Four historical baseline test failures remain open. Scheduled Live remains outside this acceptance. Related code/tests and documentation are included in the commit containing this update; unrelated worktree changes are excluded.

@@ -201,7 +201,7 @@ def test_validation_rejection_has_no_post(monkeypatch):
 @pytest.mark.parametrize(
     ("failure", "reason_code", "expected_mode"),
     [
-        ("engine_validation", "ENGINE_VALIDATION_FAILED", "BLOCKED"),
+        ("engine_validation", "ENGINE_EVIDENCE_INVALID", "BLOCKED"),
         ("permit_invalid", "PERMIT_INVALID", "BLOCKED"),
         ("permit_binding", "PERMIT_INVALID", "BLOCKED"),
         ("broker_claim", "BROKER_PERMIT_CLAIM_FAILED", "ERROR"),

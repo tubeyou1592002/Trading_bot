@@ -26,6 +26,7 @@ from ui.session_manager import SessionManager
 
 class _FakeBroker:
     name = "SIM"
+    live_trading_enabled = False
 
     def __init__(self):
         self.place_order_calls = []
@@ -42,7 +43,7 @@ class _FakeBroker:
 
     def submit_manual_prepared_order(self, payload, *, permit, prepared,
                                      account_id, broker_name,
-                                     queue_fingerprint, index):
+                                     queue_fingerprint, index, trace_id=None):
         self.place_order_calls.append(payload)
         return {"isSuccess": True}
 
@@ -115,6 +116,16 @@ def _make_case(account_id="A", ins_code="N1", price=10, quantity=2):
 def _run_preflight(fresh_balance, account_id="A"):
     account, broker, manager, store, sessions, entries, engine, \
         execution_id, batch = _make_case(account_id=account_id)
+    if fresh_balance is not None and isinstance(fresh_balance, (int, float)):
+        from dataclasses import replace
+        fresh_account = replace(account, tradable_balance_t1=fresh_balance)
+        batch = engine.prepare_batch([dict(
+            broker=manager.get_for_account(account_id, "SIM"),
+            provider=_FakeProvider(), ins_code=entries[0].order.nsc_id,
+            order=entries[0].order, account=fresh_account,
+            account_id=account_id, broker_name="SIM",
+        )], execution_id=execution_id + "-fresh")
+        execution_id += "-fresh"
     auth = _FakeAuth(balances={account_id: fresh_balance}
                      if fresh_balance is not None else {})
     check = check_manual_live_preflight(
@@ -130,7 +141,7 @@ def _run_preflight(fresh_balance, account_id="A"):
     return account, broker, check
 
 
-def test_fresh_balance_reaches_preflight_for_active_account():
+def test_fresh_balance_reaches_preflight_for_active_account(tmp_path, monkeypatch):
     """Fresh T1 balance from session reaches preflight; order passes."""
     account, broker, check = _run_preflight(fresh_balance=50000)
     assert check.allowed is True, check.reason
@@ -139,7 +150,104 @@ def test_fresh_balance_reaches_preflight_for_active_account():
     assert broker.place_order_calls == []
 
 
-def test_other_account_balance_not_used():
+def test_different_initial_and_fresh_balance_reaches_engine_and_fake_post(monkeypatch, tmp_path):
+    """Pre-fix reproduction: stale submit snapshot failed real validation."""
+    from core.live_order_authorization import prepared_fingerprint
+    from core.live_order_authorization import ManualLivePermit, _MANUAL_PERMIT_ISSUER
+    from core.safety_gate import SafetyGateDecision
+    from ui import manual_live_trace
+
+    monkeypatch.setattr(manual_live_trace, "_TRACE_DIR", tmp_path / "trace")
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", tmp_path / "trace" / "events.jsonl")
+
+    from dataclasses import replace
+    account, broker, manager, store, sessions, entries, engine, execution_id, batch = _make_case()
+    auth = _FakeAuth({"A": 50000})
+    check = check_manual_live_preflight(
+        account_store=store, authentication_service=auth,
+        session_manager=sessions, broker_manager=manager,
+        account_id="A", broker_name="SIM", execution_id=execution_id,
+        entries=entries, prepared_batch=batch, engine=engine,
+        live_selected=True, human_approval=True,
+        include_missing_broker_ack=True, confirmation_acknowledged=True,
+    )
+    assert check.allowed is False
+    assert "Prepared account changed" in check.reason
+
+    account, broker, manager, store, sessions, entries, engine, execution_id, _cached_batch = _make_case()
+    fresh_account = replace(account, tradable_balance_t1=50000)
+    batch = engine.prepare_batch([dict(
+        broker=broker, provider=_FakeProvider(), ins_code="N1",
+        order=entries[0].order, account=fresh_account, account_id="A",
+        broker_name="SIM",
+    )], execution_id=execution_id + "-fresh")
+    execution_id += "-fresh"
+    check = check_manual_live_preflight(
+        account_store=store, authentication_service=auth,
+        session_manager=sessions, broker_manager=manager,
+        account_id="A", broker_name="SIM", execution_id=execution_id,
+        entries=entries, prepared_batch=batch, engine=engine,
+        live_selected=True, human_approval=True,
+        include_missing_broker_ack=True, confirmation_acknowledged=True,
+    )
+    assert check.allowed is True, check.reason
+
+    prepared = batch.orders[0]
+    permit = ManualLivePermit(
+        execution_id=execution_id, account_id="A", broker_name="SIM",
+        broker=broker, queue_fingerprint="queue-fp",
+        prepared_fingerprints=(prepared_fingerprint(prepared),),
+        gate_decision=SafetyGateDecision(True, "ALLOWED", None, "ok"),
+        missing_broker_acknowledged=True, _issuer=_MANUAL_PERMIT_ISSUER,
+    )
+    result = engine.submit_manual_prepared_order(
+        prepared, permit=permit, broker=broker, account=fresh_account,
+        account_id="A", broker_name="SIM", queue_fingerprint="queue-fp",
+        index=0, acknowledge_missing_broker_readiness=True,
+    )
+    assert result.mode == "LIVE", result.message
+    assert len(broker.place_order_calls) == 1
+
+
+def test_changed_account_snapshot_still_blocks_engine_and_fake_post(monkeypatch, tmp_path):
+    """A real post-approval account change is not normalized away."""
+    from core.live_order_authorization import prepared_fingerprint
+    from core.live_order_authorization import ManualLivePermit, _MANUAL_PERMIT_ISSUER
+    from core.safety_gate import SafetyGateDecision
+    from ui import manual_live_trace
+    from dataclasses import replace
+
+    monkeypatch.setattr(manual_live_trace, "_TRACE_DIR", tmp_path / "trace")
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", tmp_path / "trace" / "events.jsonl")
+    account, _broker, _manager, _store, _sessions, _entries, engine, execution_id, batch = _make_case()
+    broker = _FakeBroker()
+    prepared = batch.orders[0]
+    # Reprepare against this test's broker to keep destination identity valid.
+    batch = engine.prepare_batch([dict(
+        broker=broker, provider=_FakeProvider(), ins_code="N1",
+        order=prepared.order, account=account, account_id="A", broker_name="SIM",
+    )], execution_id=execution_id + "-changed")
+    execution_id += "-changed"
+    prepared = batch.orders[0]
+    permit = ManualLivePermit(
+        execution_id=execution_id, account_id="A", broker_name="SIM",
+        broker=broker, queue_fingerprint="queue-fp",
+        prepared_fingerprints=(prepared_fingerprint(prepared),),
+        gate_decision=SafetyGateDecision(True, "ALLOWED", None, "ok"),
+        missing_broker_acknowledged=True, _issuer=_MANUAL_PERMIT_ISSUER,
+    )
+    changed = replace(account, tradable_balance_t1=49999)
+    result = engine.submit_manual_prepared_order(
+        prepared, permit=permit, broker=broker, account=changed,
+        account_id="A", broker_name="SIM", queue_fingerprint="queue-fp",
+        index=0, acknowledge_missing_broker_readiness=True,
+    )
+    assert result.mode == "BLOCKED"
+    assert result.message == "Prepared account changed"
+    assert broker.place_order_calls == []
+
+
+def test_other_account_balance_not_used(tmp_path, monkeypatch):
     """Account B's balance is not read for account A's preflight."""
     account, broker, manager, store, sessions, entries, engine, \
         execution_id, batch = _make_case(account_id="A")
@@ -159,14 +267,14 @@ def test_other_account_balance_not_used():
     assert broker.place_order_calls == []
 
 
-def test_missing_balance_blocks_preflight_no_place_order():
+def test_missing_balance_blocks_preflight_no_place_order(tmp_path, monkeypatch):
     """No fresh balance → fail-closed, no place_order."""
     account, broker, check = _run_preflight(fresh_balance=None)
     assert check.allowed is False, check.reason
     assert broker.place_order_calls == []
 
 
-def test_invalid_balance_blocks_preflight_no_place_order():
+def test_invalid_balance_blocks_preflight_no_place_order(tmp_path, monkeypatch):
     """Non-numeric / negative fresh balance → fail-closed, no place_order."""
     for bad in ("not-a-number", -100, float("nan"), float("inf")):
         account, broker, check = _run_preflight(fresh_balance=bad)
@@ -174,14 +282,14 @@ def test_invalid_balance_blocks_preflight_no_place_order():
         assert broker.place_order_calls == []
 
 
-def test_balance_none_blocks_preflight_no_place_order():
+def test_balance_none_blocks_preflight_no_place_order(tmp_path, monkeypatch):
     """Fresh balance explicitly None → fail-closed, no place_order."""
     account, broker, check = _run_preflight(fresh_balance=None)
     assert check.allowed is False, check.reason
     assert broker.place_order_calls == []
 
 
-def test_persistent_account_not_mutated():
+def test_persistent_account_not_mutated(tmp_path, monkeypatch):
     """Preflight uses a copy; stored account keeps its stale balance."""
     account, broker, check = _run_preflight(fresh_balance=50000)
     assert check.allowed is True
@@ -189,7 +297,7 @@ def test_persistent_account_not_mutated():
     assert broker.place_order_calls == []
 
 
-def test_no_get_purchase_power_blocks_preflight():
+def test_no_get_purchase_power_blocks_preflight(tmp_path, monkeypatch):
     """Auth service without get_purchase_power blocks preflight even with
     valid cached T1; place_order never called."""
     account, broker, manager, store, sessions, entries, engine, \
@@ -216,7 +324,7 @@ def test_no_get_purchase_power_blocks_preflight():
     assert broker.place_order_calls == []
 
 
-def test_no_adapter_blocks_preflight():
+def test_no_adapter_blocks_preflight(tmp_path, monkeypatch):
     """Auth service without adapter blocks preflight even with valid cached
     T1; place_order never called."""
     account, broker, manager, store, sessions, entries, engine, \

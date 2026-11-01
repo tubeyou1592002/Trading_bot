@@ -444,12 +444,20 @@ class OrderEngine:
             now=datetime.now().astimezone(), check_expiry=False,
         )
         if not valid:
+            validation_reasons = {
+                "Prepared account changed": "ENGINE_ACCOUNT_SNAPSHOT_CHANGED",
+                "Prepared account identity changed": "ENGINE_ACCOUNT_ID_CHANGED",
+                "Prepared order changed": "ENGINE_ORDER_CHANGED",
+                "Prepared destination changed": "ENGINE_DESTINATION_CHANGED",
+                "Prepared payload changed": "ENGINE_PAYLOAD_CHANGED",
+            }
+            reason_code = validation_reasons.get(message, "ENGINE_EVIDENCE_INVALID")
             try:
                 from ui.manual_live_trace import log_event
-                log_event(trace_id, "engine_validation", order_index=index, reason_code="ENGINE_VALIDATION_FAILED")
+                log_event(trace_id, "engine_validation", order_index=index, reason_code=reason_code)
             except Exception:
                 pass
-            return blocked(message, "ENGINE_VALIDATION_FAILED")
+            return blocked(message, reason_code)
         if not permit.matches(
             execution_id=prepared.execution_id,
             account_id=account_id,

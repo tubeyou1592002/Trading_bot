@@ -201,6 +201,7 @@ def test_full_allowed_ui_path_resolves_permit_and_calls_engine_once_per_order(qa
         page._refresh_result_display = lambda: None
         page._refresh_diagnostic_trace_display = lambda: None
         page._refresh_diagnostic_latency_display = lambda: None
+        page._show_queue_status = lambda text: setattr(page, "_captured_status", text)
         page._run_test_pass()
 
         assert len(calls) == len(orders) == 2
@@ -219,6 +220,20 @@ def test_full_allowed_ui_path_resolves_permit_and_calls_engine_once_per_order(qa
         assert stages.index("broker_resolve_result") < stages.index("permit_validation_final")
         assert [e["order_index"] for e in events if e["stage"] == "confirm_yes"] == [0, 1]
         assert all(e["trace_id"] == "ui-trace-test" for e in events)
+        assert "dry-run" not in page._captured_status.lower()
+    finally:
+        page.close()
+
+
+def test_live_status_uses_actual_result_and_never_test_issued(qapp, monkeypatch):
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    try:
+        page._show_queue_status = lambda text: setattr(page, "_captured_status", text)
+        from ui import strings
+        assert "dry-run" not in strings.LIVE_RESULT_ACCEPTED.lower()
+        assert "کارگزاری" in strings.LIVE_RESULT_ACCEPTED
+        assert "پیش از تأیید" in strings.LIVE_RESULT_BLOCKED
+        assert "نامعلوم" in strings.LIVE_RESULT_UNKNOWN
     finally:
         page.close()
 
@@ -227,7 +242,7 @@ def test_full_allowed_ui_path_resolves_permit_and_calls_engine_once_per_order(qa
     ("failure", "reason"),
     [
         ("balance", "READINESS_BALANCE_INVALID"),
-        ("engine_validation", "READINESS_ENGINE_VALIDATION_FAILED"),
+        ("engine_validation", "ENGINE_EVIDENCE_INVALID"),
         ("session_binding", "READINESS_SESSION_BINDING_INVALID"),
         ("safety_gate", "READINESS_SAFETY_GATE_REJECTED"),
     ],

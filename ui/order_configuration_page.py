@@ -3967,6 +3967,7 @@ class OrderConfigurationPage(QWidget):
             # replaced with the fresh session balance; identity and other
             # fields preserved; persistent record.account is never mutated.
             temp_account = replace(record.account, tradable_balance_t1=fresh_balance)
+            account = temp_account
 
             targets = tuple(DispatchTarget(
                 entry=entry, account_id=record.account_id,
@@ -4259,9 +4260,19 @@ class OrderConfigurationPage(QWidget):
         # UI-5 Task 4 Stage 3 Task 3: bound to the EXISTING order-feedback
         # signal BEFORE the send pass started (see above).
         self._refresh_result_display()
-        self._show_queue_status(
-            STRINGS.TEST_ISSUED.format(execution_id=execution_id)
-        )
+        if live:
+            modes = {getattr(item, "mode", None) for item in (self._last_order_results or ())}
+            if modes == {"LIVE"}:
+                live_status = STRINGS.LIVE_RESULT_ACCEPTED
+            elif "UNKNOWN" in modes:
+                live_status = STRINGS.LIVE_RESULT_UNKNOWN
+            else:
+                live_status = STRINGS.LIVE_RESULT_BLOCKED
+            self._show_queue_status(live_status)
+        else:
+            self._show_queue_status(
+                STRINGS.TEST_ISSUED.format(execution_id=execution_id)
+            )
 
     # ---------------------------------------------------------
     # Order Log (UI-5 Task 4, base display)

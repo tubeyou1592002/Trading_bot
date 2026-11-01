@@ -39,7 +39,7 @@ class FakeBroker:
 
     def submit_manual_prepared_order(self, payload, *, permit, prepared,
                                      account_id, broker_name,
-                                     queue_fingerprint, index):
+                                     queue_fingerprint, index, trace_id=None):
         assert self.live_trading_enabled is False
         assert permit.claim(
             execution_id=prepared.execution_id, account_id=account_id,
@@ -72,6 +72,7 @@ class FakeAuth:
 
     def is_logged_in(self, _): return True
     def get_adapter(self, _): return self.adapter
+    def get_purchase_power(self, _): return 100000
 
 
 def prepared_case(count=1):

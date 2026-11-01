@@ -175,9 +175,7 @@ def check_manual_live_preflight(*, account_store, authentication_service,
             )
         trace("readiness_balance_result", "OK")
 
-        # For a BUY order, the fresh session balance must cover the order
-        # cost. This is an additional preflight gate on top of the cached
-        # balance already used while building the prepared batch.
+        # The fresh session balance is the account snapshot for this run.
         if any(getattr(entry.order, "side", None) == BUY for entry in entries):
             needed = sum(
                 (getattr(entry.order, "price", 0) or 0)
@@ -205,17 +203,21 @@ def check_manual_live_preflight(*, account_store, authentication_service,
             raise LiveAuthorizationError("M6 prepared batch is incomplete")
         for entry, prepared in zip(entries, prepared_batch.orders):
             trace("readiness_engine_validation_start")
-            fresh_prepared = replace(
-                prepared,
-                account_fingerprint=engine._fingerprint(vars(fresh_account)),
-            )
             valid, reason = engine.validate_prepared_order(
-                fresh_prepared, broker, fresh_account, account_id, broker_name,
+                prepared, broker, fresh_account, account_id, broker_name,
                 now=datetime.now().astimezone(), check_expiry=False,
             )
             if (not valid or prepared.order is not entry.order
                     or not prepared.scheduled_valid):
-                trace("readiness_engine_validation_result", "BLOCKED", "READINESS_ENGINE_VALIDATION_FAILED")
+                reason_codes = {
+                    "Prepared account changed": "ENGINE_ACCOUNT_SNAPSHOT_CHANGED",
+                    "Prepared account identity changed": "ENGINE_ACCOUNT_ID_CHANGED",
+                    "Prepared order changed": "ENGINE_ORDER_CHANGED",
+                    "Prepared destination changed": "ENGINE_DESTINATION_CHANGED",
+                    "Prepared payload changed": "ENGINE_PAYLOAD_CHANGED",
+                }
+                trace("readiness_engine_validation_result", "BLOCKED",
+                      reason_codes.get(reason, "ENGINE_EVIDENCE_INVALID"))
                 raise LiveAuthorizationError(reason or "prepared order does not match queue")
             trace("readiness_engine_validation_result", "OK")
         session = session_manager.get(account_id)
