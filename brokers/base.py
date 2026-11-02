@@ -8,6 +8,7 @@ from models.trading_state import TradingState, TradingStateUnavailable
 
 class InstrumentLookupError(Exception):
     """
+
     استثنای رسمی قرارداد InstrumentProvider.
 
     زمانی پرتاب می‌شود که provider نتواند رابطه‌ی بین
@@ -19,6 +20,14 @@ class InstrumentLookupError(Exception):
     OrderEngine بتوانند بدون وابستگی به یکدیگر به آن
     ارجاع دهند.
     """
+
+    def __init__(self, *args, stage=None, http_status=None, reason_code=None,
+                 diagnostic=None):
+        super().__init__(*args)
+        self.stage = stage
+        self.http_status = http_status
+        self.reason_code = reason_code
+        self.diagnostic = diagnostic if isinstance(diagnostic, dict) else {}
 
 
 class Broker(ABC):

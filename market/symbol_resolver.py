@@ -6,7 +6,8 @@ class SymbolResolver:
     def __init__(self):
         self.tsetmc = TSETMC()
 
-    def normalize(self, text: str) -> str:
+    @staticmethod
+    def normalize(text: str) -> str:
         text = text.strip()
 
         # یکسان‌سازی حروف فارسی و عربی

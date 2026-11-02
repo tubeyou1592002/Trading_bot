@@ -127,6 +127,10 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from ui.manual_live_trace import diagnostic_status as _diagnostic_logger_status
+from ui.manual_live_trace import log_event as _diagnostic_log_event
+from ui.manual_live_trace import new_trace_id as _new_diagnostic_request_id
+from ui.manual_live_trace import trace_path as _diagnostic_trace_path
 
 from models.order import BUY, SELL, Order
 from models.trading_state import (
@@ -154,6 +158,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QDialog,
+    QPlainTextEdit,
+    QApplication,
     QMessageBox,
     QRadioButton,
     QScrollArea,
@@ -791,37 +797,116 @@ class _OrderIdentityWorker(QThread):
 
     # (ins_code, nsc_id) — the nsc_id string travels as ``object`` so it
     # is passed BY REFERENCE (no marshalling/copying of identity).
-    identity_succeeded = Signal(object, str, object)
+    identity_succeeded = Signal(object, str, object, object, str, str, object, str)
     # (ins_code, message) — resolution failed (no identity available).
-    identity_failed = Signal(object, str, str)
+    identity_failed = Signal(object, str, str, object, str, str, object, str, object)
 
-    def __init__(self, ins_code, resolver_factory, parent=None, identity=None):
+    def __init__(self, ins_code, resolver_factory, parent=None, identity=None, request_id=None):
         super().__init__(parent)
         self.ins_code = ins_code
         self._resolver_factory = resolver_factory
         self.identity = identity
+        self.request_id = request_id
+        self.symbol = None
 
     def run(self):
+        self.source = "lookup"
+        self.http_status = None
+        self.error_code = ""
+        self.provider_diagnostic = {}
+        self.provider_stage = None
+        symbol = self.symbol or ""
         try:
             resolver = self._resolver_factory()
-        except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
-            self.identity_failed.emit(self.identity, self.ins_code, str(exc))
+        except Exception:  # noqa: BLE001 — failure must never crash the UI
+            self.error_code = "LOOKUP_FAILED"
+            self.identity_failed.emit(self.identity, self.ins_code, "", self.request_id,
+                                      symbol, self.source, self.http_status, self.error_code, None)
             return
         if resolver is None:
             # Fail-closed: no real identity source (e.g. no active
             # account → no broker). Nothing may be guessed/emitted.
-            self.identity_failed.emit(
-                self.identity, self.ins_code, "no broker identity resolver available"
-            )
+            self.error_code = "LOOKUP_FAILED"
+            self.identity_failed.emit(self.identity, self.ins_code, "", self.request_id,
+                                      symbol, self.source, self.http_status, self.error_code, None)
             return
         try:
+            cache = getattr(resolver, "_nsc_cache", None)
+            if isinstance(cache, dict) and self.ins_code in cache:
+                self.source = "cache"
             nsc_id = resolver.get_nsc_id(self.ins_code)
         except Exception as exc:  # noqa: BLE001 — failure must never crash the UI
-            self.identity_failed.emit(self.identity, self.ins_code, str(exc))
+            from brokers.base import InstrumentLookupError
+            provider_error = None
+            if isinstance(exc, InstrumentLookupError):
+                pairs = {
+                    "tsetmc_info": {"TSETMC_INFO_FAILED", "TSETMC_INFO_INVALID"},
+                    "instruments_all": {"SEARCH_HTTP_ERROR", "SEARCH_FAILED",
+                                        "SEARCH_JSON_INVALID", "SEARCH_RESPONSE_INVALID",
+                                        "SEARCH_NO_CANDIDATES", "SEARCH_API_FAILED",
+                                        "SEARCH_CANDIDATES_INVALID"},
+                    "instruments": {"DETAIL_HTTP_ERROR", "DETAIL_FAILED", "DETAIL_NO_MATCH"},
+                }
+                if exc.reason_code in pairs.get(exc.stage, set()):
+                    provider_error = {"stage": exc.stage, "reason_code": exc.reason_code,
+                                      "diagnostic": getattr(exc, "diagnostic", {})}
+                    self.provider_diagnostic = provider_error["diagnostic"]
+                    self.provider_stage = exc.stage
+                    self.http_status = exc.http_status
+            if provider_error is None:
+                self.http_status = getattr(getattr(exc, "response", None), "status_code", None)
+                self.provider_diagnostic = getattr(exc, "diagnostic", {})
+                self.provider_stage = getattr(exc, "stage", None)
+            if type(self.http_status) is not int or not 100 <= self.http_status < 600:
+                self.http_status = None
+            self.error_code = ("LOOKUP_401" if self.http_status == 401 else
+                               "LOOKUP_CONNECTION_ERROR" if isinstance(exc, (TimeoutError, ConnectionError)) else
+                               "LOOKUP_FAILED")
+            self.identity_failed.emit(self.identity, self.ins_code, "", self.request_id,
+                                      symbol, self.source, self.http_status, self.error_code, provider_error)
             return
         if not isinstance(nsc_id, str) or not nsc_id:
             nsc_id = None
-        self.identity_succeeded.emit(self.identity, self.ins_code, nsc_id)
+        self.identity_succeeded.emit(self.identity, self.ins_code, nsc_id, self.request_id,
+                                     symbol, self.source, self.http_status, "LOOKUP_NO_MATCH" if not nsc_id else "IDENTITY_READY")
+
+
+class _AgahMappingDiagnosticWorker(QThread):
+    """Perform one explicit read-only instrument mapping diagnostic."""
+
+    succeeded = Signal(object, str, object)
+    failed = Signal(object, str, str)
+
+    def __init__(self, identity, ins_code, symbol, resolver_factory, parent=None, request_id=None):
+        super().__init__(parent)
+        self.identity = identity
+        self.ins_code = ins_code
+        self.symbol = symbol
+        self._resolver_factory = resolver_factory
+        self.request_id = request_id
+
+    def run(self):
+        try:
+            resolver = self._resolver_factory()
+            if resolver is None:
+                raise RuntimeError("provider unavailable")
+            diagnostic = getattr(resolver, "diagnostic_mapping", None)
+            result = diagnostic(self.ins_code) if callable(diagnostic) else {
+                "nsc_id": resolver.get_nsc_id(self.ins_code), "candidates": []
+            }
+        except Exception as exc:  # noqa: BLE001 — render category only
+            text = str(exc).lower()
+            if "401" in text or "unauthorized" in text:
+                outcome = "unauthorized"
+            elif ("no candidate" in text or "no instrument" in text
+                  or "not found" in text or "کاندیدایی" in text
+                  or "هیچ کاندیدای" in text):
+                outcome = "no_match"
+            else:
+                outcome = "lookup_failed"
+            self.failed.emit(self.identity, self.ins_code, outcome)
+            return
+        self.succeeded.emit(self.identity, self.ins_code, result)
 
 
 def _parse_exact_integral_text(text):
@@ -1013,7 +1098,10 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_broker = None      # broker the nsc_id belongs to
         self._order_identity_account = None
         self._order_identity_scope = None
+        self._order_identity_request_id = None
         self._order_nsc_id = None               # the resolved broker nscId
+        self._diagnostic_account_aliases = {}
+        self._diagnostic_connection_generations = {}
 
         # --- Limit arrows: TSETMC price bounds + broker quantity bounds ---
         self._price_limits_factory = None
@@ -1318,6 +1406,21 @@ class OrderConfigurationPage(QWidget):
         self.add_to_queue_button.setProperty("variant", "primary")
         self.add_to_queue_button.clicked.connect(self._on_add_to_queue)
         form_grid.addWidget(self.add_to_queue_button, 4, 0, 1, 2)
+        self.agah_mapping_button = QPushButton("Check Agah Mapping", form_group)
+        self.agah_mapping_button.setObjectName("agahMappingDiagnosticButton")
+        self.agah_mapping_button.setToolTip(
+            "Read-only lookup for the selected symbol; does not queue or send an order"
+        )
+        self.agah_mapping_button.clicked.connect(self._run_agah_mapping_diagnostic)
+        form_grid.addWidget(self.agah_mapping_button, 4, 2, 1, 2)
+        self.agah_mapping_result = QPlainTextEdit(form_group)
+        self.agah_mapping_result.setObjectName("agahMappingDiagnosticResult")
+        self.agah_mapping_result.setReadOnly(True)
+        self.agah_mapping_result.setMaximumHeight(GEOMETRY["controlHeight"] * 3)
+        self.agah_mapping_result.hide()
+        form_grid.addWidget(self.agah_mapping_result, 6, 0, 1, 4)
+        self._mapping_diagnostic_worker = None
+        self._mapping_diagnostic_identity = None
 
         # --- Test Button (UI-5 Task 1) ------------------------------
         # UI-only toggle: OFF -> "Test", ON -> "Test (On)".
@@ -1940,17 +2043,49 @@ class OrderConfigurationPage(QWidget):
         record = self._active_account_record()
         instrument = self.config.selected_instrument
         nsc_id = self._order_nsc_id
-        if record is None or instrument is None or not nsc_id:
-            raise ValueError("حساب فعال، نماد انتخاب‌شده و شناسهٔ نماد لازم است")
+        if record is None:
+            self._log_calculator_readiness("ACCOUNT_MISSING")
+            raise ValueError("حساب فعال انتخاب نشده است")
+        if instrument is None:
+            self._log_calculator_readiness("SYMBOL_MISSING")
+            raise ValueError("نمادی انتخاب نشده است")
+        if not getattr(instrument, "ins_code", None):
+            self._log_calculator_readiness("INSTRUMENT_ID_MISSING")
+            raise ValueError("شناسهٔ نماد در دسترس نیست")
+        if not nsc_id:
+            self._log_calculator_readiness("IDENTITY_PENDING")
+            raise ValueError("شناسهٔ آگاه هنوز آماده نشده است")
         if record.broker_name != "آگاه":
+            self._log_calculator_readiness("BROKER_MISMATCH")
             raise ValueError("ماشین‌حساب پیش‌نمایش فقط برای آگاه در دسترس است")
         if self.config.side != BUY:
+            self._log_calculator_readiness("SIDE_NOT_BUY")
             raise ValueError("پیش‌نمایش فقط برای سفارش خرید است")
         price = _valid_limit(_parse_exact_integral_text(self.price_input.text()))
         if price == 0:
             price = None
         return (record.account_id, record.broker_name, instrument.ins_code,
                 nsc_id, price, self._search_sequence, self.config.side)
+
+    def _log_calculator_readiness(self, reason_code):
+        try:
+            record = self._active_account_record()
+            instrument = self.config.selected_instrument
+            identity = ((record.account_id, record.broker_name,
+                         getattr(instrument, "ins_code", "")) if record else None)
+            self._log_identity_diagnostic(
+                _new_diagnostic_request_id(), "calculator_readiness", identity,
+                getattr(instrument, "symbol", None), reason_code=reason_code,
+                source="cache" if self._order_nsc_id else "lookup",
+            )
+        except Exception:
+            pass
+
+    def _refresh_calculator_readiness(self):
+        try:
+            self._start_auto_amount()
+        except Exception:
+            pass
 
     def _open_buy_preview(self):
         try:
@@ -2810,6 +2945,236 @@ class OrderConfigurationPage(QWidget):
         self.trading_state_label.setText(text)
 
     # ---------------------------------------------------------
+    # Explicit Agah mapping diagnostic (read-only; independent of queue)
+    # ---------------------------------------------------------
+
+    def _run_agah_mapping_diagnostic(self):
+        instrument = self.config.selected_instrument
+        record = self._active_account_record()
+        if instrument is None:
+            self._show_mapping_diagnostic("No symbol selected.")
+            return
+        if record is None:
+            self._show_mapping_diagnostic("No active account.")
+            return
+        manager = self._get_session_manager()
+        try:
+            logged_in = manager is not None and manager.is_logged_in(record.account_id)
+        except Exception:
+            logged_in = False
+        if not logged_in:
+            self._show_mapping_diagnostic("No authenticated session.")
+            return
+        ins_code = getattr(instrument, "ins_code", None)
+        symbol = getattr(instrument, "symbol", None)
+        if not isinstance(ins_code, str) or not ins_code.strip():
+            self._show_mapping_diagnostic("No valid ins_code for the selected symbol.")
+            return
+        identity = (record.account_id, record.broker_name, ins_code)
+        request_id = _new_diagnostic_request_id()
+        self._log_identity_diagnostic(request_id, "lookup_dispatch", identity, symbol,
+                                      source="lookup", reason_code="IDENTITY_PENDING")
+        self._mapping_diagnostic_identity = identity
+        self._mapping_diagnostic_symbol = symbol
+        self.agah_mapping_button.setEnabled(False)
+
+        def resolver_factory():
+            factory = self._order_identity_factory
+            if factory is None:
+                return _default_order_identity_resolver(
+                    self.store, account_id=record.account_id,
+                    broker_name=record.broker_name,
+                )
+            try:
+                signature = inspect.signature(factory)
+                signature.bind(record.account_id, record.broker_name)
+            except (TypeError, ValueError):
+                return factory()
+            return factory(record.account_id, record.broker_name)
+
+        worker = _AgahMappingDiagnosticWorker(
+            identity, ins_code, symbol, resolver_factory, parent=self, request_id=request_id
+        )
+        self._mapping_diagnostic_worker = worker
+        worker.succeeded.connect(self._on_mapping_diagnostic_succeeded)
+        worker.failed.connect(self._on_mapping_diagnostic_failed)
+        worker.finished.connect(
+            lambda w=worker: setattr(self, "_mapping_diagnostic_worker", None)
+            if self._mapping_diagnostic_worker is w else None
+        )
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _show_mapping_diagnostic(self, outcome, nsc_id=None, *, symbol=None, ins_code=None, candidates=None, search_status=None):
+        instrument = self.config.selected_instrument
+        symbol = _safe_diagnostic_value(symbol or getattr(instrument, "symbol", None))
+        ins_code = _safe_diagnostic_value(ins_code or getattr(instrument, "ins_code", None))
+        lines = [f"Symbol: {symbol}", f"ins_code: {ins_code}", f"Query: {symbol}", f"Search status: {_safe_diagnostic_value(search_status)}", f"Candidates: {len(candidates or ())}"]
+        if outcome == "matched" and isinstance(nsc_id, str) and nsc_id:
+            lines.extend(("Outcome: exact match", f"nscId: {_safe_diagnostic_value(nsc_id)}"))
+        else:
+            lines.extend((f"Outcome: {outcome}", "nscId: -"))
+        for index, candidate in enumerate(candidates or (), 1):
+            if not isinstance(candidate, dict):
+                continue
+            lines.extend((
+                f"Candidate {index} nscId: {_safe_diagnostic_value(candidate.get('nscId'))}",
+                f"Candidate {index} tseId: {_safe_diagnostic_value(candidate.get('tseId'))}",
+                f"Candidate {index} name: {_safe_diagnostic_value(candidate.get('name'))}",
+                f"Candidate {index} exact match: {'yes' if candidate.get('exact_match') is True else 'no'}",
+            ))
+        self.agah_mapping_result.setPlainText("\n".join(lines))
+        self.agah_mapping_result.show()
+
+    def _on_mapping_diagnostic_succeeded(self, identity, ins_code, result):
+        worker = self._mapping_diagnostic_worker
+        request_id = getattr(worker, "request_id", None) or _new_diagnostic_request_id()
+        status = result.get("search_status") if isinstance(result, dict) else None
+        candidates = result.get("candidates", []) if isinstance(result, dict) else []
+        self._log_identity_diagnostic(
+            request_id, "lookup_response", identity,
+            self._mapping_diagnostic_symbol, source=(result.get("source", "lookup") if isinstance(result, dict) else "lookup"),
+            reason_code=("LOOKUP_401" if status == 401 else "LOOKUP_CONNECTION_ERROR" if result.get("connection_error") else "LOOKUP_NO_MATCH" if not result.get("nsc_id") else "IDENTITY_READY"),
+            http_status=status, candidate_count=(result.get("candidate_count", len(candidates)) if isinstance(result, dict) else 0),
+        )
+        if (identity != self._mapping_diagnostic_identity
+                or identity != self._current_read_identity(ins_code)):
+            self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                          self._mapping_diagnostic_symbol,
+                                          reason_code="LOOKUP_STALE_RESPONSE",
+                                          account_changed=identity != self._current_read_identity(ins_code),
+                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
+                                          turn_changed=identity != self._mapping_diagnostic_identity)
+            return
+        if status == 401:
+            self.agah_mapping_button.setEnabled(True)
+            self._show_mapping_diagnostic(
+                "Access not accepted for this request (HTTP 401).",
+                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
+                candidates=candidates, search_status=401,
+            )
+            return
+        if isinstance(result, dict) and result.get("connection_error"):
+            self.agah_mapping_button.setEnabled(True)
+            self._show_mapping_diagnostic(
+                "Connection error during Agah mapping lookup.",
+                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
+            )
+            return
+        if isinstance(result, dict) and result.get("search_status") == 401:
+            self.agah_mapping_button.setEnabled(True)
+            self._show_mapping_diagnostic(
+                "Access not accepted for this request (HTTP 401).",
+                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
+                candidates=result.get("candidates", []), search_status=401,
+            )
+            return
+        manager = self._get_session_manager()
+        try:
+            if manager is None or not manager.is_logged_in(identity[0]):
+                self.agah_mapping_button.setEnabled(True)
+                self._show_mapping_diagnostic(
+                    "No authenticated session.", symbol=self._mapping_diagnostic_symbol,
+                    ins_code=ins_code
+                )
+                return
+        except Exception:
+            self.agah_mapping_button.setEnabled(True)
+            self._show_mapping_diagnostic(
+                "No authenticated session.", symbol=self._mapping_diagnostic_symbol,
+                ins_code=ins_code
+            )
+            return
+        self.agah_mapping_button.setEnabled(True)
+        nsc_id = result.get("nsc_id") if isinstance(result, dict) else None
+        outcome = ("Access not accepted for this request (HTTP 401)." if status == 401
+                   else "No matching Agah instrument." if not nsc_id
+                   else "matched")
+        self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                      self._mapping_diagnostic_symbol,
+                                      reason_code="LOOKUP_APPLIED", account_changed=False,
+                                      symbol_changed=False, turn_changed=False)
+        self._show_mapping_diagnostic(
+            outcome,
+            nsc_id, symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
+            candidates=candidates,
+            search_status=result.get("search_status") if isinstance(result, dict) else None,
+        )
+
+    def _on_mapping_diagnostic_failed(self, identity, ins_code, outcome):
+        worker = self._mapping_diagnostic_worker
+        request_id = getattr(worker, "request_id", None) or _new_diagnostic_request_id()
+        code = "LOOKUP_401" if outcome == "unauthorized" else "LOOKUP_NO_MATCH" if outcome == "no_match" else "LOOKUP_CONNECTION_ERROR"
+        self._log_identity_diagnostic(request_id, "lookup_response", identity,
+                                      self._mapping_diagnostic_symbol, reason_code=code)
+        if (identity != self._mapping_diagnostic_identity
+                or identity != self._current_read_identity(ins_code)):
+            self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                          self._mapping_diagnostic_symbol,
+                                          reason_code="LOOKUP_STALE_RESPONSE",
+                                          account_changed=identity != self._current_read_identity(ins_code),
+                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
+                                          turn_changed=identity != self._mapping_diagnostic_identity)
+            return
+        self.agah_mapping_button.setEnabled(True)
+        label = {
+            "unauthorized": "Access not accepted for this request (HTTP 401).",
+            "no_match": "No matching Agah instrument.",
+            "lookup_failed": "Mapping lookup failed; details withheld.",
+        }.get(outcome, "Mapping lookup failed; details withheld.")
+        self._show_mapping_diagnostic(
+            label, symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
+            search_status=401 if outcome == "unauthorized" else None,
+        )
+
+    def _log_identity_diagnostic(self, request_id, stage, identity, query, *,
+                                 reason_code=None, source="lookup", http_status=None,
+                                 candidate_count=0, account_changed=None,
+                                 symbol_changed=None, turn_changed=None, provider_stage=None,
+                                 provider_diagnostic=None):
+        """Best-effort safe trace; logging failures never affect UI behavior."""
+        try:
+            account_id = identity[0] if identity else None
+            if account_id is not None:
+                alias = self._diagnostic_account_aliases.setdefault(account_id, f"account-{len(self._diagnostic_account_aliases) + 1}")
+            else:
+                alias = "none"
+            manager = self._get_session_manager()
+            try:
+                session_ready = bool(manager and account_id and manager.is_logged_in(account_id))
+                session_generation = int(manager.revision(account_id)) if manager and account_id else 0
+            except Exception:
+                session_ready, session_generation = False, 0
+            current_record = self._active_account_record()
+            logger_status = _diagnostic_logger_status()
+            extra = {
+                "request_id": request_id, "symbol_id": str(identity[2]) if identity else "none",
+                "query": str(query or "")[:160], "account_alias": alias,
+                "session_generation": session_generation,
+                "connection_generation": self._diagnostic_connection_generations.get(account_id, 0),
+                "account_ready": current_record is not None,
+                "session_ready": session_ready, "source": source,
+                "candidate_count": max(0, int(candidate_count or 0)),
+                "logger_path": str(logger_status.get("path") or _diagnostic_trace_path()),
+                "logger_writable": logger_status.get("writable") is True,
+            }
+            for key, value in (("account_changed", account_changed),
+                               ("symbol_changed", symbol_changed), ("turn_changed", turn_changed)):
+                if value is not None:
+                    extra[key] = bool(value)
+            if provider_stage in {"tsetmc_info", "instruments_all", "instruments"}:
+                extra["provider_stage"] = provider_stage
+            if isinstance(provider_diagnostic, dict):
+                for key in ("api_classification", "total_candidates",
+                            "valid_nsc_id_candidates", "normalization"):
+                    if key in provider_diagnostic:
+                        extra[key] = provider_diagnostic[key]
+            _diagnostic_log_event(request_id, stage, reason_code=reason_code,
+                                  extra=extra | ({"http_status": http_status} if http_status is not None else {}))
+        except Exception:
+            pass
+
+    # ---------------------------------------------------------
     # Order identity (UI-4): broker nscId for the selected Instrument
     # ---------------------------------------------------------
 
@@ -2830,6 +3195,7 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_broker = None
         self._order_identity_account = None
         self._order_identity_scope = None
+        self._order_identity_request_id = None
         self._order_nsc_id = None
         self._invalidate_limit_requests()
 
@@ -2862,23 +3228,20 @@ class OrderConfigurationPage(QWidget):
             self._clear_order_identity()
             return
         identity = (record.account_id, record.broker_name, ins_code)
-
-        # A resolution for the SAME (ins_code, broker_name) pair is
-        # already in flight — do not start a duplicate worker.
-        if (
-            self._order_identity_thread is not None
-            and not self._order_identity_thread.isFinished()
-            and self._order_identity_instrument == ins_code
-            and self._order_identity_broker == broker_name
-            and self._order_identity_account == record.account_id
-        ):
-            return
+        request_id = _new_diagnostic_request_id()
+        self._log_identity_diagnostic(request_id, "lookup_dispatch", identity,
+                                      getattr(instrument, "symbol", None),
+                                      reason_code="IDENTITY_PENDING", source="lookup")
 
         self._clear_order_identity()
         self._order_identity_instrument = ins_code
         self._order_identity_broker = broker_name
         self._order_identity_account = record.account_id
         self._order_identity_scope = identity
+        self._order_identity_request_id = request_id
+        self._diagnostic_connection_generations[record.account_id] = (
+            self._diagnostic_connection_generations.get(record.account_id, 0) + 1
+        )
 
         factory = self._order_identity_factory
 
@@ -2896,8 +3259,10 @@ class OrderConfigurationPage(QWidget):
             return factory(record.account_id, record.broker_name)
 
         worker = _OrderIdentityWorker(
-            ins_code, account_resolver_factory, parent=self, identity=identity
+            ins_code, account_resolver_factory, parent=self, identity=identity,
+            request_id=request_id,
         )
+        worker.symbol = getattr(instrument, "symbol", None)
         self._order_identity_worker = worker
         self._order_identity_thread = worker
         worker.identity_succeeded.connect(self._on_order_identity_succeeded)
@@ -2926,7 +3291,9 @@ class OrderConfigurationPage(QWidget):
         if thread is not None and not thread.wait(timeout_ms):
             raise TimeoutError("order-identity worker thread did not finish")
 
-    def _on_order_identity_succeeded(self, identity, ins_code=None, nsc_id=None):
+    def _on_order_identity_succeeded(self, identity, ins_code=None, nsc_id=None,
+                                     request_id=None, source_symbol=None, source="lookup",
+                                     http_status=None, outcome=None):
         """
         Store the resolved broker nscId — but ONLY if it still belongs
         to the currently selected (ins_code, broker_name) pair.
@@ -2935,17 +3302,39 @@ class OrderConfigurationPage(QWidget):
         an account the user already switched, is discarded (fail-closed:
         an identity is never attached to a different selection).
         """
+        worker = self._order_identity_worker
         # Compatibility for the existing internal two-argument slot contract
         # used by older tests/callers: recover the captured scope only when
         # the current full selection still matches exactly.
+        legacy_call = isinstance(identity, str) and request_id is None
         if nsc_id is None and isinstance(identity, str):
             nsc_id = ins_code
             ins_code = identity
             identity = self._order_identity_scope
-        if (ins_code != self._order_identity_instrument
-                or identity != self._order_identity_scope
+        request_id = request_id or self._order_identity_request_id or _new_diagnostic_request_id()
+        source_symbol = source_symbol or getattr(self._order_identity_worker, "symbol", None)
+        worker_matches = request_id == getattr(worker, "request_id", None)
+        source_symbol = source_symbol or ""
+        self._log_identity_diagnostic(
+            request_id, "lookup_response", identity,
+            source_symbol,
+            reason_code=outcome or ("IDENTITY_READY" if nsc_id else "LOOKUP_NO_MATCH"),
+            source=source, http_status=http_status, candidate_count=1 if nsc_id else 0,
+        )
+        if (not worker_matches
+                or self._order_identity_scope is None
+                or request_id != self._order_identity_request_id
+                or ins_code != self._order_identity_instrument
+                or identity != self._order_identity_scope[:3]
                 or (identity is not None
                     and identity != self._current_read_identity(ins_code))):
+            self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                          source_symbol,
+                                          reason_code="LOOKUP_STALE_RESPONSE",
+                                          source=source, http_status=http_status,
+                                          account_changed=identity != self._current_read_identity(ins_code),
+                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
+                                          turn_changed=identity != self._order_identity_scope[:3])
             return  # stale resolution — discarded deterministically
         if self._order_identity_broker != self._active_broker_name():
             # The active broker changed mid-resolution: this nscId
@@ -2955,19 +3344,79 @@ class OrderConfigurationPage(QWidget):
         self._order_nsc_id = (
             nsc_id if isinstance(nsc_id, str) and nsc_id else None
         )
+        self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                      source_symbol,
+                                      reason_code="IDENTITY_READY" if self._order_nsc_id else "LOOKUP_NO_MATCH",
+                                      source=source, account_changed=False,
+                                      symbol_changed=False, turn_changed=False)
+        if self._order_nsc_id:
+            self._refresh_calculator_readiness()
 
-    def _on_order_identity_failed(self, identity, ins_code=None, message=None):
+    def _on_order_identity_failed(self, identity, ins_code=None, message=None,
+                                  request_id=None, source_symbol=None, source="lookup",
+                                  http_status=None, error_code="LOOKUP_FAILED", provider_error=None):
         """A failed resolution leaves the identity unresolved (closed)."""
+        legacy_call = isinstance(identity, str) and request_id is None
         if message is None and isinstance(identity, str):
             message = ins_code
             ins_code = identity
             identity = self._order_identity_scope
-        if (ins_code != self._order_identity_instrument
-                or identity != self._order_identity_scope
+        request_id = request_id or self._order_identity_request_id or _new_diagnostic_request_id()
+        worker = self._order_identity_worker
+        source_symbol = source_symbol or ""
+        worker_matches = request_id == getattr(worker, "request_id", None)
+        code = error_code if error_code in {"LOOKUP_401", "LOOKUP_CONNECTION_ERROR", "LOOKUP_FAILED"} else "LOOKUP_FAILED"
+        self._log_identity_diagnostic(request_id, "lookup_response", identity,
+                                      source_symbol, reason_code=code,
+                                      source=source, http_status=http_status)
+        if isinstance(provider_error, dict) and provider_error.get("stage") and provider_error.get("reason_code"):
+            provider_stage = provider_error.get("stage")
+            provider_reason = provider_error.get("reason_code")
+            pairs = {
+                "tsetmc_info": {"TSETMC_INFO_FAILED", "TSETMC_INFO_INVALID"},
+                "instruments_all": {"SEARCH_HTTP_ERROR", "SEARCH_FAILED",
+                                    "SEARCH_JSON_INVALID", "SEARCH_RESPONSE_INVALID",
+                                    "SEARCH_NO_CANDIDATES", "SEARCH_API_FAILED",
+                                    "SEARCH_CANDIDATES_INVALID"},
+                "instruments": {"DETAIL_HTTP_ERROR", "DETAIL_FAILED", "DETAIL_NO_MATCH"},
+            }
+            if provider_reason in pairs.get(provider_stage, set()):
+                self._log_identity_diagnostic(request_id, "lookup_response", identity,
+                                              source_symbol, reason_code=provider_reason,
+                                              source=source, http_status=http_status,
+                                              provider_stage=provider_stage,
+                                              provider_diagnostic=provider_error.get("diagnostic"))
+        elif isinstance(getattr(worker, "provider_diagnostic", None), dict) and worker.provider_diagnostic:
+            diagnostic = worker.provider_diagnostic
+            self._log_identity_diagnostic(
+                request_id, "lookup_response", identity, source_symbol,
+                reason_code=code, source=source,
+                http_status=diagnostic.get("http_status"),
+                provider_stage=getattr(worker, "provider_stage", None),
+                provider_diagnostic=diagnostic,
+            )
+        if (not worker_matches
+                or self._order_identity_scope is None
+                or request_id != self._order_identity_request_id
+                or ins_code != self._order_identity_instrument
+                or identity != self._order_identity_scope[:3]
                 or (identity is not None
                     and identity != self._current_read_identity(ins_code))):
+            self._log_identity_diagnostic(request_id, "ui_apply", identity,
+                                          source_symbol,
+                                          reason_code="LOOKUP_STALE_RESPONSE",
+                                          source=source, http_status=http_status,
+                                          account_changed=identity != self._current_read_identity(ins_code),
+                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
+                                          turn_changed=identity != self._order_identity_scope[:3])
             return  # stale failure — discarded deterministically
         self._order_nsc_id = None
+        if code == "LOOKUP_401":
+            self.fee_label.setText("عدم پذیرش دسترسی درخواست دریافت شناسهٔ آگاه (HTTP 401)")
+        elif code == "LOOKUP_CONNECTION_ERROR":
+            self.fee_label.setText("خطای اتصال هنگام دریافت شناسهٔ آگاه")
+        else:
+            self.fee_label.setText("عدم تطبیق شناسهٔ آگاه برای نماد انتخاب‌شده")
 
     # ---------------------------------------------------------
     # Add to Queue (UI-4): prepare ONE real Order, enqueue it
@@ -6685,10 +7134,29 @@ class OrderConfigurationPage(QWidget):
             instrument = self.config.selected_instrument
             price = _valid_limit(_parse_exact_integral_text(self.price_input.text()), allow_zero=False)
             quantity = _valid_limit(_parse_exact_integral_text(self.quantity_input.text()), allow_zero=False)
-            if (record is None or record.broker_name != "آگاه" or instrument is None
-                    or not getattr(instrument, "ins_code", None) or not self._order_nsc_id
-                    or self.config.side != BUY or price is None or quantity is None):
-                self.fee_label.setText("نامشخص؛ حساب، نماد، قیمت یا تعداد معتبر نیست")
+            reason = (
+                "ACCOUNT_MISSING" if record is None else
+                "BROKER_MISMATCH" if record.broker_name != "آگاه" else
+                "SYMBOL_MISSING" if instrument is None else
+                "INSTRUMENT_ID_MISSING" if not getattr(instrument, "ins_code", None) else
+                "IDENTITY_PENDING" if not self._order_nsc_id else
+                "SIDE_NOT_BUY" if self.config.side != BUY else
+                "PRICE_INVALID" if price is None else
+                "QUANTITY_INVALID" if quantity is None else None
+            )
+            if reason:
+                labels = {
+                    "ACCOUNT_MISSING": "حساب فعال انتخاب نشده است",
+                    "BROKER_MISMATCH": "حساب فعال متعلق به کارگزاری آگاه نیست",
+                    "SYMBOL_MISSING": "نمادی انتخاب نشده است",
+                    "INSTRUMENT_ID_MISSING": "شناسهٔ نماد در دسترس نیست",
+                    "IDENTITY_PENDING": "شناسهٔ آگاه هنوز آماده نشده است",
+                    "SIDE_NOT_BUY": "ماشین‌حساب فقط برای سفارش خرید است",
+                    "PRICE_INVALID": "قیمت معتبر نیست",
+                    "QUANTITY_INVALID": "تعداد معتبر نیست",
+                }
+                self._log_calculator_readiness(reason)
+                self.fee_label.setText(labels[reason])
                 self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
                 self._fit_amounts_group_height()
                 return

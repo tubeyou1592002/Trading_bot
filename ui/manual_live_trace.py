@@ -20,9 +20,31 @@ _TRACE_DIR = (
 _TRACE_FILE = _TRACE_DIR / "manual_live_trace.jsonl"
 _MAX_BYTES = 5 * 1024 * 1024
 
-_ALLOWED_CLASSIFICATIONS = {"ACCEPTED", "REJECTED", "UNKNOWN", "BLOCKED", "ERROR", "LIVE", "OK", "ALLOWED"}
+_ALLOWED_CLASSIFICATIONS = {"ACCEPTED", "REJECTED", "UNKNOWN", "BLOCKED", "ERROR", "LIVE", "OK", "ALLOWED", "UNAUTHORIZED", "NO_MATCH", "CONNECTION_ERROR", "STALE", "CACHE", "LOOKUP", "READY"}
 _ALLOWED_UI_RESULTS = {"SUCCESS", "BLOCKED", "NOT_SENT", "ERROR", "UNKNOWN"}
 _HTTP_STATUSES = range(100, 600)
+_DIAGNOSTIC_FIELDS = {
+    "request_id", "symbol_id", "query", "account_alias", "session_generation",
+    "connection_generation", "account_ready", "session_ready", "source",
+    "candidate_count", "account_changed", "symbol_changed", "turn_changed",
+    "logger_path", "logger_writable", "provider_stage", "api_classification",
+    "total_candidates", "valid_nsc_id_candidates", "normalization",
+}
+_DIAGNOSTIC_STAGES = {
+    "lookup_dispatch", "lookup_response", "ui_apply", "calculator_readiness",
+    "account_snapshot", "session_snapshot",
+}
+_DIAGNOSTIC_REASONS = {
+    "LOOKUP_401", "LOOKUP_NO_MATCH", "LOOKUP_CONNECTION_ERROR", "LOOKUP_FAILED",
+    "LOOKUP_STALE_RESPONSE", "LOOKUP_APPLIED", "TSETMC_INFO_FAILED", "TSETMC_INFO_INVALID",
+    "SEARCH_JSON_INVALID", "SEARCH_RESPONSE_INVALID", "SEARCH_NO_CANDIDATES",
+    "SEARCH_API_FAILED", "SEARCH_CANDIDATES_INVALID", "DETAIL_NO_MATCH",
+    "SEARCH_HTTP_ERROR", "SEARCH_FAILED", "DETAIL_HTTP_ERROR", "DETAIL_FAILED",
+    "ACCOUNT_MISSING", "SESSION_NOT_READY",
+    "SYMBOL_MISSING", "INSTRUMENT_ID_MISSING", "BROKER_MISMATCH", "IDENTITY_PENDING",
+    "IDENTITY_READY", "SIDE_NOT_BUY", "PRICE_INVALID", "QUANTITY_INVALID",
+    "LOGGER_UNAVAILABLE", "RESPONSE_STATUS_ERROR", "RESPONSE_INVALID",
+}
 
 _LAST_ERROR = {"code": None, "path": None}
 _HAS_WRITTEN = False
@@ -64,7 +86,7 @@ def _sanitize_extra(extra):
     if not isinstance(extra, dict):
         return None
     out = {}
-    if set(extra) - {"http_status", "classification", "ui_result"}:
+    if set(extra) - ({"http_status", "classification", "ui_result"} | _DIAGNOSTIC_FIELDS):
         return None
     for key, value in extra.items():
         if key == "http_status" and type(value) is int and value in _HTTP_STATUSES:
@@ -72,6 +94,22 @@ def _sanitize_extra(extra):
         elif key == "classification" and type(value) is str and value in _ALLOWED_CLASSIFICATIONS:
             out[key] = value
         elif key == "ui_result" and type(value) is str and value in _ALLOWED_UI_RESULTS:
+            out[key] = value
+        elif key in {"request_id", "symbol_id", "query", "account_alias", "logger_path"} and type(value) is str and len(value) <= 160 and not any(ord(char) < 32 for char in value):
+            out[key] = value
+        elif key in {"session_generation", "connection_generation", "candidate_count", "http_status"} and type(value) is int and value >= 0 and (key != "http_status" or value in _HTTP_STATUSES):
+            out[key] = value
+        elif key in {"account_ready", "session_ready", "account_changed", "symbol_changed", "turn_changed", "logger_writable"} and type(value) is bool:
+            out[key] = value
+        elif key == "source" and value in {"cache", "lookup"}:
+            out[key] = value
+        elif key == "provider_stage" and value in {"tsetmc_info", "instruments_all", "instruments"}:
+            out[key] = value
+        elif key == "api_classification" and value in {"SUCCESS", "API_FAILURE", "INVALID_JSON", "INVALID_STRUCTURE", "HTTP_ERROR", "REQUEST_FAILED"}:
+            out[key] = value
+        elif key == "normalization" and value in {"symbol_resolver_unchanged", "symbol_resolver_changed", "symbol_resolver", "none"}:
+            out[key] = value
+        elif key in {"total_candidates", "valid_nsc_id_candidates"} and type(value) is int and value >= 0:
             out[key] = value
         else:
             return None
