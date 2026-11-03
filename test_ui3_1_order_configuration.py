@@ -44,9 +44,13 @@ import sys
 import pytest
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt
+from PySide6.QtCore import qInstallMessageHandler
 
 from models.instrument import Instrument
 from models.order import BUY, SELL
+from models.broker_instrument import BrokerInstrument
+from market.tsetmc import PriceLimits
 
 from ui.account_store import AccountStore
 from ui.main_window import MainWindow
@@ -239,9 +243,364 @@ def test_5_quantity_enter_and_store(qapp, store):
     with pytest.raises(OrderConfigError):
         page.config.set_quantity(-5)
 
+
+def test_limit_range_hints_are_inline_and_do_not_change_order_values(qapp, store):
+    page = OrderConfigurationPage(store)
+    page.price_input.setText("4875")
+    page.quantity_input.setText("125")
+    page.setLayoutDirection(Qt.RightToLeft)
+    page.resize(700, 500)
+    page.show()
+    qapp.processEvents()
+    page._render_range_hint(page.price_range_hint, 4501, 5510)
+    page._render_range_hint(page.quantity_range_hint, 10, 9000)
+    qapp.processEvents()
+
+    assert page.price_range_hint.text() == "4501/5510"
+    assert page.quantity_range_hint.text() == "10/9000"
+    assert page.price_input.text() == "4875"
+    assert page.quantity_input.text() == "125"
+    assert page.price_input.textMargins().left() >= page.price_range_hint.width()
+    assert page.price_range_hint.layoutDirection().name == "LeftToRight"
+    assert page.price_range_hint.alignment() & 0x1
+    assert page.price_range_hint.geometry().left() < page.price_input.rect().center().x()
+    assert page.price_range_hint.geometry().intersects(page.price_input.rect())
+    assert page.price_range_hint.width() == page.price_input.fontMetrics().horizontalAdvance("4501/5510") + 8
+    assert page.config.price is None and page.config.quantity is None
+
+    page._render_range_hint(page.price_range_hint, None, 5510)
+    page._render_range_hint(page.quantity_range_hint, 10, None)
+    assert page.price_range_hint.isHidden()
+    assert page.quantity_range_hint.isHidden()
+
+
+def test_limit_hint_stylesheet_parses_without_qt_warnings(qapp, store):
+    messages = []
+    previous = qInstallMessageHandler(lambda kind, context, message: messages.append(message))
+    try:
+        page = OrderConfigurationPage(store)
+        page.resize(700, 500)
+        page.show()
+        page._render_range_hint(page.price_range_hint, 10**18, 10**20)
+        page._render_range_hint(page.quantity_range_hint, 10**17, 10**22)
+        qapp.processEvents()
+    finally:
+        qInstallMessageHandler(previous)
+    assert not [message for message in messages if "Could not parse stylesheet" in message]
+    assert page.price_range_hint.isVisible()
+    assert page.quantity_range_hint.isVisible()
+    assert page.price_range_hint.text() == "1000000000000000000/100000000000000000000"
+    assert page.quantity_range_hint.text() == "100000000000000000/10000000000000000000000"
+
+
+def test_limit_hint_width_tracks_long_text_and_field_resizes(qapp, store):
+    page = OrderConfigurationPage(store)
+    page.resize(1100, 600)
+    page.show()
+    page._render_range_hint(page.price_range_hint, 12345678901234567890, 98765432109876543210)
+    qapp.processEvents()
+    long_width = page.price_range_hint.fontMetrics().horizontalAdvance(page.price_range_hint.text()) + 8
+    assert page.price_range_hint.width() == long_width
+    assert page.price_input.textMargins().left() >= long_width
+    page.resize(760, 600)
+    qapp.processEvents()
+    assert page.price_range_hint.geometry().left() == page.price_input.contentsRect().left() + 4
+    assert page.price_input.width() >= long_width + 72
+    assert page.price_range_hint.geometry().right() < page.price_input.contentsRect().right()
+    assert page.price_input.text() == ""
+
+
+def test_limit_hint_stale_responses_are_ignored(qapp, store):
+    page = OrderConfigurationPage(store)
+    page._price_limits_request_id = 2
+    page._price_limits_scope = (2, "NEW", "range")
+    page.config.select_instrument(Instrument(symbol="new", name="new", ins_code="NEW"))
+    page._on_price_range_succeeded(1, "OLD", PriceLimits(1, 2))
+    assert page.price_range_hint.text() == ""
+
+    page._quantity_limits_request_id = 3
+    page._quantity_limits_scope = (3, "NEW", "range")
+    page._on_quantity_range_succeeded(
+        2, "NEW", BrokerInstrument(nsc_id="new", tse_id="NEW",
+                                    minimum_order_quantity=1,
+                                    maximum_order_quantity_for_buy=100,
+                                    maximum_order_quantity_for_sell=200),
+    )
+    assert page.quantity_range_hint.text() == ""
+
+
+def test_symbol_typing_clears_range_hints_immediately(qapp, store):
+    page = OrderConfigurationPage(store)
+    page._render_range_hint(page.price_range_hint, 4501, 5510)
+    page._render_range_hint(page.quantity_range_hint, 10, 9000)
+    page.symbol_input.setCurrentText("new symbol")
+    assert page.price_range_hint.text() == ""
+    assert page.quantity_range_hint.text() == ""
+
+
+def test_limit_hint_worker_results_render_both_valid_ranges(qapp, store):
+    store.add("ACC-1", "Broker", "ACC-1")
+    store.set_active("ACC-1")
+    page = OrderConfigurationPage(store)
+    instrument = Instrument(symbol="TEST", name="Synthetic", ins_code="123")
+    page.config.select_instrument(instrument)
+    page._price_limits_scope = (7, "123", "range")
+    page._price_limits_request_id = 7
+    page._on_price_range_succeeded(7, "123", PriceLimits(4501, 5510))
+    assert page.price_range_hint.text() == "4501/5510"
+
+    page._quantity_limits_scope = (
+        8, "123", ("ACC-1", "Broker"), "range"
+    )
+    page._quantity_limits_request_id = 8
+    page._on_quantity_range_succeeded(8, "123", BrokerInstrument(
+        minimum_order_quantity=10,
+        maximum_order_quantity_for_buy=9000,
+        maximum_order_quantity_for_sell=7000,
+    ))
+    assert page.quantity_range_hint.text() == "10/9000"
+
     page.quantity_input.setText("")
     page.quantity_input.editingFinished.emit()
     assert page.config.quantity is None
+
+
+def test_symbol_selection_runs_price_without_account_and_quantity_for_active_account(qapp, store, monkeypatch):
+    page = OrderConfigurationPage(store)
+    page.resize(900, 700)
+    page.show()
+    qapp.processEvents()
+    page.price_input.setText("4875")
+    page.quantity_input.setText("125")
+
+    class FakePriceClient:
+        def get_price_limits(self, ins_code):
+            assert ins_code == "123"
+            return PriceLimits(4501, 5510)
+
+    page.set_price_limits_factory(FakePriceClient)
+    monkeypatch.setattr(page, "_start_trading_state_query", lambda instrument: None)
+    instrument = Instrument(symbol="TEST", name="Synthetic", ins_code="123")
+    page._on_resolve_succeeded(0, instrument)
+    assert page._price_limits_worker.wait(5000)
+    qapp.processEvents()
+
+    assert page.price_range_hint.text() == "4501/5510"
+    assert page.price_range_hint.isVisible()
+
+
+def test_changing_symbol_clears_form_values_but_same_symbol_keeps_them(qapp, store, monkeypatch):
+    page = OrderConfigurationPage(store)
+    page.resize(900, 700)
+    page.show()
+    qapp.processEvents()
+    monkeypatch.setattr(page, "_start_trading_state_query", lambda instrument: None)
+
+    class FakePriceClient:
+        def get_price_limits(self, ins_code):
+            return PriceLimits(100, 200) if ins_code == "NEW" else PriceLimits(10, 20)
+
+    page.set_price_limits_factory(FakePriceClient)
+    first = Instrument(symbol="ONE", name="First", ins_code="OLD")
+    second = Instrument(symbol="TWO", name="Second", ins_code="NEW")
+    page._on_resolve_succeeded(0, first)
+    assert page._price_limits_worker.wait(5000)
+    qapp.processEvents()
+    page.price_input.setText("15000")
+    page.quantity_input.setText("25")
+    page.price_input.editingFinished.emit()
+    page.quantity_input.editingFinished.emit()
+    assert page.config.price == 15000 and page.config.quantity == 25
+
+    # A previous calculator response is stale as soon as the symbol changes.
+    old_request_id = page._auto_amount_request_id
+    page.base_amount_label.setText("375,000")
+    page.fee_label.setText("old fee")
+    page.final_amount_label.setText("old total")
+    page._on_resolve_succeeded(0, second)
+    assert page.price_input.text() == ""
+    assert page.quantity_input.text() == ""
+    assert page.config.price is None and page.config.quantity is None
+    assert page.base_amount_label.text() == "-"
+    assert page.final_amount_label.text() != "old total"
+    cleared_fee = page.fee_label.text()
+    page._on_auto_amount_succeeded(old_request_id, ("old", "OLD", "id", 15000, 25, 1),
+                                   {"fee": 3, "total": 375003, "power": 999999})
+    assert page.fee_label.text() == cleared_fee
+
+    # Selecting the same ins_code does not discard entered form state.
+    page.price_input.setText("180")
+    page.quantity_input.setText("7")
+    page.price_input.editingFinished.emit()
+    page.quantity_input.editingFinished.emit()
+    same_symbol = Instrument(symbol="TWO", name="Second updated", ins_code="NEW")
+    page._on_resolve_succeeded(0, same_symbol)
+    assert page.price_input.text() == "180"
+    assert page.quantity_input.text() == "7"
+    assert page.config.price == 180 and page.config.quantity == 7
+    assert page._price_limits_worker.wait(5000)
+    qapp.processEvents()
+    assert page.price_range_hint.text() == "100/200"
+    assert page.quantity_range_hint.isHidden()
+    # No account means the identity path cannot create a provider request;
+    # price remains independent and visible.
+    assert page._order_identity_thread is None
+
+    class FakeProvider:
+        def get_instrument(self, ins_code):
+            assert ins_code == "123"
+            return None, BrokerInstrument(
+                minimum_order_quantity=10,
+                maximum_order_quantity_for_buy=9000,
+                maximum_order_quantity_for_sell=7000,
+            )
+
+    page.set_quantity_limits_factory(lambda account_id, broker_name: FakeProvider())
+    store.add("ACC-1", "Broker", "ACC-1")
+    store.set_active("ACC-1")
+    assert page._quantity_limits_worker.wait(5000)
+    qapp.processEvents()
+
+    class FakeIdentityProvider:
+        def get_nsc_id(self, ins_code):
+            assert ins_code == "123"
+            return "NSC-123"
+
+    page.set_order_identity_factory(lambda account_id, broker_name: FakeIdentityProvider())
+    page._on_resolve_succeeded(0, Instrument(symbol="TEST", name="Synthetic", ins_code="123"))
+    identity_worker = page._order_identity_thread
+    assert identity_worker is not None
+    assert identity_worker.wait(5000)
+    assert page._price_limits_worker.wait(5000)
+    assert page._quantity_limits_worker.wait(5000)
+    qapp.processEvents()
+    assert page._order_nsc_id == "NSC-123"
+    assert page.quantity_range_hint.text() == "10/9000"
+    assert page.quantity_range_hint.isVisible()
+    assert page.quantity_range_hint.geometry().left() < page.quantity_input.rect().center().x()
+    assert page.quantity_input.textMargins().left() >= page.quantity_range_hint.width()
+    assert page.price_range_hint.isVisible()
+
+
+def test_quantity_hint_stays_hidden_only_for_missing_or_invalid_active_account_bounds(
+    qapp, store, monkeypatch
+):
+    store.add("ACC-1", "Broker", "ACC-1")
+    store.set_active("ACC-1")
+    page = OrderConfigurationPage(store)
+    page.resize(900, 700)
+    page.show()
+    qapp.processEvents()
+    page.config.select_instrument(Instrument(symbol="TEST", name="Synthetic", ins_code="123"))
+    page._render_range_hint(page.price_range_hint, 4501, 5510)
+    account_scope = ("ACC-1", "Broker")
+    trace_reasons = []
+    page._log_limit_hint = lambda _request, _kind, reason, **_extra: trace_reasons.append(reason)
+
+    # The matched active-account scope is accepted before bounds validation.
+    page._quantity_limits_scope = (4, "123", account_scope, "range")
+    page._quantity_limits_request_id = 4
+
+    class MissingLimits:
+        minimum_order_quantity = None
+        maximum_order_quantity_for_buy = None
+        maximum_order_quantity_for_sell = None
+
+    page._on_quantity_range_succeeded(4, "123", MissingLimits())
+    assert page.quantity_range_hint.isHidden()
+    assert page.price_range_hint.isVisible()
+    assert page._quantity_limits_scope == (4, "123", account_scope, "range")
+    assert "LIMIT_RESPONSE_RECEIVED" in trace_reasons
+    assert "LIMIT_RESPONSE_STALE" not in trace_reasons
+    assert "LIMIT_BOUNDS_INVALID" in trace_reasons
+
+    # Inverted bounds reach the same validated response path and are rejected
+    # solely by the bounds check, without changing the independent price hint.
+    page._quantity_limits_scope = (5, "123", account_scope, "range")
+    page._quantity_limits_request_id = 5
+    page._on_quantity_range_succeeded(5, "123", type("Invalid", (), {
+        "minimum_order_quantity": 20,
+        "maximum_order_quantity_for_buy": 10,
+        "maximum_order_quantity_for_sell": 10,
+    })())
+    assert page.quantity_range_hint.text() == ""
+    assert page.quantity_range_hint.isHidden()
+    assert page.price_range_hint.isVisible()
+
+
+def test_tsetmc_hint_late_response_for_previous_symbol_is_discarded(qapp, store):
+    page = OrderConfigurationPage(store)
+    page._price_limits_request_id = 2
+    page._price_limits_scope = (2, "NEW", "range")
+    page.config.select_instrument(Instrument(symbol="NEW", name="New", ins_code="NEW"))
+    page._on_price_range_succeeded(1, "OLD", PriceLimits(1, 2))
+    assert page.price_range_hint.text() == ""
+    page._quantity_limits_request_id = 2
+    page._quantity_limits_scope = (2, "NEW", "range")
+    page._on_quantity_range_succeeded(1, "OLD", type("Bounds", (), {
+        "minimum_order_quantity": 1,
+        "maximum_order_quantity_for_buy": 2,
+        "maximum_order_quantity_for_sell": 2,
+    })())
+    assert page.quantity_range_hint.text() == ""
+
+
+def test_quantity_hint_rejects_late_response_for_previous_account(qapp, store):
+    store.add("ACC-1", "Broker", "ACC-1")
+    store.add("ACC-2", "Broker", "ACC-2")
+    store.set_active("ACC-2")
+    page = OrderConfigurationPage(store)
+    page.config.select_instrument(Instrument(symbol="NEW", name="New", ins_code="NEW"))
+    page._quantity_limits_request_id = 2
+    page._quantity_limits_scope = (2, "NEW", ("ACC-1", "Broker"), "range")
+    page._on_quantity_range_succeeded(2, "NEW", BrokerInstrument(
+        minimum_order_quantity=1,
+        maximum_order_quantity_for_buy=100,
+        maximum_order_quantity_for_sell=100,
+    ))
+    assert page.quantity_range_hint.text() == ""
+    assert page.quantity_range_hint.isHidden()
+
+
+def test_hint_responses_from_previous_symbol_are_invalidated(qapp, store):
+    store.add("ACC-1", "Broker", "ACC-1")
+    store.set_active("ACC-1")
+    page = OrderConfigurationPage(store)
+    page.resize(900, 700)
+    page.show()
+    old = Instrument(symbol="OLD", name="Old", ins_code="OLD")
+    page.config.select_instrument(old)
+    page._start_range_hint_requests()
+    old_price = page._price_limits_scope
+    old_quantity = page._quantity_limits_scope
+
+    page.config.select_instrument(Instrument(symbol="NEW", name="New", ins_code="NEW"))
+    page._invalidate_limit_requests()
+    assert page._price_limits_scope is None
+    assert page._quantity_limits_scope is None
+    page._on_price_range_succeeded(old_price[0], "OLD", PriceLimits(1, 2))
+    page._on_quantity_range_succeeded(old_quantity[0], "OLD", BrokerInstrument(
+        minimum_order_quantity=1,
+        maximum_order_quantity_for_buy=2,
+        maximum_order_quantity_for_sell=2,
+    ))
+    assert page.price_range_hint.isHidden()
+    assert page.quantity_range_hint.isHidden()
+
+
+def test_limit_hint_trace_allowlists_reason_codes_without_raw_failures(monkeypatch):
+    from ui import manual_live_trace
+
+    assert manual_live_trace._sanitize_extra({
+        "hint_kind": "quantity", "bounds_valid": False,
+        "visible": False, "hide_reason": "invalid_bounds",
+    }) == {
+        "hint_kind": "quantity", "bounds_valid": False,
+        "visible": False, "hide_reason": "invalid_bounds",
+    }
+    assert manual_live_trace._sanitize_extra({"exception": "secret"}) is None
+    assert "limit_hint" in manual_live_trace._DIAGNOSTIC_STAGES
+    assert "LIMIT_SOURCE_UNAVAILABLE" in manual_live_trace._DIAGNOSTIC_REASONS
 
 
 # ============================================================

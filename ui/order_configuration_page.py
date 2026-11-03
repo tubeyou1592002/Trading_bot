@@ -139,7 +139,7 @@ from models.trading_state import (
     market_status_label,
 )
 
-from PySide6.QtCore import QThread, QTimer, Qt, Signal, QDateTime, QSize
+from PySide6.QtCore import QEvent, QThread, QTimer, Qt, Signal, QDateTime, QSize
 from PySide6.QtGui import QColor, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
@@ -881,9 +881,7 @@ class _QuantityLimitsWorker(QThread):
     limits_succeeded = Signal(object, str, object)
     limits_failed = Signal(object, str, str)
 
-    def __init__(
-        self, ins_code, provider_factory, request_id, parent=None
-    ):
+    def __init__(self, ins_code, provider_factory, request_id, parent=None):
         super().__init__(parent)
         self.ins_code = ins_code
         self._provider_factory = provider_factory
@@ -907,9 +905,7 @@ class _QuantityLimitsWorker(QThread):
                 self.request_id, self.ins_code, "broker instrument is unavailable"
             )
             return
-        self.limits_succeeded.emit(
-            self.request_id, self.ins_code, broker_instrument
-        )
+        self.limits_succeeded.emit(self.request_id, self.ins_code, broker_instrument)
 
 
 class _BuyPreviewWorker(QThread):
@@ -939,6 +935,35 @@ class OrderConfigurationPage(QWidget):
     """
 
     schedule_cancelled = Signal(str)
+
+    def _setup_limit_hint(self, line_edit, label, object_name):
+        label.setObjectName(object_name)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        label.setLayoutDirection(Qt.LeftToRight)
+        label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        label.setStyleSheet(
+            f"QLabel#{object_name} {{ color: {PALETTE['textMuted']}; "
+            "background: transparent; border: 0; padding: 0; }"
+        )
+        label.setFixedWidth(0)
+        label.setVisible(False)
+        margins = line_edit.textMargins()
+        line_edit.setTextMargins(
+            label.width() + SPACING["md"], margins.top(),
+            margins.right(), margins.bottom(),
+        )
+        line_edit.installEventFilter(self)
+        line_edit._limit_hint_label = label
+
+    def eventFilter(self, watched, event):
+        if watched in (getattr(self, "price_input", None),
+                       getattr(self, "quantity_input", None)) and event.type() == QEvent.Resize:
+            hint = getattr(watched, "_limit_hint_label", None)
+            if hint is not None:
+                rect = watched.contentsRect()
+                hint.setGeometry(rect.left() + SPACING["xs"], rect.top(),
+                                 hint.width(), rect.height())
+        return super().eventFilter(watched, event)
 
     def __init__(
         self,
@@ -1005,11 +1030,13 @@ class OrderConfigurationPage(QWidget):
         self._price_limits_worker = None
         self._price_limits_request_id = 0
         self._price_limits_scope = None
+        self._price_range = None
         self._quantity_limits_factory = None
         self._quantity_limits_thread = None
         self._quantity_limits_worker = None
         self._quantity_limits_request_id = 0
         self._quantity_limits_scope = None
+        self._quantity_range = None
         self._buy_preview_factory = None
         self._buy_preview_request_id = 0
         self._buy_preview_worker = None
@@ -1232,6 +1259,8 @@ class OrderConfigurationPage(QWidget):
         form_grid.addWidget(QLabel(STRINGS.LABEL_PRICE, form_group), 2, 0)
         self.price_input = QLineEdit(form_group)
         self.price_input.setPlaceholderText(STRINGS.PLACEHOLDER_PRICE)
+        self.price_range_hint = QLabel("", self.price_input)
+        self._setup_limit_hint(self.price_input, self.price_range_hint, "priceRangeHint")
         self.price_input.editingFinished.connect(self._on_price_changed)
         self.price_input.textChanged.connect(self._invalidate_buy_preview)
         self.price_input.textChanged.connect(self._schedule_auto_amount)
@@ -1265,6 +1294,8 @@ class OrderConfigurationPage(QWidget):
         form_grid.addWidget(QLabel(STRINGS.LABEL_QUANTITY, form_group), 3, 0)
         self.quantity_input = QLineEdit(form_group)
         self.quantity_input.setPlaceholderText(STRINGS.PLACEHOLDER_QUANTITY)
+        self.quantity_range_hint = QLabel("", self.quantity_input)
+        self._setup_limit_hint(self.quantity_input, self.quantity_range_hint, "quantityRangeHint")
         self.quantity_input.editingFinished.connect(self._on_quantity_changed)
         self.quantity_input.textChanged.connect(self._schedule_auto_amount)
         form_grid.addWidget(self.quantity_input, 3, 1)
@@ -2421,6 +2452,8 @@ class OrderConfigurationPage(QWidget):
         self.config.select_instrument(None)
         self._clear_trading_state()
         self._clear_order_identity()
+        self._invalidate_limit_requests()
+        self._clear_range_hints()
         self._refresh_symbol_info()
 
         # Whitespace-only input never triggers a search.
@@ -2605,6 +2638,11 @@ class OrderConfigurationPage(QWidget):
         """Store the resolver-produced REAL Instrument (latest only)."""
         if sequence != self._search_sequence:
             return  # stale resolve — discarded
+        previous_instrument = self.config.selected_instrument
+        previous_ins_code = getattr(previous_instrument, "ins_code", None)
+        next_ins_code = getattr(instrument, "ins_code", None)
+        if previous_ins_code != next_ins_code:
+            self._clear_order_inputs_for_symbol_change()
         # OrderConfiguration.select_instrument re-validates: only a real
         # models.instrument.Instrument is ever stored (fail-closed).
         try:
@@ -2616,10 +2654,23 @@ class OrderConfigurationPage(QWidget):
         self._set_search_status(SEARCH_STATE_IDLE)
         self._refresh_symbol_info()
         self._start_trading_state_query(instrument)
+        self._invalidate_limit_requests()
+        self._clear_range_hints()
+        self._start_range_hint_requests()
         # UI-4: capture the broker nscId of THIS instrument off the GUI
         # thread now, so Add-to-Queue never performs a network call.
         self._start_order_identity_resolution(instrument)
         self._refresh_test_button_state()
+
+    def _clear_order_inputs_for_symbol_change(self):
+        """Clear form-only values and invalidate calculator results on symbol change."""
+        self._invalidate_auto_amount()
+        self.config.price = None
+        self.config.quantity = None
+        self.price_input.clear()
+        self.quantity_input.clear()
+        self._clear_validation_error()
+        self._refresh_amounts()
 
     def _on_resolve_failed(self, sequence, message):
         """Resolve failure: previous selection stays, nothing fabricated."""
@@ -2893,7 +2944,10 @@ class OrderConfigurationPage(QWidget):
         self._order_identity_scope = None
         self._order_identity_request_id = None
         self._order_nsc_id = None
-        self._invalidate_limit_requests()
+
+    def _invalidate_order_identity(self):
+        """Invalidate only identity resolution state, never hint requests."""
+        self._clear_order_identity()
 
     def _start_order_identity_resolution(self, instrument):
         """
@@ -3479,6 +3533,9 @@ class OrderConfigurationPage(QWidget):
         return factory() if callable(factory) else self._session_manager
 
     def _on_active_account_changed(self, previous_id, current_id):
+        self._invalidate_limit_requests()
+        if getattr(self.config, "selected_instrument", None) is not None:
+            self._start_range_hint_requests(price=True, quantity=True)
         with self._schedule_cancel_lock:
             arming = self._schedule_arming
             snapshot = self._schedule_snapshot
@@ -5444,7 +5501,12 @@ class OrderConfigurationPage(QWidget):
             self._apply_order_panel_halo(side)
             # A quantity ceiling depends on the side; an in-flight response
             # for the previous side must never land on the new side.
-            self._invalidate_limit_requests()
+            self._quantity_limits_request_id += 1
+            self._quantity_limits_scope = None
+            self._quantity_range = None
+            self.quantity_range_hint.clear()
+            self.quantity_range_hint.hide()
+            self._start_range_hint_requests(price=True, quantity=True)
 
     def _apply_order_panel_halo(self, side):
         """Give the order panel a soft side-keyed halo and inner tint.
@@ -5547,11 +5609,213 @@ class OrderConfigurationPage(QWidget):
     # ---------------------------------------------------------
 
     def _invalidate_limit_requests(self):
-        """Discard every in-flight limit response (symbol/account/side change)."""
+        """Discard in-flight arrow and display-hint responses."""
         self._price_limits_request_id += 1
         self._quantity_limits_request_id += 1
         self._price_limits_scope = None
         self._quantity_limits_scope = None
+        self._quantity_range = None
+        self.price_range_hint.clear()
+        self.price_range_hint.hide()
+        self.quantity_range_hint.clear()
+        self.quantity_range_hint.hide()
+
+    def _clear_range_hints(self):
+        self._price_range = None
+        self._quantity_range = None
+        self.price_range_hint.clear()
+        self.price_range_hint.hide()
+        self.quantity_range_hint.clear()
+        self.quantity_range_hint.hide()
+
+    def _start_range_hint_requests(self, *, price=True, quantity=True):
+        instrument = self.config.selected_instrument
+        if instrument is None:
+            return
+        ins_code = getattr(instrument, "ins_code", None)
+        if not ins_code:
+            return
+        if price:
+            self._price_limits_request_id += 1
+            self._price_range = None
+            self.price_range_hint.clear()
+            self.price_range_hint.hide()
+            request_id = self._price_limits_request_id
+            self._log_limit_hint(request_id, "price", "LIMIT_REQUEST_STARTED")
+            self._price_limits_scope = (request_id, ins_code, "range")
+
+            def price_factory():
+                client = self._make_tsetmc_hint_client()
+                self._log_limit_hint(request_id, "price", "LIMIT_SOURCE_READY")
+                return client
+
+            worker = _PriceLimitsWorker(ins_code, price_factory, request_id, self)
+            worker.limits_failed.connect(
+                lambda rid, _code, _message: self._log_limit_hint(
+                    rid, "price", "LIMIT_FETCH_FAILED", hide_reason="fetch_failed"
+                )
+            )
+            self._price_limits_worker = self._price_limits_thread = worker
+            worker.limits_succeeded.connect(self._on_price_range_succeeded)
+            worker.limits_failed.connect(self._on_price_range_failed)
+            worker.finished.connect(lambda w=worker: self._forget_price_limits_worker(w))
+            worker.finished.connect(worker.deleteLater)
+            worker.start()
+        if quantity:
+            self._quantity_range = None
+            self.quantity_range_hint.clear()
+            self.quantity_range_hint.hide()
+            self._quantity_limits_request_id += 1
+            request_id = self._quantity_limits_request_id
+            record = self._active_account_record()
+            account_scope = ((record.account_id, record.broker_name)
+                             if record is not None else None)
+            self._quantity_limits_scope = (request_id, ins_code, account_scope, "range")
+            self._log_limit_hint(request_id, "quantity", "LIMIT_REQUEST_STARTED")
+            if account_scope is None:
+                self._log_limit_hint(request_id, "quantity", "LIMIT_SOURCE_UNAVAILABLE", hide_reason="no_account")
+            else:
+                def quantity_provider_factory(account_scope=account_scope):
+                    if self._quantity_limits_factory is not None:
+                        return self._quantity_limits_factory(*account_scope)
+                    manager = self._scheduled_broker_manager()
+                    return _default_order_identity_resolver(
+                        self.store, manager, *account_scope
+                    )
+
+                worker = _QuantityLimitsWorker(ins_code, quantity_provider_factory, request_id, self)
+                worker.limits_failed.connect(
+                    lambda rid, _code, _message: self._log_limit_hint(
+                        rid, "quantity", "LIMIT_FETCH_FAILED", hide_reason="fetch_failed"
+                    )
+                )
+                self._quantity_limits_worker = self._quantity_limits_thread = worker
+                worker.limits_succeeded.connect(self._on_quantity_range_succeeded)
+                worker.limits_failed.connect(self._on_quantity_range_failed)
+                worker.finished.connect(lambda w=worker: self._forget_quantity_limits_worker(w))
+                worker.finished.connect(worker.deleteLater)
+                worker.start()
+
+    def _make_tsetmc_hint_client(self):
+        if self._price_limits_factory is not None:
+            return self._price_limits_factory()
+        if self._resolver_factory is not None:
+            return self._resolver_factory()
+        from market.symbol_resolver import SymbolResolver
+        return SymbolResolver()
+
+    def _render_range_hint(self, label, low, high):
+        low = _valid_limit(low, allow_zero=False)
+        high = _valid_limit(high, allow_zero=False)
+        if low is None or high is None or low > high:
+            kind = "price" if label is self.price_range_hint else "quantity"
+            request_id = (self._price_limits_scope or (None,))[0] if kind == "price" else (self._quantity_limits_scope or (None,))[0]
+            self._log_limit_hint(request_id, kind, "LIMIT_HINT_HIDDEN", hide_reason="invalid_bounds", bounds_valid=False, visible=False)
+            label.clear()
+            self._resize_limit_hint(label, visible=False)
+            label.hide()
+            return
+        label.setText(f"{low}/{high}")
+        self._resize_limit_hint(label, visible=True)
+        label.show()
+        kind = "price" if label is self.price_range_hint else "quantity"
+        request_id = (self._price_limits_scope or (None,))[0] if kind == "price" else (self._quantity_limits_scope or (None,))[0]
+        self._log_limit_hint(request_id, kind, "LIMIT_HINT_SHOWN", bounds_valid=True, visible=True)
+
+    def _log_limit_hint(self, request_id, kind, reason_code, **extra):
+        """Emit allowlisted limit-hint diagnostics without identity or exception text."""
+        try:
+            _diagnostic_log_event(
+                request_id or _new_diagnostic_request_id(),
+                "limit_hint",
+                reason_code=reason_code,
+                extra={"hint_kind": kind, **extra},
+            )
+        except Exception:
+            pass
+
+    def _resize_limit_hint(self, label, *, visible):
+        line_edit = label.parentWidget()
+        text_width = line_edit.fontMetrics().horizontalAdvance(label.text())
+        width = text_width + SPACING["sm"]
+        label.setFixedWidth(width if visible else 0)
+        line_edit.setMinimumWidth(
+            width + 72 + (SPACING["md"] if visible else 0)
+        )
+        margins = line_edit.textMargins()
+        line_edit.setTextMargins(
+            width + SPACING["md"] if visible else 0,
+            margins.top(), margins.right(), margins.bottom(),
+        )
+        rect = line_edit.contentsRect()
+        label.setGeometry(rect.left() + SPACING["xs"], rect.top(), width, rect.height())
+
+    def _on_price_range_succeeded(self, request_id, ins_code, limits):
+        self._log_limit_hint(request_id, "price", "LIMIT_RESPONSE_RECEIVED")
+        scope = self._price_limits_scope
+        if not scope or scope[0] != request_id or scope[1] != ins_code or scope[2] != "range":
+            self._log_limit_hint(request_id, "price", "LIMIT_RESPONSE_STALE", hide_reason="stale_response")
+            return
+        if getattr(self.config.selected_instrument, "ins_code", None) != ins_code:
+            self._log_limit_hint(request_id, "price", "LIMIT_RESPONSE_STALE", hide_reason="stale_response")
+            return
+        if limits is None:
+            self._log_limit_hint(request_id, "price", "LIMIT_RESPONSE_MISSING", hide_reason="invalid_bounds", bounds_valid=False)
+            self._render_range_hint(self.price_range_hint, None, None)
+            return
+        self._price_range = (getattr(limits, "price_min", None),
+                             getattr(limits, "price_max", None))
+        low = _valid_limit(self._price_range[0], allow_zero=False)
+        high = _valid_limit(self._price_range[1], allow_zero=False)
+        valid = low is not None and high is not None and low <= high
+        self._log_limit_hint(request_id, "price", "LIMIT_BOUNDS_VALID" if valid else "LIMIT_BOUNDS_INVALID", bounds_valid=valid, hide_reason=None if valid else "invalid_bounds")
+        self._render_range_hint(self.price_range_hint,
+                                *self._price_range)
+
+    def _on_price_range_failed(self, request_id, ins_code, _message):
+        self._log_limit_hint(request_id, "price", "LIMIT_FETCH_FAILED", hide_reason="fetch_failed")
+        if (self._price_limits_scope and self._price_limits_scope[0] == request_id
+                and self._price_limits_scope[1] == ins_code):
+            self.price_range_hint.clear()
+            self.price_range_hint.hide()
+
+    def _on_quantity_range_succeeded(self, request_id, ins_code, limits):
+        self._log_limit_hint(request_id, "quantity", "LIMIT_RESPONSE_RECEIVED")
+        scope = self._quantity_limits_scope
+        if not scope or scope[0] != request_id or scope[1] != ins_code or scope[3] != "range":
+            self._log_limit_hint(request_id, "quantity", "LIMIT_RESPONSE_STALE", hide_reason="stale_response")
+            return
+        if getattr(self.config.selected_instrument, "ins_code", None) != ins_code:
+            reason = "symbol_changed"
+            self._log_limit_hint(request_id, "quantity", "LIMIT_RESPONSE_STALE", hide_reason=reason)
+            return
+        record = self._active_account_record()
+        current_account = ((record.account_id, record.broker_name)
+                           if record is not None else None)
+        if current_account != scope[2]:
+            self._log_limit_hint(request_id, "quantity", "LIMIT_RESPONSE_STALE", hide_reason="account_changed")
+            return
+        self._quantity_range = (
+            getattr(limits, "minimum_order_quantity", None),
+            getattr(limits,
+                    "maximum_order_quantity_for_buy" if self.config.side == BUY
+                    else "maximum_order_quantity_for_sell", None),
+        )
+        low = _valid_limit(self._quantity_range[0], allow_zero=False)
+        high = _valid_limit(self._quantity_range[1], allow_zero=False)
+        valid = low is not None and high is not None and low <= high
+        if not valid:
+            self._log_limit_hint(request_id, "quantity", "LIMIT_QUANTITY_UNAVAILABLE", hide_reason="invalid_bounds", bounds_valid=False)
+        self._log_limit_hint(request_id, "quantity", "LIMIT_BOUNDS_VALID" if valid else "LIMIT_BOUNDS_INVALID", bounds_valid=valid, hide_reason=None if valid else "invalid_bounds")
+        self._render_range_hint(self.quantity_range_hint,
+                                *self._quantity_range)
+
+    def _on_quantity_range_failed(self, request_id, ins_code, _message):
+        self._log_limit_hint(request_id, "quantity", "LIMIT_FETCH_FAILED", hide_reason="fetch_failed")
+        if (self._quantity_limits_scope and self._quantity_limits_scope[0] == request_id
+                and self._quantity_limits_scope[1] == ins_code):
+            self.quantity_range_hint.clear()
+            self.quantity_range_hint.hide()
 
     def _request_price_limit(self, kind):
         """Fetch and place one TSETMC daily price bound for the selected symbol."""
@@ -5584,6 +5848,11 @@ class OrderConfigurationPage(QWidget):
 
         worker = _PriceLimitsWorker(
             ins_code, limits_factory, request_id, parent=self
+        )
+        worker.limits_failed.connect(
+            lambda rid, _code, _message: self._on_price_range_failed(
+                rid, ins_code, "LIMIT_FETCH_FAILED"
+            )
         )
         self._price_limits_worker = worker
         self._price_limits_thread = worker
@@ -5679,6 +5948,7 @@ class OrderConfigurationPage(QWidget):
         self._quantity_limits_scope = (
             request_id, ins_code, identity, side, kind
         )
+        self._log_limit_hint(request_id, "quantity", "LIMIT_REQUEST_STARTED")
         self._clear_validation_error()
 
         injected_factory = (
@@ -5687,7 +5957,12 @@ class OrderConfigurationPage(QWidget):
 
         def provider_factory():
             if injected_factory is None:
-                return None
+                return _default_order_identity_resolver(
+                    self.store,
+                    broker_manager=getattr(self.window(), "_shared_broker_manager", lambda: None)(),
+                    account_id=record.account_id,
+                    broker_name=record.broker_name,
+                )
             try:
                 signature = inspect.signature(injected_factory)
                 signature.bind(record.account_id, record.broker_name)
@@ -5699,6 +5974,11 @@ class OrderConfigurationPage(QWidget):
 
         worker = _QuantityLimitsWorker(
             ins_code, provider_factory, request_id, parent=self
+        )
+        worker.limits_failed.connect(
+            lambda rid, _code, _message: self._on_quantity_range_failed(
+                rid, ins_code, "LIMIT_FETCH_FAILED"
+            )
         )
         self._quantity_limits_worker = worker
         self._quantity_limits_thread = worker
@@ -6951,6 +7231,9 @@ class OrderConfigurationPage(QWidget):
         self.active_account_label.setText(self._active_account_text())
         self._clear_order_identity()
         instrument = self.config.selected_instrument
+        self._invalidate_limit_requests()
+        if instrument is not None:
+            self._start_range_hint_requests(price=True, quantity=True)
         self._restart_order_identity_if_stale()
         self._refresh_test_button_state()
         self._start_auto_amount()

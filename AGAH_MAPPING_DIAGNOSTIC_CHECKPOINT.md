@@ -90,3 +90,54 @@ Independent offline review with socket connections blocked: the eight-file selec
 Separate OPEN issue: `test_ui5_task3_order_results.py::test_7_runner_issues_exactly_one_dispatch_per_run` fails because the current worktree's dispatch reads order.ins_code while make_simulation_order populates only nsc_id. Source/data-flow inspection supports this cause. The agent's direct before/after snapshot test was not completed (archive extraction failed), so independence from cleanup is not proven by an A/B run; it must not be described as a verified baseline failure. No fix to dispatch or simulation data is included in this cleanup commit.
 
 The cleanup is accepted with this explicit unrelated-test limitation. No reviewer/agent broker lookup, login/refresh, real order or scheduling was performed. Raw trace files, temporary test outputs and unrelated worktree changes are excluded from the commit. Full-suite success is not claimed.
+
+## Order range hint presentation follow-up — 2026-11-03
+
+- Fixed malformed QSS emitted by `_setup_limit_hint`: the closing brace in the ordinary string segment is now a single brace, so Qt receives a valid `QLabel#priceRangeHint` / `QLabel#quantityRangeHint` selector.
+- Range labels are positioned at the left visual edge of the line edit, use explicit left-to-right layout, and reserve the matching left text margin. Label width follows the rendered numeric range; minimum line-edit width reserves the hint and typing area so long ranges remain visible when the containing window narrows (the scrollable page can scroll horizontally).
+- Offline tests: focused hints `6 passed, 32 deselected`; order form suite excluding AST guard `37 passed, 1 deselected`. The AST guard `test_ui3_1_order_configuration.py::test_14_ui_does_not_use_legacy_main` was run independently and still fails at `ui/live_order_gate.py` importing `core.live_order_authorization`, absent from that guard's `allowed_core`; guard/test untouched. This independently reproduces the same existing failure and the presentation diff does not touch `live_order_gate.py`.
+- Owner-reported `OrderFeedbackService` error was not investigated; it is outside this presentation change and remains unverified.
+- Preview uses synthetic values and the installed project-approved `IRANSansX` font family. No bundled font asset exists in the repository. Although Qt reports Persian glyph coverage, the captured offscreen preview renders glyphs as squares in this environment; readable Persian preview remains a limitation and must not be claimed as achieved.
+- No network, login/refresh, order, Dry Run, Live, schedule, commit or push was performed.
+## Inline order limit hint runtime diagnosis — 2026-11-03
+
+- Confirmed selection flow: `_on_resolve_succeeded()` stores the selected `Instrument`, invalidates and clears old hints, then starts the price and quantity range workers.
+- Proven quantity cause: `_start_range_hint_requests()` only consulted injected quantity/order-identity factories; when neither was injected its `provider_factory()` returned `None`. The worker then failed before `get_instrument(ins_code)`, unlike the quantity-arrow path's intended default active-account provider path.
+- Fixed automatic quantity provider resolution through `_default_order_identity_resolver()` and the parent window's existing shared `BrokerManager`, scoped to the captured account and broker. No additional request/retry was added.
+- Added allowlisted `limit_hint` trace events using the existing trace ID field as attempt ID. Events record fixed stage/reason codes for request start, source readiness/unavailability, response/failure, bounds validity, stale response, and shown/hidden result. Trace extras permit only hint kind, validity/visibility booleans, and fixed hide reasons; exception strings and account/symbol data are never logged.
+- Offline end-to-end test starts at symbol resolve success and runs both real QThreads against synthetic price/provider sources, with no network. Both labels rendered (`4501/5510`, `10/9000`) and entered price/quantity (`4875`, `125`) stayed unchanged. Automated quantity provider factory is intentionally uninjected and resolves through a synthetic shared manager.
+- Verification: focused hint/trace tests **6 passed**; order UI suite excluding the pre-existing AST guard **39 passed, 1 deselected**; `py_compile` passed.
+
+## Inline order hint source and stale-response correction — 2026-11-03
+
+- Runtime source correction: the previous range worker requested quantity limits from `TSETMC.get_order_quantity_limits`; that API has no verified per-order quantity bounds. Quantity hints now resolve `BrokerInstrument` through the active account's account-scoped provider and display `minimum_order_quantity` with the side-specific `maximum_order_quantity_for_buy` / `maximum_order_quantity_for_sell`. No TSETMC trading volume or inferred quantity is used.
+- Account scope `(account_id, broker_name)` is captured with each quantity request. Active-account change and page account refresh restart the current-symbol lookup; late results are discarded on request, symbol, or account mismatch. Price hints remain TSETMC-only and can render without an active account.
+- Trace review of `traces/manual_live_trace.jsonl` showed repeated `LIMIT_RESPONSE_STALE` events for both hint types. Code inspection found that `_on_price_range_succeeded` handled a `None` response before validating the scope, allowing an obsolete empty response to clear a current label. Scope validation now precedes all response content handling.
+- Both labels are updated independently; missing quantity/account/provider does not suppress successful price data. The offline widget test starts at `_on_resolve_succeeded` on a shown Qt page, waits for the real price QThread, verifies `isVisible()` and left-side LTR geometry, then activates a synthetic account-scoped provider and verifies the quantity worker and label. It also verifies preserved typed values and account-stale response rejection.
+- Verification: focused hint tests **7 passed, 36 deselected**; order configuration suite excluding the known AST guard **42 passed, 1 deselected**; `py_compile` and `git diff --check` passed (only LF/CRLF warnings).
+- Follow-up invalid-bounds proof: the missing/inverted quantity-bounds test now uses active `ACC-1` / `Broker`, matching selected symbol and request scope. It confirms a response-received trace with no stale-response trace, invalid-bounds classification, hidden quantity label, and still-visible price label. Offline command `python -m pytest -q test_ui3_1_order_configuration.py -k "quantity_hint_stays_hidden_only_for_missing_or_invalid_active_account_bounds"` -> **1 passed, 42 deselected**.
+
+## Hint invalidation versus identity cleanup — 2026-11-03
+
+- Confirmed coupling bug: `_on_resolve_succeeded()` starts range-hint workers and then `_start_order_identity_resolution()` calls `_clear_order_identity()`, which previously called `_invalidate_limit_requests()` and cleared both scopes. Identity cleanup now only clears identity state; it no longer invalidates price/quantity hint requests.
+- Symbol typing/selection and active-account changes still explicitly invalidate old hint requests before starting current-symbol/current-account requests. `refresh_active_account()` keeps its account-bound invalidation as well.
+- Acceptance test uses the real `_start_order_identity_resolution()` and `_OrderIdentityWorker` with an injected synthetic `get_nsc_id` provider; the method is not stubbed. After identity success, both the TSETMC price and account-bound BrokerInstrument quantity labels remain visible. The test also proves no-account price visibility and stale prior-symbol response rejection.
+- Offline verification: identity/hint/account-stale acceptance selection **3 passed, 41 deselected**; order UI suite excluding known AST guard **43 passed, 1 deselected**; `py_compile` passed. `git diff --check` passed with existing LF/CRLF warnings only. No network, order, commit, or push.
+- No network, login/refresh, broker session, order, Dry Run, Live, schedule, commit, or push was used.
+
+## Clear order inputs on actual symbol change — 2026-11-03
+
+- `_on_resolve_succeeded()` compares old/new instrument `ins_code`; only a different code clears price/quantity input widgets and `OrderConfiguration.price` / `.quantity`. Resolving the same `ins_code` preserves user-entered values.
+- Clear also invalidates auto-amount requests, resets calculated base/fee/final display and validation feedback. Existing queue records are not read or modified by this path.
+- Added offline Qt acceptance coverage for changing symbols, same-symbol selection, stale calculator callback rejection, and current-symbol price range visibility. Existing selection/hint coverage still verifies independent current-symbol limit workers.
+- Verification: `python -m pytest -q test_ui3_1_order_configuration.py -k "changing_symbol_clears_form_values_but_same_symbol_keeps_them or symbol_selection_runs_price_without_account_and_quantity_for_active_account or hint_responses_from_previous_symbol_are_invalidated"` -> **3 passed, 42 deselected**.
+- No network, login/refresh, order, Dry Run, Live, schedule, commit, or push was used.
+
+## Owner acceptance and publication — 2026-11-03
+
+- Owner confirmed that the inline price/quantity hints now appear after separating identity cleanup from hint invalidation. Price uses TSETMC daily allowed limits; quantity uses active-account BrokerInstrument order limits.
+- Owner accepted clearing price/quantity and calculated form results when changing symbols. Same-ins_code resolution preserves form values; queued orders are unchanged.
+- Publication scope: order configuration UI, its offline tests, allowlisted hint trace metadata and this checkpoint. Unrelated ins_code/dispatch/simulation/TSETMC worktree changes and raw logs/previews are excluded.
+- Known AST import guard remains excluded; full-suite success is not claimed. No reviewer network, login/refresh, real order, Dry Run/Live or scheduling was executed.
+
+- Independent publication check on an isolated HEAD snapshot plus only publication files, with socket connections blocked: **44 passed, 1 deselected** (`test_ui3_1_order_configuration.py`, excluding `test_14_ui_does_not_use_legacy_main`).

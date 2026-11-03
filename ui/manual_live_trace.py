@@ -29,10 +29,12 @@ _DIAGNOSTIC_FIELDS = {
     "candidate_count", "account_changed", "symbol_changed", "turn_changed",
     "provider_stage", "api_classification",
     "total_candidates", "valid_nsc_id_candidates", "normalization",
+    "hint_kind", "bounds_valid", "visible", "hide_reason",
 }
 _DIAGNOSTIC_STAGES = {
     "lookup_dispatch", "lookup_response", "ui_apply", "calculator_readiness",
     "account_snapshot", "session_snapshot",
+    "limit_hint",
 }
 _DIAGNOSTIC_REASONS = {
     "LOOKUP_401", "LOOKUP_NO_MATCH", "LOOKUP_CONNECTION_ERROR", "LOOKUP_FAILED",
@@ -44,6 +46,10 @@ _DIAGNOSTIC_REASONS = {
     "SYMBOL_MISSING", "INSTRUMENT_ID_MISSING", "BROKER_MISMATCH", "IDENTITY_PENDING",
     "IDENTITY_READY", "SIDE_NOT_BUY", "PRICE_INVALID", "QUANTITY_INVALID",
     "LOGGER_UNAVAILABLE", "RESPONSE_STATUS_ERROR", "RESPONSE_INVALID",
+    "LIMIT_REQUEST_STARTED", "LIMIT_SOURCE_READY", "LIMIT_RESPONSE_RECEIVED",
+    "LIMIT_SOURCE_UNAVAILABLE", "LIMIT_FETCH_FAILED", "LIMIT_RESPONSE_MISSING",
+    "LIMIT_BOUNDS_INVALID", "LIMIT_BOUNDS_VALID", "LIMIT_RESPONSE_STALE",
+    "LIMIT_HINT_SHOWN", "LIMIT_HINT_HIDDEN", "LIMIT_QUANTITY_UNAVAILABLE",
 }
 
 _LAST_ERROR = {"code": None, "path": None}
@@ -100,6 +106,15 @@ def _sanitize_extra(extra):
         elif key in {"session_generation", "connection_generation", "candidate_count", "http_status"} and type(value) is int and value >= 0 and (key != "http_status" or value in _HTTP_STATUSES):
             out[key] = value
         elif key in {"account_ready", "session_ready", "account_changed", "symbol_changed", "turn_changed"} and type(value) is bool:
+            out[key] = value
+        elif key in {"bounds_valid", "visible"} and type(value) is bool:
+            out[key] = value
+        elif key == "hint_kind" and value in {"price", "quantity"}:
+            out[key] = value
+        elif key == "hide_reason" and value in {
+            "invalid_bounds", "source_unavailable", "fetch_failed", "stale_response",
+            "symbol_missing", "account_missing", "side_changed", "symbol_changed",
+        }:
             out[key] = value
         elif key == "source" and value in {"cache", "lookup"}:
             out[key] = value
