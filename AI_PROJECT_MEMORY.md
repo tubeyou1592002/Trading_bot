@@ -1,3 +1,5 @@
+> **2026-11-03 cleanup accepted:** Temporary symbol/mapping diagnostic UI and unused direct helpers removed; background logging and existing Diagnostic health/path retained. Independent review: 159 passed / 1 open simulation identifier test failure, without completed before/after comparison. See [AGAH_MAPPING_DIAGNOSTIC_CHECKPOINT.md](AGAH_MAPPING_DIAGNOSTIC_CHECKPOINT.md).
+
 > **2026-11-02 symbol lookup update:** Owner reports Shepoli/Shepdis working; local traces confirm fresh IDENTITY_READY and UI application. Query normalization and safe diagnostic classification are reviewed; 68 offline tests passed. See [AGAH_MAPPING_DIAGNOSTIC_CHECKPOINT.md](AGAH_MAPPING_DIAGNOSTIC_CHECKPOINT.md) for evidence and the separate open calculator-test limitation.
 
 > **2026-11-01 owner-operated manual Live milestone:** Owner confirms broker receipt after the fresh-account snapshot fix. Independent offline review: 72 tests passed with network blocked. See [MANUAL_LIVE_CHECKPOINT.md](MANUAL_LIVE_CHECKPOINT.md). This confirms one manual attempt, not exchange fill, scheduled Live or general production readiness.

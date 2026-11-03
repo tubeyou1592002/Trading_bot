@@ -127,10 +127,8 @@ import time
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from ui.manual_live_trace import diagnostic_status as _diagnostic_logger_status
 from ui.manual_live_trace import log_event as _diagnostic_log_event
 from ui.manual_live_trace import new_trace_id as _new_diagnostic_request_id
-from ui.manual_live_trace import trace_path as _diagnostic_trace_path
 
 from models.order import BUY, SELL, Order
 from models.trading_state import (
@@ -158,8 +156,6 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QDialog,
-    QPlainTextEdit,
-    QApplication,
     QMessageBox,
     QRadioButton,
     QScrollArea,
@@ -675,68 +671,6 @@ def _result_reason_for_status(status, result=None):
     return RESULT_REASON_FAILED
 
 
-def _safe_diagnostic_value(value):
-    if value is None:
-        return "-"
-    text = str(value).strip()
-    if not text or len(text) > 160 or any(ord(char) < 32 for char in text):
-        return "-"
-    return text
-
-
-def _diagnostic_error_category(message):
-    text = str(message).lower()
-    if "401" in text or "unauthorized" in text:
-        return "authorization"
-    if "timeout" in text or "timed out" in text:
-        return "timeout"
-    if "json" in text or "decode" in text:
-        return "invalid_response"
-    if "not found" in text or "no instrument" in text:
-        return "not_found"
-    return "lookup_failed"
-
-
-def _symbol_diagnostic_text(result, instrument=None, error=None):
-    fields = (
-        ("Symbol", getattr(instrument, "symbol", None) or result.get("symbol")),
-        ("Name", getattr(instrument, "name", None) or result.get("name")),
-        ("TSETMC ins_code", getattr(instrument, "ins_code", None) or result.get("ins_code")),
-        ("TSETMC instrument_id", getattr(instrument, "instrument_id", None)),
-        ("TSETMC ISIN", getattr(instrument, "isin", None)),
-        ("Agah lookup stage", "not reported by symbol resolve"),
-        ("Agah status", "not available in selection flow"),
-        ("Agah candidate nscId", None),
-        ("Agah candidate tseId", None),
-        ("Match outcome", "resolve failed" if error else "TSETMC instrument resolved"),
-        ("Exception category", _diagnostic_error_category(error) if error else "-"),
-        ("Exception", type(error).__name__ if error else "-"),
-    )
-    return "\n".join(f"{key}: {_safe_diagnostic_value(value)}" for key, value in fields)
-
-
-class _SymbolDiagnosticDialog(QDialog):
-    def __init__(self, text, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Symbol selection diagnostic")
-        layout = QVBoxLayout(self)
-        self.text_view = QPlainTextEdit(self)
-        self.text_view.setReadOnly(True)
-        self.text_view.setPlainText(text)
-        layout.addWidget(self.text_view)
-        buttons = QHBoxLayout()
-        self.copy_button = QPushButton("Copy", self)
-        self.copy_button.clicked.connect(
-            lambda: QApplication.clipboard().setText(self.text_view.toPlainText())
-        )
-        close_button = QPushButton("Close", self)
-        close_button.clicked.connect(self.accept)
-        buttons.addWidget(self.copy_button)
-        buttons.addWidget(close_button)
-        layout.addLayout(buttons)
-        self.resize(520, 360)
-
-
 def _account_record_or_none(account_store, account_id):
     """
     The existing ``AccountRecord`` for ``account_id``, or ``None``.
@@ -869,44 +803,6 @@ class _OrderIdentityWorker(QThread):
             nsc_id = None
         self.identity_succeeded.emit(self.identity, self.ins_code, nsc_id, self.request_id,
                                      symbol, self.source, self.http_status, "LOOKUP_NO_MATCH" if not nsc_id else "IDENTITY_READY")
-
-
-class _AgahMappingDiagnosticWorker(QThread):
-    """Perform one explicit read-only instrument mapping diagnostic."""
-
-    succeeded = Signal(object, str, object)
-    failed = Signal(object, str, str)
-
-    def __init__(self, identity, ins_code, symbol, resolver_factory, parent=None, request_id=None):
-        super().__init__(parent)
-        self.identity = identity
-        self.ins_code = ins_code
-        self.symbol = symbol
-        self._resolver_factory = resolver_factory
-        self.request_id = request_id
-
-    def run(self):
-        try:
-            resolver = self._resolver_factory()
-            if resolver is None:
-                raise RuntimeError("provider unavailable")
-            diagnostic = getattr(resolver, "diagnostic_mapping", None)
-            result = diagnostic(self.ins_code) if callable(diagnostic) else {
-                "nsc_id": resolver.get_nsc_id(self.ins_code), "candidates": []
-            }
-        except Exception as exc:  # noqa: BLE001 — render category only
-            text = str(exc).lower()
-            if "401" in text or "unauthorized" in text:
-                outcome = "unauthorized"
-            elif ("no candidate" in text or "no instrument" in text
-                  or "not found" in text or "کاندیدایی" in text
-                  or "هیچ کاندیدای" in text):
-                outcome = "no_match"
-            else:
-                outcome = "lookup_failed"
-            self.failed.emit(self.identity, self.ins_code, outcome)
-            return
-        self.succeeded.emit(self.identity, self.ins_code, result)
 
 
 def _parse_exact_integral_text(text):
@@ -1406,22 +1302,6 @@ class OrderConfigurationPage(QWidget):
         self.add_to_queue_button.setProperty("variant", "primary")
         self.add_to_queue_button.clicked.connect(self._on_add_to_queue)
         form_grid.addWidget(self.add_to_queue_button, 4, 0, 1, 2)
-        self.agah_mapping_button = QPushButton("Check Agah Mapping", form_group)
-        self.agah_mapping_button.setObjectName("agahMappingDiagnosticButton")
-        self.agah_mapping_button.setToolTip(
-            "Read-only lookup for the selected symbol; does not queue or send an order"
-        )
-        self.agah_mapping_button.clicked.connect(self._run_agah_mapping_diagnostic)
-        form_grid.addWidget(self.agah_mapping_button, 4, 2, 1, 2)
-        self.agah_mapping_result = QPlainTextEdit(form_group)
-        self.agah_mapping_result.setObjectName("agahMappingDiagnosticResult")
-        self.agah_mapping_result.setReadOnly(True)
-        self.agah_mapping_result.setMaximumHeight(GEOMETRY["controlHeight"] * 3)
-        self.agah_mapping_result.hide()
-        form_grid.addWidget(self.agah_mapping_result, 6, 0, 1, 4)
-        self._mapping_diagnostic_worker = None
-        self._mapping_diagnostic_identity = None
-
         # --- Test Button (UI-5 Task 1) ------------------------------
         # UI-only toggle: OFF -> "Test", ON -> "Test (On)".
         # No execution, no dispatch, no broker/network activity.
@@ -1513,6 +1393,8 @@ class OrderConfigurationPage(QWidget):
         # when the wired runner exposed no per-order results (display then
         # fails closed per row — never fabricated).
         self._last_order_results = None
+        self._last_test_run_mode = None
+        self._active_result_execution_id = None
         # UI-6 Task 3: THIS run's EXISTING Block 8 report (the runner's
         # own ``last_report`` — taken only from the completed run; cleared
         # when an issue attempt fails so a previous run's timings are
@@ -2743,7 +2625,7 @@ class OrderConfigurationPage(QWidget):
         """Resolve failure: previous selection stays, nothing fabricated."""
         if sequence != self._search_sequence:
             return
-        self._set_search_status(f"Resolve failed: {message}")
+        self._set_search_status("دریافت اطلاعات نماد ناموفق بود")
 
     # ---------------------------------------------------------
     # Trading state display (UI-3.2B — read-only, fail-closed)
@@ -2944,189 +2826,6 @@ class OrderConfigurationPage(QWidget):
     def _render_trading_state(self, text):
         self.trading_state_label.setText(text)
 
-    # ---------------------------------------------------------
-    # Explicit Agah mapping diagnostic (read-only; independent of queue)
-    # ---------------------------------------------------------
-
-    def _run_agah_mapping_diagnostic(self):
-        instrument = self.config.selected_instrument
-        record = self._active_account_record()
-        if instrument is None:
-            self._show_mapping_diagnostic("No symbol selected.")
-            return
-        if record is None:
-            self._show_mapping_diagnostic("No active account.")
-            return
-        manager = self._get_session_manager()
-        try:
-            logged_in = manager is not None and manager.is_logged_in(record.account_id)
-        except Exception:
-            logged_in = False
-        if not logged_in:
-            self._show_mapping_diagnostic("No authenticated session.")
-            return
-        ins_code = getattr(instrument, "ins_code", None)
-        symbol = getattr(instrument, "symbol", None)
-        if not isinstance(ins_code, str) or not ins_code.strip():
-            self._show_mapping_diagnostic("No valid ins_code for the selected symbol.")
-            return
-        identity = (record.account_id, record.broker_name, ins_code)
-        request_id = _new_diagnostic_request_id()
-        self._log_identity_diagnostic(request_id, "lookup_dispatch", identity, symbol,
-                                      source="lookup", reason_code="IDENTITY_PENDING")
-        self._mapping_diagnostic_identity = identity
-        self._mapping_diagnostic_symbol = symbol
-        self.agah_mapping_button.setEnabled(False)
-
-        def resolver_factory():
-            factory = self._order_identity_factory
-            if factory is None:
-                return _default_order_identity_resolver(
-                    self.store, account_id=record.account_id,
-                    broker_name=record.broker_name,
-                )
-            try:
-                signature = inspect.signature(factory)
-                signature.bind(record.account_id, record.broker_name)
-            except (TypeError, ValueError):
-                return factory()
-            return factory(record.account_id, record.broker_name)
-
-        worker = _AgahMappingDiagnosticWorker(
-            identity, ins_code, symbol, resolver_factory, parent=self, request_id=request_id
-        )
-        self._mapping_diagnostic_worker = worker
-        worker.succeeded.connect(self._on_mapping_diagnostic_succeeded)
-        worker.failed.connect(self._on_mapping_diagnostic_failed)
-        worker.finished.connect(
-            lambda w=worker: setattr(self, "_mapping_diagnostic_worker", None)
-            if self._mapping_diagnostic_worker is w else None
-        )
-        worker.finished.connect(worker.deleteLater)
-        worker.start()
-
-    def _show_mapping_diagnostic(self, outcome, nsc_id=None, *, symbol=None, ins_code=None, candidates=None, search_status=None):
-        instrument = self.config.selected_instrument
-        symbol = _safe_diagnostic_value(symbol or getattr(instrument, "symbol", None))
-        ins_code = _safe_diagnostic_value(ins_code or getattr(instrument, "ins_code", None))
-        lines = [f"Symbol: {symbol}", f"ins_code: {ins_code}", f"Query: {symbol}", f"Search status: {_safe_diagnostic_value(search_status)}", f"Candidates: {len(candidates or ())}"]
-        if outcome == "matched" and isinstance(nsc_id, str) and nsc_id:
-            lines.extend(("Outcome: exact match", f"nscId: {_safe_diagnostic_value(nsc_id)}"))
-        else:
-            lines.extend((f"Outcome: {outcome}", "nscId: -"))
-        for index, candidate in enumerate(candidates or (), 1):
-            if not isinstance(candidate, dict):
-                continue
-            lines.extend((
-                f"Candidate {index} nscId: {_safe_diagnostic_value(candidate.get('nscId'))}",
-                f"Candidate {index} tseId: {_safe_diagnostic_value(candidate.get('tseId'))}",
-                f"Candidate {index} name: {_safe_diagnostic_value(candidate.get('name'))}",
-                f"Candidate {index} exact match: {'yes' if candidate.get('exact_match') is True else 'no'}",
-            ))
-        self.agah_mapping_result.setPlainText("\n".join(lines))
-        self.agah_mapping_result.show()
-
-    def _on_mapping_diagnostic_succeeded(self, identity, ins_code, result):
-        worker = self._mapping_diagnostic_worker
-        request_id = getattr(worker, "request_id", None) or _new_diagnostic_request_id()
-        status = result.get("search_status") if isinstance(result, dict) else None
-        candidates = result.get("candidates", []) if isinstance(result, dict) else []
-        self._log_identity_diagnostic(
-            request_id, "lookup_response", identity,
-            self._mapping_diagnostic_symbol, source=(result.get("source", "lookup") if isinstance(result, dict) else "lookup"),
-            reason_code=("LOOKUP_401" if status == 401 else "LOOKUP_CONNECTION_ERROR" if result.get("connection_error") else "LOOKUP_NO_MATCH" if not result.get("nsc_id") else "IDENTITY_READY"),
-            http_status=status, candidate_count=(result.get("candidate_count", len(candidates)) if isinstance(result, dict) else 0),
-        )
-        if (identity != self._mapping_diagnostic_identity
-                or identity != self._current_read_identity(ins_code)):
-            self._log_identity_diagnostic(request_id, "ui_apply", identity,
-                                          self._mapping_diagnostic_symbol,
-                                          reason_code="LOOKUP_STALE_RESPONSE",
-                                          account_changed=identity != self._current_read_identity(ins_code),
-                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
-                                          turn_changed=identity != self._mapping_diagnostic_identity)
-            return
-        if status == 401:
-            self.agah_mapping_button.setEnabled(True)
-            self._show_mapping_diagnostic(
-                "Access not accepted for this request (HTTP 401).",
-                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
-                candidates=candidates, search_status=401,
-            )
-            return
-        if isinstance(result, dict) and result.get("connection_error"):
-            self.agah_mapping_button.setEnabled(True)
-            self._show_mapping_diagnostic(
-                "Connection error during Agah mapping lookup.",
-                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
-            )
-            return
-        if isinstance(result, dict) and result.get("search_status") == 401:
-            self.agah_mapping_button.setEnabled(True)
-            self._show_mapping_diagnostic(
-                "Access not accepted for this request (HTTP 401).",
-                symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
-                candidates=result.get("candidates", []), search_status=401,
-            )
-            return
-        manager = self._get_session_manager()
-        try:
-            if manager is None or not manager.is_logged_in(identity[0]):
-                self.agah_mapping_button.setEnabled(True)
-                self._show_mapping_diagnostic(
-                    "No authenticated session.", symbol=self._mapping_diagnostic_symbol,
-                    ins_code=ins_code
-                )
-                return
-        except Exception:
-            self.agah_mapping_button.setEnabled(True)
-            self._show_mapping_diagnostic(
-                "No authenticated session.", symbol=self._mapping_diagnostic_symbol,
-                ins_code=ins_code
-            )
-            return
-        self.agah_mapping_button.setEnabled(True)
-        nsc_id = result.get("nsc_id") if isinstance(result, dict) else None
-        outcome = ("Access not accepted for this request (HTTP 401)." if status == 401
-                   else "No matching Agah instrument." if not nsc_id
-                   else "matched")
-        self._log_identity_diagnostic(request_id, "ui_apply", identity,
-                                      self._mapping_diagnostic_symbol,
-                                      reason_code="LOOKUP_APPLIED", account_changed=False,
-                                      symbol_changed=False, turn_changed=False)
-        self._show_mapping_diagnostic(
-            outcome,
-            nsc_id, symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
-            candidates=candidates,
-            search_status=result.get("search_status") if isinstance(result, dict) else None,
-        )
-
-    def _on_mapping_diagnostic_failed(self, identity, ins_code, outcome):
-        worker = self._mapping_diagnostic_worker
-        request_id = getattr(worker, "request_id", None) or _new_diagnostic_request_id()
-        code = "LOOKUP_401" if outcome == "unauthorized" else "LOOKUP_NO_MATCH" if outcome == "no_match" else "LOOKUP_CONNECTION_ERROR"
-        self._log_identity_diagnostic(request_id, "lookup_response", identity,
-                                      self._mapping_diagnostic_symbol, reason_code=code)
-        if (identity != self._mapping_diagnostic_identity
-                or identity != self._current_read_identity(ins_code)):
-            self._log_identity_diagnostic(request_id, "ui_apply", identity,
-                                          self._mapping_diagnostic_symbol,
-                                          reason_code="LOOKUP_STALE_RESPONSE",
-                                          account_changed=identity != self._current_read_identity(ins_code),
-                                          symbol_changed=getattr(self.config.selected_instrument, "ins_code", None) != ins_code,
-                                          turn_changed=identity != self._mapping_diagnostic_identity)
-            return
-        self.agah_mapping_button.setEnabled(True)
-        label = {
-            "unauthorized": "Access not accepted for this request (HTTP 401).",
-            "no_match": "No matching Agah instrument.",
-            "lookup_failed": "Mapping lookup failed; details withheld.",
-        }.get(outcome, "Mapping lookup failed; details withheld.")
-        self._show_mapping_diagnostic(
-            label, symbol=self._mapping_diagnostic_symbol, ins_code=ins_code,
-            search_status=401 if outcome == "unauthorized" else None,
-        )
-
     def _log_identity_diagnostic(self, request_id, stage, identity, query, *,
                                  reason_code=None, source="lookup", http_status=None,
                                  candidate_count=0, account_changed=None,
@@ -3146,7 +2845,6 @@ class OrderConfigurationPage(QWidget):
             except Exception:
                 session_ready, session_generation = False, 0
             current_record = self._active_account_record()
-            logger_status = _diagnostic_logger_status()
             extra = {
                 "request_id": request_id, "symbol_id": str(identity[2]) if identity else "none",
                 "query": str(query or "")[:160], "account_alias": alias,
@@ -3155,8 +2853,6 @@ class OrderConfigurationPage(QWidget):
                 "account_ready": current_record is not None,
                 "session_ready": session_ready, "source": source,
                 "candidate_count": max(0, int(candidate_count or 0)),
-                "logger_path": str(logger_status.get("path") or _diagnostic_trace_path()),
-                "logger_writable": logger_status.get("writable") is True,
             }
             for key, value in (("account_changed", account_changed),
                                ("symbol_changed", symbol_changed), ("turn_changed", turn_changed)):
@@ -5110,8 +4806,8 @@ class OrderConfigurationPage(QWidget):
     def _refresh_trace_logger_status(self):
         """Render logger health without affecting dispatch or result state."""
         try:
-            from ui.manual_live_trace import diagnostic_status
             from ui import strings as STRINGS
+            from ui.manual_live_trace import diagnostic_status
             status = diagnostic_status()
             path = status.get("path") or "نامشخص"
             error = status.get("error") or {}
@@ -7298,13 +6994,13 @@ class OrderConfigurationPage(QWidget):
         """
         instrument = self.config.selected_instrument
         if instrument is None:
-                return
+            return
         record = self._active_account_record()
         if record is None:
-                self._clear_order_identity()
-                return
+            self._clear_order_identity()
+            return
         if (self._order_nsc_id
                 and self._order_identity_broker == record.broker_name
                 and self._order_identity_account == record.account_id):
-                return  # still coherent — nothing to do
+            return  # still coherent — nothing to do
         self._start_order_identity_resolution(instrument)

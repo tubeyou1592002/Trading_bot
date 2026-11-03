@@ -1,5 +1,7 @@
 import pytest
+import json
 from PySide6.QtWidgets import QApplication
+from unittest.mock import MagicMock
 
 from models.instrument import Instrument
 from ui.account_store import AccountStore
@@ -28,13 +30,6 @@ class Provider:
             raise self.outcome
         return self.outcome
 
-    def diagnostic_mapping(self, ins_code):
-        self.calls.append(ins_code)
-        if isinstance(self.outcome, Exception):
-            raise self.outcome
-        return self.outcome
-
-
 def make_page(qapp, provider=None, *, logged_in=True):
     store = AccountStore(repository=False)
     store.add(ACCOUNT, BROKER, "Test account")
@@ -51,128 +46,6 @@ def make_page(qapp, provider=None, *, logged_in=True):
     if provider is not None:
         page.set_order_identity_factory(lambda account, broker: provider)
     return page, provider
-
-
-def finish(page):
-    worker = page._mapping_diagnostic_worker
-    assert worker is not None
-    assert worker.wait(5000)
-    QApplication.processEvents()
-
-
-def test_mapping_diagnostic_passes_selected_ins_code_and_shows_copyable_match(qapp):
-    provider = Provider({
-        "nsc_id": "agah-987",
-        "candidates": [{"nscId": "agah-987", "tseId": "123456", "name": "نام کاندیدا", "exact_match": True}],
-    })
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    result = page.agah_mapping_result.toPlainText()
-    assert provider.calls == ["123456"]
-    assert "Symbol: نماد" in result
-    assert "ins_code: 123456" in result
-    assert "nscId: agah-987" in result
-    assert "Candidate 1 tseId: 123456" in result
-    assert "Candidate 1 name: نام کاندیدا" in result
-    assert "Candidate 1 exact match: yes" in result
-    assert page.agah_mapping_result.isReadOnly()
-    assert not hasattr(page, "place_order")
-    page.close()
-
-
-def test_mapping_diagnostic_requires_authenticated_session(qapp):
-    page, provider = make_page(qapp, Provider("unused"), logged_in=False)
-    page._run_agah_mapping_diagnostic()
-    assert "No authenticated session" in page.agah_mapping_result.toPlainText()
-    assert provider.calls == []
-    page.close()
-
-
-def test_entering_page_before_account_session_is_ready_then_account_activates(qapp):
-    store = AccountStore(repository=False)
-    store.add(ACCOUNT, BROKER, "Test account")
-    sessions = SessionManager()
-    sessions.register(ACCOUNT, BROKER)
-    page = OrderConfigurationPage(store, config=OrderConfiguration())
-    page.set_session_manager(sessions)
-    from models.instrument import Instrument
-    page.config.select_instrument(Instrument("نماد", "نام", "123456"))
-    page.refresh_active_account()
-    assert page._order_nsc_id is None
-    store.set_active(ACCOUNT)
-    sessions.begin_login(ACCOUNT)
-    sessions.mark_logged_in(ACCOUNT, "offline-test-token")
-    page.refresh_active_account()
-    assert page._order_identity_thread is not None
-    page.close()
-
-
-@pytest.mark.parametrize(("error", "expected"), [
-    (RuntimeError("HTTP 401 unauthorized"), "Access not accepted"),
-    (LookupError("هیچ کاندیدای Agah نبود"), "No matching Agah instrument"),
-])
-def test_mapping_diagnostic_safe_failure_outcomes(qapp, error, expected):
-    provider = Provider(error)
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    text = page.agah_mapping_result.toPlainText()
-    assert expected in text
-    assert str(error) not in text
-    assert provider.calls == ["123456"]
-    page.close()
-
-
-def test_mapping_diagnostic_none_result_is_no_match(qapp):
-    provider = Provider({
-        "nsc_id": None,
-        "candidates": [{"nscId": "other", "tseId": "different", "name": "Other", "exact_match": False}],
-    })
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    text = page.agah_mapping_result.toPlainText()
-    assert "No matching Agah instrument" in text
-    assert "Candidate 1 exact match: no" in text
-    assert "Outcome: exact match" not in text
-    page.close()
-
-
-def test_mapping_diagnostic_401_is_not_reported_as_no_match(qapp):
-    provider = Provider({"nsc_id": None, "candidates": [], "search_status": 401,
-                         "source": "lookup", "candidate_count": 0})
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    text = page.agah_mapping_result.toPlainText()
-    assert "Access not accepted" in text
-    assert "No matching Agah instrument" not in text
-    page.close()
-
-
-def test_mapping_diagnostic_connection_error_is_distinct(qapp):
-    provider = Provider({"nsc_id": None, "candidates": [], "connection_error": True})
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    assert "Connection error" in page.agah_mapping_result.toPlainText()
-    assert "No matching Agah instrument" not in page.agah_mapping_result.toPlainText()
-    page.close()
-
-
-def test_mapping_diagnostic_stale_symbol_response_is_discarded(qapp):
-    page, _ = make_page(qapp, Provider({"nsc_id": "nsc", "candidates": []}))
-    identity = (ACCOUNT, BROKER, "123456")
-    page._mapping_diagnostic_identity = identity
-    page._mapping_diagnostic_symbol = "نماد"
-    from models.instrument import Instrument
-    page.config.select_instrument(Instrument("جديد", "نام جدید", "654321"))
-    page._on_mapping_diagnostic_succeeded(identity, "123456", {
-        "nsc_id": "nsc", "candidates": [], "source": "lookup"
-    })
-    assert not page.agah_mapping_result.isVisible()
-    page.close()
 
 
 def test_account_can_become_ready_after_page_entry(qapp):
@@ -202,31 +75,6 @@ def test_calculator_readiness_reports_specific_missing_requirement(qapp):
     page = OrderConfigurationPage(store, config=OrderConfiguration())
     with pytest.raises(ValueError, match="حساب فعال انتخاب نشده"):
         page._buy_preview_snapshot()
-    page.close()
-
-
-def test_diagnostic_logger_failure_does_not_change_lookup_result(qapp, monkeypatch):
-    provider = Provider({"nsc_id": "agah-987", "candidates": []})
-    page, _ = make_page(qapp, provider)
-    monkeypatch.setattr(manual_live_trace, "log_event", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk")))
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    assert "exact match" in page.agah_mapping_result.toPlainText()
-    assert provider.calls == ["123456"]
-    page.close()
-
-
-def test_mapping_success_after_401_is_a_new_attempt_and_applies(qapp):
-    provider = Provider(RuntimeError("HTTP 401 unauthorized"))
-    page, _ = make_page(qapp, provider)
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    assert "Access not accepted" in page.agah_mapping_result.toPlainText()
-    provider.outcome = {"nsc_id": "agah-987", "candidates": [], "search_status": 200}
-    page._run_agah_mapping_diagnostic()
-    finish(page)
-    assert "Outcome: exact match" in page.agah_mapping_result.toPlainText()
-    assert provider.calls == ["123456", "123456"]
     page.close()
 
 
@@ -261,6 +109,26 @@ def test_order_identity_out_of_order_responses_keep_source_attempt_and_reject_ol
     page.close()
 
 
+def test_page_excludes_temporary_lookup_diagnostics_but_keeps_diagnostic_section(qapp):
+    page, _ = make_page(qapp)
+    assert not hasattr(page, "agah_mapping_button")
+    assert not hasattr(page, "agah_mapping_result")
+    assert not hasattr(page, "_run_agah_mapping_diagnostic")
+    assert not hasattr(page, "_show_symbol_diagnostic")
+    assert hasattr(page, "diagnostic_section")
+    assert hasattr(page, "diagnostic_status_label")
+    page._refresh_trace_logger_status()
+    assert "مسیر فایل گزارش" in page.trace_logger_status_label.text()
+    page.close()
+
+
+def test_provider_has_no_alternate_diagnostic_search_api():
+    from brokers.agaah.instrument_provider import AgaahInstrumentProvider
+
+    assert not hasattr(AgaahInstrumentProvider, "diagnostic_search_once")
+    assert not hasattr(AgaahInstrumentProvider, "diagnostic_mapping")
+
+
 def test_same_account_symbol_starts_distinct_identity_attempts(qapp):
     page, provider = make_page(qapp, Provider("same-nsc"))
     instrument = page.config.selected_instrument
@@ -277,107 +145,6 @@ def test_same_account_symbol_starts_distinct_identity_attempts(qapp):
     second.wait(3000)
     qapp.processEvents()
     assert provider.calls == ["123456", "123456"]
-    page.close()
-
-
-def test_automatic_identity_401_callback_is_safe_and_uses_source_request(qapp, monkeypatch):
-    from ui import order_configuration_page as page_module
-    class Response:
-        status_code = 401
-    from requests import HTTPError
-    error = HTTPError("do not expose this")
-    error.response = Response()
-    provider = Provider(error)
-    page, _ = make_page(qapp, provider)
-    page.set_order_identity_factory(lambda *_: provider)
-    page._start_order_identity_resolution(page.config.selected_instrument)
-    worker = page._order_identity_worker
-    logged = []
-    monkeypatch.setattr(page, "_log_identity_diagnostic",
-                        lambda *args, **kwargs: logged.append((args, kwargs)))
-    assert worker.wait(5000)
-    qapp.processEvents()
-    identity = (ACCOUNT, BROKER, "123456")
-    assert worker.http_status == 401
-    assert worker.error_code == "LOOKUP_401"
-    assert "عدم پذیرش دسترسی" in page.fee_label.text()
-    assert any(args[0] == worker.request_id and args[3] == "نماد" for args, _ in logged)
-    page.close()
-
-
-def test_identity_worker_http_401_metadata_reaches_callback_without_raw_exception(qapp, monkeypatch):
-    from requests import HTTPError
-    class Response:
-        status_code = 401
-
-    error = HTTPError("secret/raw exception detail")
-    error.response = Response()
-    provider = Provider(error)
-    page, _ = make_page(qapp, provider)
-    identity = (ACCOUNT, BROKER, "123456")
-    page.set_order_identity_factory(lambda *_: provider)
-    page._start_order_identity_resolution(page.config.selected_instrument)
-    worker = page._order_identity_worker
-    logged = []
-    monkeypatch.setattr(page, "_log_identity_diagnostic",
-                        lambda request_id, stage, identity, query, **kw:
-                        logged.append((request_id, stage, query, kw)))
-    assert worker.wait(5000)
-    qapp.processEvents()
-    assert page.fee_label.text() == "عدم پذیرش دسترسی درخواست دریافت شناسهٔ آگاه (HTTP 401)"
-    assert worker.http_status == 401 and worker.error_code == "LOOKUP_401"
-    assert any(entry[3].get("reason_code") == "LOOKUP_401"
-               and entry[3].get("http_status") == 401 for entry in logged)
-    assert all("secret/raw exception detail" not in repr(entry) for entry in logged)
-    page.close()
-
-
-def test_late_identity_failure_keeps_origin_metadata_and_is_discarded(qapp, monkeypatch):
-    from requests import HTTPError
-    from ui import order_configuration_page as page_module
-
-    class Response:
-        status_code = 401
-
-    error = HTTPError("old private error")
-    error.response = Response()
-    identity = (ACCOUNT, BROKER, "123456")
-    page, _ = make_page(qapp, Provider(error))
-    page._order_identity_scope = identity
-    page._order_identity_request_id = "req-current"
-    page._order_identity_instrument = "123456"
-    page._order_identity_broker = BROKER
-    page._order_identity_account = ACCOUNT
-    logs = []
-    monkeypatch.setattr(page, "_log_identity_diagnostic",
-                        lambda request_id, stage, identity, query, **kw:
-                        logs.append((request_id, stage, query, kw)))
-
-    # Use a local provider with a deterministic HTTPError; no transport is invoked.
-    class FailingProvider:
-        def get_nsc_id(self, _):
-            raise error
-    old = page_module._OrderIdentityWorker(
-        "123456", lambda: FailingProvider(), identity=identity, request_id="req-old"
-    )
-    old.symbol = "old-source-symbol"
-    old.identity_failed.connect(page._on_order_identity_failed)
-    page._order_identity_worker = page_module._OrderIdentityWorker(
-        "123456", lambda: None, identity=identity, request_id="req-current"
-    )
-    page._order_identity_worker.symbol = "current-symbol"
-    page.set_order_identity_factory(lambda *_: Provider(error))
-    old.start()
-    assert old.wait(5000)
-    qapp.processEvents()
-
-    response = next(entry for entry in logs if entry[1] == "lookup_response")
-    assert response[0:3] == ("req-old", "lookup_response", "old-source-symbol")
-    assert response[3]["reason_code"] == "LOOKUP_401"
-    assert response[3]["source"] == "lookup" and response[3]["http_status"] == 401
-    assert any(entry[0] == "req-old" and entry[1] == "ui_apply"
-               and entry[3]["reason_code"] == "LOOKUP_STALE_RESPONSE" for entry in logs)
-    assert page._order_nsc_id is None
     page.close()
 
 

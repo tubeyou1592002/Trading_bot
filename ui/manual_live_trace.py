@@ -27,7 +27,7 @@ _DIAGNOSTIC_FIELDS = {
     "request_id", "symbol_id", "query", "account_alias", "session_generation",
     "connection_generation", "account_ready", "session_ready", "source",
     "candidate_count", "account_changed", "symbol_changed", "turn_changed",
-    "logger_path", "logger_writable", "provider_stage", "api_classification",
+    "provider_stage", "api_classification",
     "total_candidates", "valid_nsc_id_candidates", "normalization",
 }
 _DIAGNOSTIC_STAGES = {
@@ -95,11 +95,11 @@ def _sanitize_extra(extra):
             out[key] = value
         elif key == "ui_result" and type(value) is str and value in _ALLOWED_UI_RESULTS:
             out[key] = value
-        elif key in {"request_id", "symbol_id", "query", "account_alias", "logger_path"} and type(value) is str and len(value) <= 160 and not any(ord(char) < 32 for char in value):
+        elif key in {"request_id", "symbol_id", "query", "account_alias"} and type(value) is str and len(value) <= 160 and not any(ord(char) < 32 for char in value):
             out[key] = value
         elif key in {"session_generation", "connection_generation", "candidate_count", "http_status"} and type(value) is int and value >= 0 and (key != "http_status" or value in _HTTP_STATUSES):
             out[key] = value
-        elif key in {"account_ready", "session_ready", "account_changed", "symbol_changed", "turn_changed", "logger_writable"} and type(value) is bool:
+        elif key in {"account_ready", "session_ready", "account_changed", "symbol_changed", "turn_changed"} and type(value) is bool:
             out[key] = value
         elif key == "source" and value in {"cache", "lookup"}:
             out[key] = value

@@ -256,11 +256,10 @@ class SymbolSearchWindow(QWidget):
                 )
             )
 
-            self.current_provider = (
-                self.broker_manager.get_instrument_provider(
-                    broker_name
-                )
+            self.current_provider = self.broker_manager.get_instrument_provider(
+                broker_name
             )
+
 
             self.status_label.setText(
                 f"کارگزاری انتخاب شده: {broker_name}"
@@ -275,9 +274,7 @@ class SymbolSearchWindow(QWidget):
             self.current_broker = None
             self.current_provider = None
 
-            self.status_label.setText(
-                f"خطا: {e}"
-            )
+            self.status_label.setText("اتصال به کارگزاری ناموفق بود")
 
     # =================================================
     # Search

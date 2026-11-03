@@ -34,7 +34,6 @@ class AgaahInstrumentProvider(InstrumentProvider):
 
     SEARCH_PATH = "instruments/all"
     SEARCH_COUNT = 50
-    SEARCH_TIMEOUT = 10
 
     def __init__(
         self,
@@ -89,67 +88,6 @@ class AgaahInstrumentProvider(InstrumentProvider):
         self._cache.clear()
         self._nsc_cache.clear()
 
-    def diagnostic_search_once(self, symbol: str):
-        logger = logging.getLogger(__name__)
-        try:
-            response = self._broker.session.get(
-                self._broker._url(self.SEARCH_PATH),
-                params={"query": symbol, "count": self.SEARCH_COUNT},
-                headers=self._broker._auth_headers(),
-                timeout=self.SEARCH_TIMEOUT,
-            )
-        except Exception as exc:
-            status = getattr(getattr(exc, "response", None), "status_code", None)
-            logger.warning(
-                "lookup stage=diagnostic_search status=%s reason=DIAGNOSTIC_REQUEST_FAILED",
-                status,
-            )
-            return {"status": status, "candidates": [], "connection_error": True}
-        status = response.status_code
-        candidates = []
-        try:
-            data = response.json()
-            if isinstance(data, dict):
-                inner = data.get("data")
-                if isinstance(inner, list):
-                    for item in inner:
-                        if isinstance(item, dict):
-                            candidates.append({
-                                "nscId": item.get("nscId"),
-                                "tseId": item.get("tseId"),
-                                "name": item.get("name"),
-                            })
-        except Exception:
-            pass
-        logger.info("diagnostic search status=%s candidates=%s", status, len(candidates))
-        return {"status": status, "candidates": candidates}
-
-    def diagnostic_mapping(self, ins_code: str, instrument: Optional[Instrument] = None,
-                           *, request_id=None):
-        if ins_code in self._nsc_cache:
-            return {"nsc_id": self._nsc_cache[ins_code], "candidates": [],
-                    "source": "cache", "candidate_count": 0, "search_status": None}
-        instrument = instrument or self._fetch_tsetmc_instrument(ins_code)
-        symbol = instrument.symbol
-        diag = self.diagnostic_search_once(symbol)
-        candidates = diag.get("candidates", [])
-        if diag.get("connection_error"):
-            return {"nsc_id": None, "candidates": candidates, "symbol": symbol,
-                    "ins_code": ins_code, "search_status": None, "source": "lookup",
-                    "candidate_count": 0, "connection_error": True}
-        if diag.get("status") == 401:
-            return {"nsc_id": None, "candidates": candidates, "symbol": symbol,
-                    "ins_code": ins_code, "search_status": 401, "source": "lookup",
-                    "candidate_count": len(candidates)}
-        matched = None
-        for c in candidates:
-            c["exact_match"] = (c.get("tseId") == ins_code)
-            if c["exact_match"] and matched is None:
-                matched = c.get("nscId")
-        status = diag.get("status")
-        return {"nsc_id": matched, "candidates": candidates, "symbol": symbol,
-                "ins_code": ins_code, "search_status": status, "source": "lookup",
-                "candidate_count": len(candidates)}
 
     # =================================================
     # Internal helpers

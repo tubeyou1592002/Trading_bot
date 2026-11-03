@@ -48,7 +48,7 @@ import sys
 
 import pytest
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton, QPlainTextEdit
 
 from models.instrument import Instrument
 
@@ -536,7 +536,7 @@ def test_15_resolve_failure_keeps_previous_selection(qapp, store):
     _drain(qapp, page)
 
     assert page.config.selected_instrument is None
-    assert "Resolve failed" in page.search_status_label.text()
+    assert "ناموفق" in page.search_status_label.text()
     # no ins_code was guessed anywhere
     assert not hasattr(page.config, "nsc_id")
 
@@ -957,7 +957,7 @@ def test_extra_worker_lifecycle_cleanup_on_failure_path(qapp, store):
     assert page._resolve_thread is None
     assert page._resolve_worker is None
     assert page._active_search_threads == []  # resolve worker reaped
-    assert "Resolve failed" in page.search_status_label.text()
+    assert "ناموفق" in page.search_status_label.text()
 
 
 # ============================================================
@@ -1261,3 +1261,16 @@ def test_extra_real_stale_search_race(qapp, store):
         for i in range(page.results_list.count())
     )  # the only visible rows belong to the current generation
 
+
+
+
+def test_order_page_has_no_temporary_symbol_or_mapping_diagnostics(qapp):
+    from ui.account_store import AccountStore
+    from ui.order_configuration_page import OrderConfigurationPage
+
+    page = OrderConfigurationPage(AccountStore(repository=False))
+    assert page.findChild(QPushButton, "agahMappingDiagnosticButton") is None
+    assert page.findChild(QPlainTextEdit, "agahMappingDiagnosticResult") is None
+    assert not hasattr(page, "_run_agah_mapping_diagnostic")
+    assert not hasattr(page, "_show_symbol_diagnostic")
+    page.close()
