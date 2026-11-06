@@ -11,29 +11,26 @@ and returns an immutable authorization bound to that exact snapshot.
 from dataclasses import dataclass, replace
 from datetime import datetime
 import hashlib
+import importlib
 import math
 from typing import Any, Optional
 
-from core.live_order_authorization import (
-    BROKER_LIVE_SUBMIT_AVAILABLE,
-    M6_EVIDENCE_PASSED,
-    MODE_ALLOWED,
-    AuthorizationCheck,
-    DestinationSnapshot,
-    LiveAuthorizationError,
-    OrderAuthorizationSnapshot,
-    ScheduleSnapshot,
-    build_snapshot,
-    fingerprint,
-    issue_authorization,
-    m6_fingerprint,
-    payload_fingerprint,
-    prepared_fingerprint,
-    validate_authorization,
-    reserve_schedule_table,
-    ManualLivePermit,
-)
 from models.order import BUY
+
+
+def _live_authorization_api():
+    return importlib.import_module("core.live_order_authorization")
+
+
+def __getattr__(name):
+    if name in {"BROKER_LIVE_SUBMIT_AVAILABLE", "M6_EVIDENCE_PASSED", "MODE_ALLOWED",
+                "AuthorizationCheck", "DestinationSnapshot", "LiveAuthorizationError",
+                "OrderAuthorizationSnapshot", "ScheduleSnapshot", "build_snapshot",
+                "fingerprint", "issue_authorization", "m6_fingerprint",
+                "payload_fingerprint", "prepared_fingerprint", "validate_authorization",
+                "reserve_schedule_table", "ManualLivePermit"}:
+        return getattr(_live_authorization_api(), name)
+    raise AttributeError(name)
 
 
 @dataclass(frozen=True)
@@ -50,8 +47,12 @@ def issue_manual_live_permit(*, execution_id, account_id, broker_name, broker,
                              entries, prepared_batch, gate_decision,
                              confirmation_acknowledged, include_missing_broker_ack=False):
     """Create one manual execution permit from verified prepared evidence."""
-    from core.live_order_authorization import fingerprint as stable_fingerprint
-    from core.order_engine import PreparedBatch
+    auth_api = _live_authorization_api()
+    stable_fingerprint = auth_api.fingerprint
+    LiveAuthorizationError = auth_api.LiveAuthorizationError
+    prepared_fingerprint = auth_api.prepared_fingerprint
+    ManualLivePermit = auth_api.ManualLivePermit
+    PreparedBatch = importlib.import_module("core.order_engine").PreparedBatch
     entries = tuple(entries or ())
     if not entries or not isinstance(prepared_batch, PreparedBatch):
         raise LiveAuthorizationError("manual batch preparation is unavailable")
@@ -95,9 +96,13 @@ def check_manual_live_preflight(*, account_store, authentication_service,
                                 human_approval, include_missing_broker_ack=False,
                                 confirmation_acknowledged=False, trace_callback=None):
     """Check real prepared evidence + local destination and SafetyGate."""
-    from core.safety_gate import SafetyGate
+    SafetyGate = importlib.import_module("core.safety_gate").SafetyGate
     from ui.order_authorization import authorize_order
-    from core.live_order_authorization import fingerprint as stable_fingerprint
+    auth_api = _live_authorization_api()
+    stable_fingerprint = auth_api.fingerprint
+    LiveAuthorizationError = auth_api.LiveAuthorizationError
+    prepared_fingerprint = auth_api.prepared_fingerprint
+    M6_EVIDENCE_PASSED = auth_api.M6_EVIDENCE_PASSED
     entries = tuple(entries or ())
     trace_reasons = set()
     def trace(stage, classification=None, reason_code=None):
@@ -229,7 +234,6 @@ def check_manual_live_preflight(*, account_store, authentication_service,
             trace("readiness_session_binding", "BLOCKED", "READINESS_SESSION_BINDING_INVALID")
             raise LiveAuthorizationError("account session changed or is invalid")
         trace("readiness_session_binding", "OK")
-        from core.live_order_authorization import prepared_fingerprint
         queue_fp = stable_fingerprint(tuple(
             (id(entry), id(entry.order), entry.account_id, entry.broker_name,
              entry.order.to_payload(), prepared_fingerprint(prepared))
@@ -278,7 +282,7 @@ def check_live_readiness(
     accepted status contracts. No guessed READY/ACTIVE values are supplied
     by this function.
     """
-    from core.safety_gate import SafetyGate
+    SafetyGate = importlib.import_module("core.safety_gate").SafetyGate
     from ui.order_authorization import authorize_order
 
     authorization = authorize_order(
@@ -298,10 +302,10 @@ def check_live_readiness(
 
     # This lock is an independent final broker safeguard. The UI must never
     # flip it; report its state separately from readiness/feedback.
-    if getattr(broker, "live_trading_enabled", False) is not True:
+    if getattr(broker, "scheduled_live_enabled", False) is not True:
         return LiveReadiness(
             False,
-            "قفل ایمنی داخلی AgaahBroker خاموش است؛ Live از مسیر UI قابل‌فعال‌سازی نیست.",
+            "قفل ارسال زمان‌بندی‌شده AgaahBroker خاموش است؛ Scheduled Live فعال نیست.",
         )
 
     if prerequisite_provider is None:
@@ -393,8 +397,25 @@ def _capture_batch_snapshot(
     engine=None,
     queue_revision=None,
     check_source_expiry=True,
+    check_buy_capacity=False,
 ):
     """Capture the actual batch evidence. No network call is made."""
+    auth_api = _live_authorization_api()
+    BROKER_LIVE_SUBMIT_AVAILABLE = auth_api.BROKER_LIVE_SUBMIT_AVAILABLE
+    M6_EVIDENCE_PASSED = auth_api.M6_EVIDENCE_PASSED
+    MODE_ALLOWED = auth_api.MODE_ALLOWED
+    AuthorizationCheck = auth_api.AuthorizationCheck
+    DestinationSnapshot = auth_api.DestinationSnapshot
+    LiveAuthorizationError = auth_api.LiveAuthorizationError
+    OrderAuthorizationSnapshot = auth_api.OrderAuthorizationSnapshot
+    ScheduleSnapshot = auth_api.ScheduleSnapshot
+    build_snapshot = auth_api.build_snapshot
+    fingerprint = auth_api.fingerprint
+    issue_authorization = auth_api.issue_authorization
+    m6_fingerprint = auth_api.m6_fingerprint
+    payload_fingerprint = auth_api.payload_fingerprint
+    prepared_fingerprint = auth_api.prepared_fingerprint
+    reserve_schedule_table = auth_api.reserve_schedule_table
     from ui.order_authorization import authorize_destination
     from ui.schedule_settings import count_planned_turns
 
@@ -469,8 +490,11 @@ def _capture_batch_snapshot(
             "prepared batch and M6 evidence execution identities differ"
         )
 
+    from models.order import BUY, SELL
     destinations = {}
     orders = []
+    fresh_balances = {}
+    buy_capacity_groups = {}
     for target in targets:
         entry = getattr(target, "entry", None)
         order = getattr(entry, "order", None)
@@ -541,6 +565,17 @@ def _capture_batch_snapshot(
                 raise LiveAuthorizationError(
                     "the destination local session is invalid"
                 )
+            balance_getter = getattr(authentication_service, "get_purchase_power", None)
+            if callable(balance_getter):
+                balance = balance_getter(account_id)
+            else:
+                adapter = authentication_service.get_adapter(account_id)
+                balance_getter = getattr(adapter, "get_purchase_power", None)
+                balance = balance_getter() if callable(balance_getter) else None
+            if (isinstance(balance, bool) or not isinstance(balance, (int, float))
+                    or not math.isfinite(balance) or balance < 0):
+                raise LiveAuthorizationError("fresh purchase balance is unavailable")
+            fresh_balances[account_id] = balance
             state = getattr(session.state, "value", str(session.state))
             if state != "logged_in":
                 raise LiveAuthorizationError(
@@ -563,9 +598,9 @@ def _capture_batch_snapshot(
                 raise LiveAuthorizationError(
                     "the resolved broker identity does not match the order"
                 )
-            if getattr(broker, "live_trading_enabled", False) is not True:
+            if getattr(broker, "scheduled_live_enabled", False) is not True:
                 raise LiveAuthorizationError(
-                    "the broker Live lock is not enabled"
+                    "the scheduled Live lock is not enabled"
                 )
             if not callable(getattr(broker, "submit_prepared_order", None)):
                 raise LiveAuthorizationError(
@@ -577,7 +612,7 @@ def _capture_batch_snapshot(
                 account_identity=id(record.account),
                 account_fingerprint=fingerprint(vars(record.account)),
                 broker_identity=id(broker),
-                broker_live_enabled=True,
+                scheduled_live_enabled=True,
                 broker_prepared_submit=True,
                 session_broker_name=session.broker_name,
                 session_state="LOGGED_IN",
@@ -613,6 +648,23 @@ def _capture_batch_snapshot(
         if not valid:
             raise LiveAuthorizationError(message)
 
+        if check_buy_capacity and order.side == BUY:
+            fund = getattr(account, "tradable_balance_t1", None)
+            if (isinstance(fund, bool) or not isinstance(fund, (int, float))
+                    or not math.isfinite(fund) or fund < 0):
+                raise LiveAuthorizationError("buy capacity fund is unavailable")
+            capacity_getter = getattr(broker, "get_buy_capacity", None)
+            if not callable(capacity_getter):
+                raise LiveAuthorizationError("buy capacity endpoint is unavailable")
+            capacity_key = (
+                account_id, broker_name, id(broker), order.nsc_id,
+                order.side, fund, order.price,
+            )
+            group = buy_capacity_groups.setdefault(
+                capacity_key, [capacity_getter, 0]
+            )
+            group[1] += order.quantity
+
         order_payload = order.to_payload()
         order_fingerprint = fingerprint(order_payload)
         prepared_payload_json = getattr(prepared, "payload_json", None)
@@ -638,6 +690,25 @@ def _capture_batch_snapshot(
                 execution_id=prepared.execution_id,
             )
         )
+
+    if check_buy_capacity:
+        for (account_id, _broker_name, _broker_identity, nsc_id, side_code,
+             fund, price), (capacity_getter, quantity_per_turn) in buy_capacity_groups.items():
+            try:
+                capacity = capacity_getter(
+                    nsc_id=nsc_id, side_code=side_code, fund=fund, price=price,
+                )
+            except Exception as exc:
+                raise LiveAuthorizationError(
+                    f"buy capacity unavailable for destination {account_id!r}"
+                ) from exc
+            required = quantity_per_turn * int(planned_turns)
+            if (isinstance(capacity, bool) or not isinstance(capacity, (int, float))
+                    or not math.isfinite(capacity) or capacity < required):
+                raise LiveAuthorizationError(
+                    f"buy capacity is insufficient for destination {account_id!r}: "
+                    f"required {required}, received {capacity!r}"
+                )
 
     queue_fingerprint = fingerprint(
         tuple(
@@ -692,6 +763,13 @@ def check_live_batch_readiness(
     now=None,
     first_due_mono=None,
 ) -> LiveReadiness:
+    auth_api = _live_authorization_api()
+    BROKER_LIVE_SUBMIT_AVAILABLE = auth_api.BROKER_LIVE_SUBMIT_AVAILABLE
+    M6_EVIDENCE_PASSED = auth_api.M6_EVIDENCE_PASSED
+    MODE_ALLOWED = auth_api.MODE_ALLOWED
+    LiveAuthorizationError = auth_api.LiveAuthorizationError
+    issue_authorization = auth_api.issue_authorization
+    reserve_schedule_table = auth_api.reserve_schedule_table
     """Derive batch readiness from real evidence, then issue one permit.
 
     A destination's account/session is validated independently: the UI active
@@ -699,7 +777,7 @@ def check_live_batch_readiness(
     account. Missing/changed evidence, an ended window, an invalid session or
     an incapable broker blocks issuance (fail-closed).
     """
-    from core.safety_gate import SafetyGate
+    SafetyGate = importlib.import_module("core.safety_gate").SafetyGate
 
     now = now or datetime.now().astimezone()
     try:
@@ -718,6 +796,7 @@ def check_live_batch_readiness(
             engine=engine,
             queue_revision=queue_revision,
             check_source_expiry=True,
+            check_buy_capacity=True,
         )
     except Exception as exc:
         return LiveReadiness(
@@ -797,7 +876,11 @@ def validate_live_batch_authorization(
     engine=None,
     now=None,
     pre_arm=False,
-) -> AuthorizationCheck:
+):
+    auth_api = _live_authorization_api()
+    AuthorizationCheck = auth_api.AuthorizationCheck
+    validate_authorization = auth_api.validate_authorization
+    _authorization_fingerprint = auth_api._authorization_fingerprint
     """Re-capture current evidence and compare it with the approved snapshot.
 
     This is a local check only: no network request, token refresh, M6 re-run
@@ -824,6 +907,7 @@ def validate_live_batch_authorization(
             # execution only. Do not expire/re-fetch it mid-run; the whole
             # authorization ends at the schedule window boundary.
             check_source_expiry=False,
+            check_buy_capacity=False,
         )
     except Exception as exc:
         return AuthorizationCheck(
@@ -833,8 +917,6 @@ def validate_live_batch_authorization(
         # Local-only pre-arm validation: confirm the immutable permit matches
         # the freshly captured snapshot without consuming its future start.
         # The submit path continues to call validate_authorization normally.
-        from core.live_order_authorization import _authorization_fingerprint
-
         if (authorization is None
                 or authorization.authorization_id != _authorization_fingerprint(
                     authorization.snapshot

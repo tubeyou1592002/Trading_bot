@@ -5,7 +5,12 @@ import threading
 import math
 import time
 from collections import OrderedDict
-from core.latency_instrumentation import ScheduledLatencyReport, ScheduledTicketLatency
+import importlib
+
+
+_latency_api = importlib.import_module("core.latency_instrumentation")
+ScheduledLatencyReport = _latency_api.ScheduledLatencyReport
+ScheduledTicketLatency = _latency_api.ScheduledTicketLatency
 
 
 ASYNC_ORDER_TIMEOUT_SECONDS = 10
@@ -57,6 +62,11 @@ class ScheduledFireRuntime:
         self._ticket_refs = {}
         self._started = set()
         self._outcomes = {}
+        self._unknown = False
+        self._unknown_ticket_ids = set()
+        self._ticket_outcomes = {}
+        self._cancel_reason = None
+        self._window_end_mono = None
         self._transports = {}
         self._brokers = {}
         self._lock = threading.Lock()
@@ -97,6 +107,7 @@ class ScheduledFireRuntime:
 
     async def _install(self, table, authorization, brokers, session_factory):
         self._authorization = authorization
+        self._window_end_mono = max(ticket.due_mono for ticket in table.tickets)
         self._latency_report = ScheduledLatencyReport(
             table.execution_id,
             [
@@ -114,6 +125,8 @@ class ScheduledFireRuntime:
             # sampling both clocks together is available at arm time.
             mono_s = self._clock()
             mono_ns = time.monotonic_ns()
+            if all(ticket.due_mono < mono_s for ticket in table.tickets):
+                self._window_end_mono = float("inf")
             due_ns_by_ticket = {
                 (ticket.ticket_id, ticket.turn_index):
                     mono_ns + int((ticket.due_mono - mono_s) * 1_000_000_000)
@@ -136,7 +149,9 @@ class ScheduledFireRuntime:
         }
         self._pending_nats.clear()
         self._decision_ids.clear()
-        from core.live_order_authorization import prepared_fingerprint
+        prepared_fingerprint = importlib.import_module(
+            "core.live_order_authorization"
+        ).prepared_fingerprint
         armed = authorization.ticket_ledger.validate_armed_table(
             authorization, table
         )
@@ -189,6 +204,8 @@ class ScheduledFireRuntime:
             result = None
         except Exception as exc:
             result = exc
+            if self._latency_report.ticket(*latency_key).post_start_ns is None:
+                self._authorization.ticket_ledger.cancel_start(ticket)
         self._outcomes[ticket_id] = result
         if self._on_complete is not None:
             self._loop.call_soon(self._on_complete, self._ticket_refs[ticket_id], result)
@@ -199,11 +216,16 @@ class ScheduledFireRuntime:
             await asyncio.sleep(delay)
         if self._clock() < ticket.due_mono:
             await asyncio.sleep(ticket.due_mono - self._clock())
-        if self._cancelled:
+        now = self._clock()
+        if self._cancelled or now > self._window_end_mono:
+            return None
+        started = self._authorization.ticket_ledger.start_ticket(
+            self._authorization, ticket
+        )
+        if not started.allowed:
             return None
         latency_key = (ticket.ticket_id, ticket.turn_index)
         self._update_latency(latency_key, scheduler_wake_ns=self._latency_clock())
-        self._started.add(ticket.ticket_id)
         broker = self._brokers[key]
         transport = self._transports[key]
         # Broker-owned hand-off checks account ownership and its current Live
@@ -213,11 +235,19 @@ class ScheduledFireRuntime:
             submit = broker.submit_from_async_prepared_transport
             kwargs = dict(ticket=ticket, authorization=self._authorization, broker=broker)
             if getattr(transport, "supports_post_start_callback", False):
-                kwargs["on_post_start"] = lambda: self._update_latency(
-                    latency_key, post_start_ns=self._latency_clock()
-                )
+                def post_started():
+                    if not self._authorization.ticket_ledger.mark_started(ticket):
+                        raise RuntimeError("Schedule stopped before POST")
+                    self._started.add(ticket.ticket_id)
+                    self._update_latency(latency_key, post_start_ns=self._latency_clock())
+                kwargs["on_post_start"] = post_started
             result = await submit(transport, ticket.account_id, payload, **kwargs)
-            if self._latency_report.ticket(*latency_key).post_start_ns is None:
+            if (self._latency_report.ticket(*latency_key).post_start_ns is None
+                    and not getattr(transport, "supports_post_start_callback", False)):
+                self._authorization.ticket_ledger.begin_post(
+                    self._authorization, ticket
+                )
+                self._started.add(ticket.ticket_id)
                 self._update_latency(latency_key, post_start_ns=self._latency_clock())
         except Exception as exc:
             result = exc
@@ -231,6 +261,23 @@ class ScheduledFireRuntime:
                 ),
                 http_ok=not isinstance(result, Exception),
             )
+            if isinstance(result, Exception):
+                # A failure after the transport callback is ambiguous: consume
+                # this run's remaining schedule, never replay a ticket.
+                record = self._latency_report.ticket(*latency_key)
+                ScheduledOrderRejectedError = importlib.import_module(
+                    "brokers.agaah.broker"
+                ).ScheduledOrderRejectedError
+                if (record is not None and record.post_start_ns is not None
+                        and not isinstance(result, ScheduledOrderRejectedError)):
+                    self._unknown = True
+                    self._cancel_reason = "UNKNOWN_POST_OUTCOME"
+                    self._authorization.ticket_ledger.stop_unknown()
+                    self._authorization.ticket_ledger.mark_unknown(ticket)
+                    self._unknown_ticket_ids.add(ticket.ticket_id)
+                    self._authorization.ticket_ledger.consume(
+                        self._authorization, ticket
+                    )
             if (isinstance(result, dict)
                     and isinstance((data := result.get("data")), dict)):
                 self.bind_decision_id(
@@ -264,6 +311,7 @@ class ScheduledFireRuntime:
     def stop(self):
         """Prevent sleepers from handing off; in-flight HTTP is not cancelled."""
         self._cancelled = True
+        self._cancel_reason = self._cancel_reason or "USER_STOP"
 
         async def cancel_sleepers():
             for ticket_id, task in self._tasks.items():
@@ -363,6 +411,36 @@ class ScheduledFireRuntime:
     def cancel_pending(self):
         """Cancel future ticket sleeps while preserving already-fired HTTP tasks."""
         self.stop()
+
+    def stop_reason(self):
+        return self._cancel_reason
+
+    def unknown_ticket_ids(self):
+        return frozenset(self._unknown_ticket_ids)
+
+    def record_ticket_outcome(self, ticket, result):
+        """Keep safe classification and correlation for each order/turn."""
+        latency = self._latency_report.ticket(ticket.ticket_id, ticket.turn_index)
+        if isinstance(result, Exception):
+            state = "UNKNOWN" if latency and latency.post_start_ns is not None else "NOT_SENT"
+        elif isinstance(result, dict) and result.get("isSuccess") is True:
+            state = "HTTP_ACCEPTED"
+        elif isinstance(result, dict) and result.get("isSuccess") is False:
+            state = "HTTP_REJECTED"
+        else:
+            state = "UNKNOWN" if latency and latency.post_start_ns is not None else "NOT_SENT"
+        self._ticket_outcomes[ticket.ticket_id] = {
+            "execution_id": ticket.execution_id,
+            "order_index": next((index for index, item in enumerate(
+                self._authorization.snapshot.orders
+            ) if item.entry_identity == id(ticket.queue_entry)), -1),
+            "turn_index": ticket.turn_index,
+            "ticket_id": ticket.ticket_id,
+            "state": state,
+        }
+
+    def ticket_outcomes(self):
+        return tuple(self._ticket_outcomes.values())
 
     async def _close(self):
         if self._tasks:

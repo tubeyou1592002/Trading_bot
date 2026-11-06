@@ -4,6 +4,23 @@
 
 \## 1. Purpose
 
+### Scheduled Live status (2026-11-06)
+
+Scheduled Live implementation remains partial and is **not ready for
+architectural review**. Offline Apply-to-fake-POST coverage has been reported
+for a two-order by two-turn table, UNKNOWN, Stop, queue changes, and session
+invalidation. BUY capacity is checked before authorization through the existing
+Agaah endpoint; local authorization revalidation does not call that endpoint
+or refresh credentials. The remaining capacity gap is account-wide aggregation
+when a scheduled account has different instruments or prices sharing the same
+available funds. See `SCHEDULED_LIVE_CHECKPOINT.md` for the current position,
+evidence, and next scoped task.
+
+The scheduled path must remain isolated to immutable prepared tickets. The
+global broker Live lock, legacy `place_order`, and manual Live permit path must
+not be widened to enable it. Offline fake transport does not establish broker
+acceptance or production readiness; no real network or order was used.
+
 
 
 This document defines the architectural structure and boundaries of the Trading Bot project.

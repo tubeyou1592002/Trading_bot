@@ -3,11 +3,23 @@
 from uuid import uuid4
 
 
+def _resolve_prearm_ins_code(order):
+    """Return the numeric TSETMC ins_code for an order, fail-closed if missing."""
+    ins_code = getattr(order, "ins_code", None)
+    if not isinstance(ins_code, str) or not ins_code.strip():
+        raise ValueError(
+            f"Order missing valid numeric ins_code (order.nsc_id={order.nsc_id!r}); "
+            "refusing prearm — never falling back to Agah nscId."
+        )
+    return ins_code
+
+
 class LivePrearmService:
     """Prepare frozen QueueEntry targets; this service never submits orders."""
 
     def __init__(self, account_store, session_manager, broker_manager, engine=None):
-        from core.order_engine import OrderEngine
+        from importlib import import_module
+        OrderEngine = import_module("core.order_engine").OrderEngine
 
         self.account_store = account_store
         self.session_manager = session_manager
@@ -24,10 +36,14 @@ class LivePrearmService:
             provider = self.broker_manager.get_instrument_provider_for_account(
                 target.account_id, target.broker_name
             )
+            try:
+                ins_code = _resolve_prearm_ins_code(target.entry.order)
+            except ValueError:
+                return execution_id, self.engine.prepare_batch((), execution_id)
             requests.append({
                 "broker": broker,
                 "provider": provider,
-                "ins_code": target.entry.order.nsc_id,
+                "ins_code": ins_code,
                 "order": target.entry.order,
                 "account": target.account,
                 "account_id": target.account_id,

@@ -3240,6 +3240,7 @@ class OrderConfigurationPage(QWidget):
             side=side,
             price=price,
             quantity=quantity,
+            ins_code=getattr(instrument, "ins_code", ""),
         )
         # UI-5 Task 3: keep the user-selected symbol in the UI layer, keyed
         # by this exact Order object. ``Order`` carries no symbol and the
@@ -3609,6 +3610,14 @@ class OrderConfigurationPage(QWidget):
         for target, captured in zip(self._frozen_targets, frozen):
             if self._effective_order_fingerprint(target.entry.order) != captured[4]:
                 return "مشخصات سفارش پس از Apply تغییر کرده است؛ اجرای زمان‌بندی لغو شد."
+        if (self._frozen_live_mode
+                and (snapshot.get("mode") != "live"
+                     or snapshot.get("dispatch_interval_ms") != self._dispatch_interval_ms
+                     or ("ticket_table" in snapshot
+                         and snapshot.get("ticket_table") is not self._scheduled_send_table)
+                     or ("authorization" in snapshot
+                         and snapshot.get("authorization") is not self._live_authorization))):
+            return "SCHEDULE_BINDING_CHANGED"
         return None
 
     def _schedule_session_rejection(self):
@@ -3663,10 +3672,11 @@ class OrderConfigurationPage(QWidget):
         if not self._frozen_live_mode:
             return None
         timing = self._schedule_timing
-        if timing is None or datetime.now().astimezone() >= timing.start_time:
-            return "زمان شروع هنگام آماده‌سازی سپری شد؛ اجرا لغو شد."
+        if timing is None:
+            return "SCHEDULE_WINDOW_EXPIRED"
         if self._live_batch_validator is None or self._live_authorization is None:
             return "مجوز batch در دسترس نیست؛ اجرا لغو شد."
+        coordinator = self._live_prearm_factory(self._frozen_targets)
         result = self._live_batch_validator(
             authorization=self._live_authorization,
             targets=self._frozen_targets,
@@ -3675,7 +3685,7 @@ class OrderConfigurationPage(QWidget):
             interval_ms=self._dispatch_interval_ms,
             execution_id=self._live_execution_id,
             queue_revision=self.order_queue.revision,
-            engine=self._live_prearm_factory(self._frozen_targets).engine,
+            engine=coordinator.engine,
             now=datetime.now().astimezone(), pre_arm=True,
         )
         return None if result.allowed else "snapshot یا مجوز تغییر کرد؛ اجرا لغو شد."
@@ -3692,7 +3702,15 @@ class OrderConfigurationPage(QWidget):
             if runtime is not None:
                 runtime.cancel_pending()
             self._schedule_cancel_event.set()
-            self._schedule_cancel_reason = str(reason)
+            self._schedule_cancel_reason = {
+                "صف سفارش تغییر کرد؛ اجرای آماده‌شده لغو شد.": "QUEUE_CHANGED",
+                "صف سفارش پس از Apply تغییر کرد؛ اجرای زمان‌بندی لغو شد.": "QUEUE_CHANGED",
+                "نشست کارگزاری قطع یا تغییر کرده است؛ اجرای زمان‌بندی لغو شد.": "SESSION_CHANGED",
+                "نشست کارگزاری تغییر یا باطل شد؛ اجرای زمان‌بندی لغو شد.": "SESSION_CHANGED",
+                "نشست مقصد تغییر کرد؛ اجرای آماده‌شده لغو شد.": "SESSION_CHANGED",
+                "نشست هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد.": "SESSION_CHANGED",
+                "صف سفارش هنگام مسلح‌سازی تغییر کرد؛ زمان‌بندی لغو شد.": "QUEUE_CHANGED",
+            }.get(str(reason), str(reason) if str(reason).isupper() else "SCHEDULE_INTEGRITY_CHANGED")
             stop_event = self._dispatch_stop_event
             if stop_event is not None:
                 stop_event.set()
@@ -3834,6 +3852,9 @@ class OrderConfigurationPage(QWidget):
             raise
         self._scheduled_fire_runtime = runtime
         self._scheduled_latency_report = runtime.latency_report()
+        if self._schedule_snapshot is not None:
+            self._schedule_snapshot["ticket_table"] = self._scheduled_send_table
+            self._schedule_snapshot["authorization"] = self._live_authorization
 
     def _scheduled_broker_manager(self):
         """Resolve the injected account-scoped manager without guessing."""
@@ -3847,6 +3868,28 @@ class OrderConfigurationPage(QWidget):
     def _on_scheduled_ticket_complete(self, ticket, result):
         """Collect one async result away from the firing cadence."""
         if isinstance(result, Exception):
+            runtime = self._scheduled_fire_runtime
+            record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+                      if runtime is not None else None)
+            if record is not None and record.post_start_ns is not None:
+                self._schedule_cancel_reason = "UNKNOWN_POST_OUTCOME"
+                self._schedule_cancel_event.set()
+            try:
+                order_index = next((index for index, item in enumerate(
+                    self._live_authorization.snapshot.orders
+                ) if item.entry_identity == id(ticket.queue_entry)), 0)
+                _diagnostic_log_event(
+                    ticket.execution_id, "scheduled_ticket_result",
+                    order_index=order_index,
+                    reason_code=("UNKNOWN_POST_OUTCOME" if record and record.post_start_ns is not None
+                                 else "NOT_SENT"),
+                    extra={"turn_index": ticket.turn_index,
+                           "ticket_id": ticket.ticket_id,
+                           "http_started": bool(record and record.post_start_ns is not None),
+                           "classification": "UNKNOWN" if record and record.post_start_ns is not None else "BLOCKED"},
+                )
+            except Exception:
+                pass
             return
         if not isinstance(result, dict):
             return
@@ -6600,7 +6643,7 @@ class OrderConfigurationPage(QWidget):
         fallback or a market-clock recovery cannot shift it.
         """
         timing = self._schedule_timing
-        if not self._schedule_times or timing is None:
+        if timing is None:
             self._set_countdown_text(COUNTDOWN_LABEL_UNAVAILABLE)
             return
 
@@ -6611,10 +6654,18 @@ class OrderConfigurationPage(QWidget):
 
         now = self._get_locked_now_tehran()
         next_run = None
-        for moment in self._schedule_times:
-            if moment > now:
-                next_run = moment
-                break
+        if self._frozen_live_mode and self._dispatch_interval_ms:
+            elapsed = max(0.0, (now - timing.start_time).total_seconds())
+            step_ms = self._dispatch_interval_ms / 1000.0
+            index = int(elapsed // step_ms) + 1
+            candidate = timing.start_time + timedelta(seconds=index * step_ms)
+            if candidate <= timing.end_time:
+                next_run = candidate
+        else:
+            for moment in self._schedule_times:
+                if moment > now:
+                    next_run = moment
+                    break
 
         if next_run is None:
             self._set_countdown_text(COUNTDOWN_LABEL_NO_UPCOMING)
@@ -6635,7 +6686,7 @@ class OrderConfigurationPage(QWidget):
 
         if now < timing.start_time:
             self._set_schedule_state(SCHEDULE_STATE_WAITING)
-        elif now >= timing.end_time:
+        elif now > timing.end_time:
             self._set_countdown_text(COUNTDOWN_LABEL_NO_UPCOMING)
             self._finish_schedule(SCHEDULE_STATE_EXPIRED)
         else:
@@ -6691,6 +6742,11 @@ class OrderConfigurationPage(QWidget):
     def _on_schedule_integrity_failure(self, reason):
         """Disarm and display why the captured schedule became invalid."""
         if not self._schedule_locked and not self._schedule_arming:
+            return
+        if self._schedule_cancel_reason == "UNKNOWN_POST_OUTCOME":
+            self._set_schedule_state("نامعلوم پس از شروع POST؛ نوبت‌های بعدی متوقف شدند")
+            self._set_schedule_summary("UNKNOWN_POST_OUTCOME")
+            self._finish_schedule(SCHEDULE_STATE_STOPPED)
             return
         self._finish_schedule(SCHEDULE_STATE_STOPPED)
         self._set_countdown_text(reason)
@@ -6911,7 +6967,8 @@ class OrderConfigurationPage(QWidget):
             timing,
             assessment,
             STRINGS.CLOCK_SOURCE_DESCRIPTION,
-            moments=times,
+            moments=self._scheduled_cadence_preview(timing, self._dispatch_interval_ms)
+                if self._frozen_live_mode else times,
             dispatch_interval_ms=self._dispatch_interval_ms,
         )
         self._set_schedule_summary(describe_summary(summary))
@@ -6936,8 +6993,8 @@ class OrderConfigurationPage(QWidget):
             self._set_schedule_summary(reason)
             self._set_schedule_state(reason)
             return
-        # Task 11.4 arms/counts down only. Prepared submission and firing
-        # belong to Task 11.5; never route Live through the legacy dispatcher.
+        # Live uses only the pre-authorized ticket runtime; legacy dispatch
+        # stays confined to Dry Run.
         if not self._frozen_live_mode:
             self._start_dispatch_worker(self._dispatcher)
         else:
@@ -6953,17 +7010,20 @@ class OrderConfigurationPage(QWidget):
             self._show_queue_status(self._frozen_snapshot_summary)
         self._start_countdown()
 
-        # START_NOW is a one-shot notice: shown exactly once, never
-        # re-entered by a later tick, and never a dispatch (Task 2).
-        if (
-            self._schedule_locked
-            and assessment.state is ScheduleState.START_NOW
-            and not self._start_now_shown
-        ):
+        # START_NOW is a one-shot notice; it never causes an extra dispatch.
+        if (self._schedule_locked and assessment.state is ScheduleState.START_NOW
+                and not self._start_now_shown):
             self._start_now_shown = True
             self._set_schedule_state(SCHEDULE_STATE_START_NOW)
-
         self._refresh_market_clock_row()
+
+    @staticmethod
+    def _scheduled_cadence_preview(timing, interval_ms, limit=5):
+        """Produce visible upcoming Live due points on the dispatch cadence."""
+        from ui.schedule_settings import count_planned_turns
+        turns = count_planned_turns(timing.start_time, timing.end_time, interval_ms)
+        interval = timedelta(milliseconds=interval_ms)
+        return tuple(timing.start_time + index * interval for index in range(min(turns, limit)))
 
     def _clear_accepted_schedule(self):
         """Forget the accepted schedule entirely and free every control."""

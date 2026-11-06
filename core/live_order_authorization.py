@@ -192,7 +192,7 @@ class DestinationSnapshot:
     account_identity: int
     account_fingerprint: str
     broker_identity: int
-    broker_live_enabled: bool
+    scheduled_live_enabled: bool
     broker_prepared_submit: bool
     session_broker_name: str
     session_state: str
@@ -381,6 +381,12 @@ class ScheduleTicketLedger:
         self._maximum = authorization.snapshot.schedule.max_submissions
         self._reserved: dict[str, ScheduledSendTicket] = {}
         self._consumed = set()
+        self._unknown = False
+        self._started_tickets = set()
+        self._starting_tickets = set()
+        self._unknown_tickets = set()
+        self._min_turn = None
+        self._max_turn = None
         self._armed_ids = frozenset()
         self._lock = threading.Lock()
 
@@ -425,6 +431,8 @@ class ScheduleTicketLedger:
                 return AuthorizationCheck(False, "maximum submissions exceeded")
             self._reserved = {ticket.ticket_id: ticket for ticket in table.tickets}
             self._armed_ids = ids
+            self._min_turn = min(ticket.turn_index for ticket in table.tickets)
+            self._max_turn = max(ticket.turn_index for ticket in table.tickets)
         return AuthorizationCheck(True, "")
 
     def validate_armed_table(self, authorization, table):
@@ -462,10 +470,86 @@ class ScheduleTicketLedger:
         with self._lock:
             if self._reserved.get(ticket.ticket_id) is not ticket:
                 return AuthorizationCheck(False, "ticket was not reserved")
+            if self._unknown and ticket.ticket_id not in self._started_tickets:
+                return AuthorizationCheck(False, "schedule stopped after unknown outcome")
+            if ticket.ticket_id in self._unknown_tickets:
+                return AuthorizationCheck(False, "ticket outcome is already unknown")
             if ticket.ticket_id in self._consumed:
                 return AuthorizationCheck(False, "ticket was already consumed")
             self._consumed.add(ticket.ticket_id)
+            self._started_tickets.discard(ticket.ticket_id)
         return AuthorizationCheck(True, "")
+
+    def start_ticket(self, authorization, ticket):
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or authorization.authorization_id != self._authorization_id):
+            return AuthorizationCheck(False, "ticket authorization differs")
+        with self._lock:
+            if self._reserved.get(ticket.ticket_id) is not ticket:
+                return AuthorizationCheck(False, "ticket was not reserved")
+            if ticket.ticket_id in self._consumed:
+                return AuthorizationCheck(False, "ticket was already consumed")
+            if ticket.ticket_id in self._unknown_tickets:
+                return AuthorizationCheck(False, "ticket outcome is already unknown")
+            if self._unknown and ticket.ticket_id not in self._started_tickets:
+                return AuthorizationCheck(False, "schedule stopped after unknown outcome")
+            if ticket.ticket_id in self._starting_tickets:
+                return AuthorizationCheck(False, "ticket start is already in progress")
+            self._starting_tickets.add(ticket.ticket_id)
+        return AuthorizationCheck(True, "")
+
+    def cancel_start(self, ticket):
+        with self._lock:
+            self._starting_tickets.discard(ticket.ticket_id)
+
+    def stop_unknown(self):
+        with self._lock:
+            self._unknown = True
+            self._starting_tickets.clear()
+
+    def mark_unknown(self, ticket):
+        with self._lock:
+            self._unknown_tickets.add(ticket.ticket_id)
+
+    def mark_started(self, ticket):
+        """Atomically cross the one-way POST hand-off boundary."""
+        with self._lock:
+            if self._reserved.get(ticket.ticket_id) is not ticket:
+                return False
+            if (ticket.ticket_id in self._consumed
+                    or ticket.ticket_id in self._unknown_tickets
+                    or self._unknown):
+                return False
+            if ticket.ticket_id in self._started_tickets:
+                return True
+            if ticket.ticket_id not in self._starting_tickets:
+                return False
+            self._started_tickets.add(ticket.ticket_id)
+            self._starting_tickets.discard(ticket.ticket_id)
+            return True
+
+    def begin_post(self, authorization, ticket):
+        if (not isinstance(authorization, LiveBatchAuthorization)
+                or authorization.authorization_id != self._authorization_id):
+            return False
+        with self._lock:
+            if (self._reserved.get(ticket.ticket_id) is not ticket
+                    or ticket.ticket_id in self._consumed
+                    or ticket.ticket_id in self._unknown_tickets
+                    or self._unknown):
+                self._starting_tickets.discard(ticket.ticket_id)
+                return False
+            if ticket.ticket_id in self._started_tickets:
+                return True
+            if ticket.ticket_id not in self._starting_tickets:
+                return False
+            self._started_tickets.add(ticket.ticket_id)
+            self._starting_tickets.discard(ticket.ticket_id)
+            return True
+
+    def start_unknown(self):
+        """Deprecated no-op: UNKNOWN is final for this schedule."""
+        return None
 
 
 def reserve_schedule_table(authorization, targets, prepared_orders, first_due_mono,
@@ -565,6 +649,7 @@ class LiveAuthorizationLedger:
         }
         self._total = 0
         self._per_order = {}
+        self._per_order_turn = set()
         self._lock = threading.Lock()
 
     @property
@@ -572,7 +657,8 @@ class LiveAuthorizationLedger:
         with self._lock:
             return self._total
 
-    def claim(self, authorization: LiveBatchAuthorization, order: Any):
+    def claim(self, authorization: LiveBatchAuthorization, order: Any,
+              turn_index: Optional[int] = None):
         """Atomically consume one approved attempt, or deny it."""
         if (
             not isinstance(authorization, LiveBatchAuthorization)
@@ -582,6 +668,9 @@ class LiveAuthorizationLedger:
             return AuthorizationCheck(False, "submission is outside this ledger")
         identity = id(order)
         with self._lock:
+            cell = (identity, turn_index)
+            if turn_index is not None and cell in self._per_order_turn:
+                return AuthorizationCheck(False, "order repetition was already consumed")
             count = self._per_order.get(identity, 0)
             if self._total >= self._maximum:
                 return AuthorizationCheck(False, "maximum submissions exhausted")
@@ -591,6 +680,8 @@ class LiveAuthorizationLedger:
                 )
             self._per_order[identity] = count + 1
             self._total += 1
+            if turn_index is not None:
+                self._per_order_turn.add(cell)
         return AuthorizationCheck(True, "")
 
 
@@ -670,7 +761,7 @@ def build_snapshot(
             "M6 evidence is missing its completion timestamp"
         )
     if any(
-        destination.broker_live_enabled is not True
+        destination.scheduled_live_enabled is not True
         or destination.broker_prepared_submit is not True
         or destination.session_state != "LOGGED_IN"
         or not destination.session_token_fingerprint
@@ -715,7 +806,7 @@ def issue_authorization(
     ):
         raise LiveAuthorizationError("one or more prepared orders are invalid")
     if any(
-        item.broker_live_enabled is not True
+        item.scheduled_live_enabled is not True
         or item.broker_prepared_submit is not True
         or item.session_state != "LOGGED_IN"
         or not item.session_token_fingerprint
@@ -965,8 +1056,8 @@ def validate_prepared_submission(
         return AuthorizationCheck(False, "the account instance changed after approval")
     if destination.session_state != "LOGGED_IN":
         return AuthorizationCheck(False, "the destination session is not valid")
-    if getattr(broker, "live_trading_enabled", False) is not True:
-        return AuthorizationCheck(False, "the broker Live lock is still off")
+    if getattr(broker, "scheduled_live_enabled", False) is not True:
+        return AuthorizationCheck(False, "the scheduled Live lock is still off")
     if not callable(getattr(broker, "submit_prepared_order", None)):
         return AuthorizationCheck(
             False, "the broker cannot submit an already-prepared payload"

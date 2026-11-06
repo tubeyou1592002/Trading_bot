@@ -399,8 +399,10 @@ class OrderEngine:
         try:
             response = broker.submit_prepared_order(ticket.payload, live=True)
         except Exception as exc:
-            return OrderExecutionResult(False, False, "ERROR", order,
-                broker_name=ticket.broker_name, message=str(exc))
+            return OrderExecutionResult(False, False, "UNKNOWN", order,
+                broker_name=ticket.broker_name,
+                message=("Scheduled Live outcome is unknown "
+                         f"(E_POST_OUTCOME_UNKNOWN): ambiguous timeout; ticket was not retried"))
         return OrderExecutionResult(True, True, "LIVE", order,
             broker_name=ticket.broker_name, response=response)
 

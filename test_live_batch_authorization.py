@@ -11,7 +11,7 @@ from core.order_engine import OrderEngine
 from core.order_engine import PreparedBatch
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
-from models.order import BUY, Order
+from models.order import BUY, SELL, Order
 from models.trading_state import TradingState
 from ui.live_order_gate import (
     check_live_batch_readiness,
@@ -76,6 +76,9 @@ class Authentication:
 
     def get_adapter(self, account_id):
         return self.adapters.get(account_id)
+
+    def get_purchase_power(self, account_id):
+        return 100000
 
 
 class Adapter:
@@ -263,6 +266,90 @@ def test_missing_destination_session_or_broker_capability_blocks_entire_batch(mo
     assert not _readiness(state).allowed
     assert all(not broker.submits for broker in state["brokers"].values())
 
+
+def test_scheduled_gate_aggregates_buy_capacity_across_turns_and_same_symbol_orders(monkeypatch):
+    """Use the real scheduled gate with an offline get_buy_capacity endpoint."""
+    import socket
+    original_connect = socket.socket.connect
+    original_connect_ex = socket.socket.connect_ex
+    def deny_external(sock, address):
+        if not isinstance(address, tuple) or address[0] not in ("127.0.0.1", "::1"):
+            raise AssertionError("External network access is forbidden in this test")
+        return original_connect(sock, address)
+    def deny_external_ex(sock, address):
+        if not isinstance(address, tuple) or address[0] not in ("127.0.0.1", "::1"):
+            raise AssertionError("External network access is forbidden in this test")
+        return original_connect_ex(sock, address)
+    monkeypatch.setattr(socket.socket, "connect", deny_external)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_external_ex)
+    monkeypatch.setattr(socket, "create_connection", lambda *_a, **_k: (_ for _ in ()).throw(
+        AssertionError("Network access is forbidden in this test")))
+
+    state = _setup(monkeypatch)
+    # Make both real queue orders target one destination and symbol. The gate
+    # currently snapshots available balance once, while each order's M6 uses
+    # the existing broker get_buy_capacity contract.
+    # Build duplicate-symbol orders through the real engine preparation path.
+    instrument = BrokerInstrument(
+        nsc_id="N1", tse_id="N1", minimum_order_quantity=1, lot_size=1,
+        maximum_order_quantity_for_buy=1000, maximum_order_quantity_for_sell=1000,
+        fixed_price_tick=1, lower_price_threshold=1, upper_price_threshold=1000,
+    )
+    account = state["records"]["A1"].account
+    broker = state["brokers"][("A1", "SIM-1")]
+    broker.scheduled_live_enabled = True
+    entry_a = QueueEntry(Order("N1", BUY, 10, 2), "A1", "SIM-1")
+    entry_b = QueueEntry(Order("N1", BUY, 10, 2), "A1", "SIM-1")
+    targets = (Target(entry_a, account), Target(entry_b, account))
+    execution_id = f"aggregate-capacity-{id(state)}"
+    prepared = []
+    for index, entry in enumerate((entry_a, entry_b)):
+        item, result = state["engine"].prepare_order(
+            broker=broker, provider=Provider(instrument), ins_code="N1",
+            order=entry.order, account=account, account_id="A1",
+            broker_name="SIM-1", execution_id=execution_id,
+            _execution_claimed=(index > 0),
+        )
+        assert result.success and item is not None
+        prepared.append(item)
+    batch = PreparedBatch(tuple(prepared), True, "", True, execution_id)
+    endpoint_calls = []
+    endpoint_capacity = {"value": 8}
+    broker.get_buy_capacity = lambda nsc_id, side_code, fund, price: (
+        endpoint_calls.append((nsc_id, side_code, fund, price))
+        or endpoint_capacity["value"]
+    )
+    gate_now = datetime.now().astimezone()
+    timing = SimpleNamespace(
+        start_time=gate_now,
+        end_time=gate_now + timedelta(seconds=5),
+    )
+    def readiness():
+        return check_live_batch_readiness(
+            account_store=Store(state["records"]), authentication_service=state["auth"],
+            session_manager=state["sessions"], broker_manager=state["manager"],
+            targets=targets, prepared_batch=batch, timing=timing, interval_ms=5000,
+            planned_turns=2, execution_id=execution_id, queue_revision=42,
+            engine=state["engine"], explicit_live_request=True, human_approval=True,
+            now=gate_now,
+        )
+
+    enough = readiness()
+    assert enough.allowed, enough.reason
+    assert enough.authorization is not None
+    assert len(endpoint_calls) == 1
+    endpoint_capacity["value"] = 3
+    before_calls = len(endpoint_calls)
+    insufficient = readiness()
+    assert not insufficient.allowed, (
+        "aggregate scheduled buying capacity must reject before arm"
+    )
+    assert insufficient.authorization is None
+    assert len(endpoint_calls) > before_calls, (
+        "scheduled gate must query the existing buy-capacity endpoint"
+    )
+    assert all(not item.submits for item in state["brokers"].values())
+
     state = _setup(monkeypatch)
     state["brokers"][("A1", "SIM-1")].live_trading_enabled = False
     assert not _readiness(state).allowed
@@ -320,9 +407,13 @@ def test_explicit_approval_is_required_after_real_preflight(monkeypatch):
 
 def test_snapshot_change_or_window_end_revokes_authorization(monkeypatch):
     state = _setup(monkeypatch)
-    authorization = _readiness(state).authorization
-    ledger = authorization.usage_ledger
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
+    readiness = _readiness(state)
+    assert readiness.allowed, readiness.reason
+    authorization = readiness.authorization
     assert authorization is not None
+    ledger = authorization.usage_ledger
 
     valid = validate_live_batch_authorization(
         authorization=authorization,
@@ -387,6 +478,8 @@ def test_snapshot_change_or_window_end_revokes_authorization(monkeypatch):
     # A source TTL crossing after approval does not trigger another source
     # read or invalidate the same scheduled execution.
     refreshed = _setup(monkeypatch)
+    for broker in refreshed["brokers"].values():
+        broker.scheduled_live_enabled = True
     refreshed["timing"] = SimpleNamespace(
         start_time=refreshed["prepared"][0].m6_completed_at,
         end_time=refreshed["prepared"][0].m6_completed_at + timedelta(minutes=1),
@@ -447,6 +540,50 @@ def test_snapshot_change_or_window_end_revokes_authorization(monkeypatch):
         now=state["timing"].end_time + timedelta(microseconds=1),
     )
     assert not expired.allowed
+
+
+def test_local_authorization_review_does_not_call_capacity_endpoint_or_refresh(monkeypatch):
+    state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
+    readiness = _readiness(state)
+    assert readiness.allowed, readiness.reason
+    authorization = readiness.authorization
+    assert authorization is not None
+
+    endpoint_calls = []
+    for broker in state["brokers"].values():
+        broker.get_buy_capacity = lambda **kwargs: endpoint_calls.append(kwargs)
+    power_reads = []
+    state["auth"].get_purchase_power = lambda account_id: (
+        power_reads.append(account_id) or 100000
+    )
+    state["auth"].refresh = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        AssertionError("local authorization review must not refresh credentials")
+    )
+
+    check = validate_live_batch_authorization(
+        authorization=authorization,
+        account_store=Store(state["records"]),
+        authentication_service=state["auth"],
+        session_manager=state["sessions"],
+        broker_manager=state["manager"],
+        targets=state["targets"],
+        prepared_batch=PreparedBatch(
+            state["prepared"], True, "", True, state["execution_id"]
+        ),
+        timing=state["timing"],
+        interval_ms=5000,
+        planned_turns=3,
+        execution_id=state["execution_id"],
+        queue_revision=42,
+        engine=state["engine"],
+        now=state["timing"].start_time,
+    )
+
+    assert check.allowed
+    assert endpoint_calls == []
+    assert power_reads == ["A1", "A2"]
 
 
 def test_live_submit_requires_matching_authorization_and_never_rechecks_m6(monkeypatch):

@@ -297,6 +297,7 @@ class TurnStatus(Enum):
     SKIPPED_MISSED = "SKIPPED_MISSED"
     #: Stop was requested before this turn could start.
     SKIPPED_STOPPED = "SKIPPED_STOPPED"
+    UNKNOWN = "UNKNOWN"
 
 
 #: The statuses that mean "nothing was sent for this turn".

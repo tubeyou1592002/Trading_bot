@@ -43,6 +43,10 @@ class ManualLiveUnknownError(RuntimeError):
     """The transport was invoked but no definite broker outcome is known."""
 
 
+class ScheduledOrderRejectedError(RuntimeError):
+    """The broker returned a definite order rejection."""
+
+
 class PreparedOrderSender:
     """One-shot order sender backed by a transport private to this sender."""
 
@@ -197,13 +201,17 @@ class AsyncPreparedOrderTransport:
     def account_id(self):
         return self._account_id
 
-    async def submit(self, payload, *, on_post_start=None):
+    async def submit(self, payload, *, on_post_start=None, scheduled_ticket=None,
+                     authorization=None):
         if self._closed:
             raise RuntimeError("Prepared transport is closed")
-        if not self._owner.live_trading_enabled:
-            raise RuntimeError(
-                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
-            )
+        if scheduled_ticket is not None or authorization is not None:
+            raise RuntimeError("Scheduled tickets must use the broker-owned ticket handoff")
+        raise RuntimeError("Direct async order submission is not supported")
+
+    async def _post_payload(self, payload, *, on_post_start):
+        if self._closed:
+            raise RuntimeError("Prepared transport is closed")
         headers = {
             "Authorization": f"Bearer {self._access_token}",
             "UserIdentifier": self._user_identifier,
@@ -214,10 +222,18 @@ class AsyncPreparedOrderTransport:
             self._owner._url("order"), headers=headers, json=payload,
             timeout=10,
         ) as response:
+            if response.status >= 400:
+                if response.status in (400, 401, 403, 404, 409, 422):
+                    raise ScheduledOrderRejectedError(
+                        f"broker rejected order with HTTP {response.status}"
+                    )
+                raise RuntimeError(f"ambiguous broker HTTP {response.status}")
             response.raise_for_status()
             data = await response.json()
+        if not isinstance(data, dict) or type(data.get("isSuccess")) is not bool:
+            raise RuntimeError("ambiguous broker response body")
         if not data.get("isSuccess"):
-            raise RuntimeError(data.get("message", "ارسال سفارش ناموفق بود."))
+            raise ScheduledOrderRejectedError(data.get("message", "order rejected"))
         return data
 
     async def close(self):
@@ -231,8 +247,9 @@ class AsyncPreparedOrderTransport:
 
     async def submit_ticket(self, ticket, authorization, broker, payload=None,
                             on_post_start=None):
-        from core.live_order_authorization import LiveBatchAuthorization
-        from core.live_order_authorization import ScheduleTicketLedger
+        from core.live_order_authorization import (
+            LiveBatchAuthorization, ScheduleTicketLedger,
+        )
         ledger = getattr(authorization, "ticket_ledger", None)
         prepared = getattr(ticket, "prepared_order", None)
         if (not isinstance(authorization, LiveBatchAuthorization)
@@ -240,7 +257,7 @@ class AsyncPreparedOrderTransport:
                 or ticket.execution_id != authorization.snapshot.execution_id
                 or ticket.account_id != getattr(prepared, "account_id", None)
                 or ticket.broker_name != getattr(prepared, "broker_name", None)
-                or getattr(prepared, "broker_identity", None) != id(self)
+                or getattr(prepared, "broker_identity", None) != id(self._owner)
                 or ticket.payload_json != getattr(prepared, "payload_json", None)
                 or not isinstance(ledger, ScheduleTicketLedger)
                 or (reserved := ledger._reserved.get(ticket.ticket_id)) is None
@@ -250,14 +267,23 @@ class AsyncPreparedOrderTransport:
                 or reserved.turn_index != ticket.turn_index
                 or reserved.payload_json != ticket.payload_json
                 or reserved.prepared_fingerprint != ticket.prepared_fingerprint
-                or broker is not self):
+                or broker is not self._owner):
             raise RuntimeError("ticket payload or destination binding is invalid")
+        if not self._owner._scheduled_ticket_is_authorized(ticket, authorization):
+            raise RuntimeError("scheduled ticket authorization is invalid")
         body = ticket.payload if payload is None else payload
         with self._used_lock:
             if ticket.ticket_id in self._used_ticket_ids:
                 raise RuntimeError("Scheduled ticket is single-use")
             self._used_ticket_ids.add(ticket.ticket_id)
-        return await self.submit(body, on_post_start=on_post_start)
+        if body != ticket.payload:
+            raise RuntimeError("Scheduled payload differs from the reserved ticket")
+        def mark_post_started():
+            if not ledger.begin_post(authorization, ticket):
+                raise RuntimeError("Schedule stopped before transport handoff")
+            if callable(on_post_start):
+                on_post_start()
+        return await self._post_payload(body, on_post_start=mark_post_started)
 
 
 class AgaahBroker(Broker):
@@ -301,6 +327,7 @@ class AgaahBroker(Broker):
         # ---------------------------------------------
         # False = هیچ POST /order ارسال نمی‌شود.
         self.live_trading_enabled = False
+        self.scheduled_live_enabled = False
 
         # Queue position provider (Stage 2) - lazy init to avoid circular import
         self._queue_position_provider: Optional["AgahQueuePositionProvider"] = None
@@ -1579,20 +1606,37 @@ class AgaahBroker(Broker):
             )
         if not valid_owner:
             raise RuntimeError("Prepared transport does not belong to this broker/account")
-        if not self.live_trading_enabled:
-            raise RuntimeError(
-                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
-            )
         if ticket is None:
             raise RuntimeError("A reserved scheduled ticket is required")
-        if not self.live_trading_enabled:
-            raise RuntimeError(
-                "ارسال زنده سفارش غیرفعال است. live_trading_enabled=False"
-            )
+        if not self._scheduled_ticket_is_authorized(ticket, authorization):
+            raise RuntimeError("scheduled ticket authorization is invalid")
         return await transport.submit_ticket(
             ticket, authorization, broker, payload=payload,
             on_post_start=on_post_start,
         )
+
+    def _scheduled_ticket_is_authorized(self, ticket, authorization):
+        """Authorize only immutable scheduled tickets, never legacy Live."""
+        from core.live_order_authorization import (
+            LiveBatchAuthorization, ScheduleTicketLedger, prepared_fingerprint,
+        )
+        if (self.scheduled_live_enabled is not True
+                or not isinstance(authorization, LiveBatchAuthorization)
+                or not isinstance(authorization.ticket_ledger, ScheduleTicketLedger)
+                or not authorization.explicit_live_request
+                or not authorization.human_approval
+                or authorization.gate_mode != "ALLOWED"
+                or ticket.authorization_id != authorization.authorization_id
+                or ticket.execution_id != authorization.snapshot.execution_id
+                or ticket.prepared_fingerprint != prepared_fingerprint(ticket.prepared_order)
+                or not any(item.account_id == ticket.account_id
+                           and item.broker_name == ticket.broker_name
+                           and item.prepared_identity == id(ticket.prepared_order)
+                           for item in authorization.snapshot.orders)):
+            return False
+        ledger = authorization.ticket_ledger
+        return (ledger._reserved.get(ticket.ticket_id) is ticket
+                and ticket.ticket_id not in ledger._consumed)
 
     async def close_async_prepared_transport(self, transport):
         with self._prepared_sender_lock:

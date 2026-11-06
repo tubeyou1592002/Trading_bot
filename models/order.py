@@ -16,6 +16,7 @@ class Order:
     side: int
     price: int
     quantity: int
+    ins_code: str = ""  # numeric TSETMC ins_code; distinct from Agah nsc_id
 
     validity_type: int = 1
     category_id: str = DEFAULT_CATEGORY_ID

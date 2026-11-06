@@ -217,6 +217,23 @@ def test_reserved_ticket_hand_off_is_once_and_does_not_retry(monkeypatch):
     assert len(another_broker.submits) == 1
 
 
+def test_unknown_ticket_stops_unstarted_tickets_but_preserves_started(monkeypatch):
+    state, authorization, table, targets, prepared = _large_ready(
+        monkeypatch, order_count=10, turns=80
+    )
+    first, sibling, future = table.tickets[:3]
+    ledger = authorization.ticket_ledger
+    assert ledger.start_ticket(authorization, first).allowed
+    assert ledger.start_ticket(authorization, sibling).allowed
+    assert ledger.mark_started(first)
+    ledger.stop_unknown()
+    assert not ledger.begin_post(authorization, sibling)
+    ledger.mark_unknown(first)
+    assert not ledger.consume(authorization, sibling).allowed
+    assert not ledger.start_ticket(authorization, future).allowed
+    assert not ledger.consume(authorization, first).allowed
+
+
 @pytest.mark.parametrize("tamper", ["payload", "fingerprint"])
 def test_tampered_ticket_payload_or_prepared_fingerprint_is_not_handed_off(
         monkeypatch, tamper):
@@ -234,6 +251,59 @@ def test_tampered_ticket_payload_or_prepared_fingerprint_is_not_handed_off(
     )
     assert not result.success
     assert len(broker.submits) == before
+
+
+def test_unknown_is_atomic_with_pending_ticket_start(monkeypatch):
+    from threading import Barrier, Thread
+    state, authorization, table, *_ = _large_ready(monkeypatch, order_count=2, turns=2)
+    ledger = authorization.ticket_ledger
+    ticket = table.tickets[0]
+    assert ledger.start_ticket(authorization, ticket).allowed
+    barrier = Barrier(2)
+    outcomes = []
+    def stop():
+        barrier.wait()
+        ledger.stop_unknown()
+    thread = Thread(target=stop)
+    thread.start()
+    barrier.wait()
+    result = ledger.begin_post(authorization, ticket)
+    thread.join()
+    outcomes.append(result)
+    assert outcomes in ([True], [False])
+    if result:
+        assert ledger.start_ticket(authorization, table.tickets[1]).allowed is False
+
+
+def test_ticket_post_start_callbacks_are_idempotent_but_terminal_state_rejects(monkeypatch):
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    ledger = authorization.ticket_ledger
+    ticket = table.tickets[0]
+    assert ledger.start_ticket(authorization, ticket).allowed
+    assert ledger.begin_post(authorization, ticket)
+    assert ledger.mark_started(ticket)
+    assert ledger.begin_post(authorization, ticket)
+    assert ledger.consume(authorization, ticket).allowed
+    assert not ledger.begin_post(authorization, ticket)
+    assert not ledger.mark_started(ticket)
+
+    stopped_ticket = table.tickets[1]
+    assert ledger.start_ticket(authorization, stopped_ticket).allowed
+    ledger.stop_unknown()
+    assert not ledger.begin_post(authorization, stopped_ticket)
+    assert not ledger.mark_started(stopped_ticket)
+
+
+def test_async_transport_direct_submit_cannot_bypass_ticket(monkeypatch):
+    import asyncio
+    from brokers.agaah.broker import AsyncPreparedOrderTransport
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    transport = AsyncPreparedOrderTransport(
+        owner=SimpleNamespace(live_trading_enabled=False), account_id="A",
+        user_identifier="u", access_token="t", session=SimpleNamespace(),
+    )
+    with pytest.raises(RuntimeError, match="Direct async"):
+        asyncio.run(transport.submit({"order": 1}))
 
 
 def test_ticket_handoff_uses_no_db_readiness_m6_or_retry(monkeypatch):
@@ -638,7 +708,10 @@ def test_scheduled_latency_is_ticket_turn_scoped_and_nats_requires_exact_decisio
     runtime = ScheduledFireRuntime(monotonic_clock=clock)
     try:
         runtime.arm(one_ticket_table, authorization, {key: broker}, Session)
-        runtime._call(asyncio.sleep(0.02))
+        for _ in range(20):
+            if runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index).scheduler_wake_ns is not None:
+                break
+            runtime._call(asyncio.sleep(0.005))
         record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
         assert record is not None
         assert isinstance(record.planned_due_ns, int)
@@ -781,7 +854,10 @@ def test_scheduled_latency_records_failed_http_and_never_retries(monkeypatch, fa
     runtime = ScheduledFireRuntime(monotonic_clock=clock)
     try:
         runtime.arm(one_ticket_table, authorization, {key: broker}, lambda **_: None)
-        runtime._call(asyncio.sleep(0.02))
+        for _ in range(20):
+            if calls:
+                break
+            runtime._call(asyncio.sleep(0.005))
         record = runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
         assert len(calls) == 1
         assert record.post_start_ns is not None

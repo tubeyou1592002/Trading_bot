@@ -42,6 +42,9 @@ class SymbolResolver:
 
         ins_code = result["ins_code"]
 
+        if not isinstance(ins_code, str) or not ins_code.strip().isdigit():
+            raise ValueError("ins_code must be a numeric TSETMC identifier")
+
         instrument = self.tsetmc.get_info(ins_code)
 
         return instrument

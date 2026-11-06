@@ -92,7 +92,8 @@ def _sanitize_extra(extra):
     if not isinstance(extra, dict):
         return None
     out = {}
-    if set(extra) - ({"http_status", "classification", "ui_result"} | _DIAGNOSTIC_FIELDS):
+    if set(extra) - ({"http_status", "classification", "ui_result",
+                      "turn_index", "ticket_id", "http_started"} | _DIAGNOSTIC_FIELDS):
         return None
     for key, value in extra.items():
         if key == "http_status" and type(value) is int and value in _HTTP_STATUSES:
@@ -100,6 +101,14 @@ def _sanitize_extra(extra):
         elif key == "classification" and type(value) is str and value in _ALLOWED_CLASSIFICATIONS:
             out[key] = value
         elif key == "ui_result" and type(value) is str and value in _ALLOWED_UI_RESULTS:
+            out[key] = value
+        elif key == "turn_index" and type(value) is int and value >= 0:
+            out[key] = value
+        elif key == "ticket_id" and type(value) is str and len(value) == 32 and all(
+            char in "0123456789abcdef" for char in value
+        ):
+            out[key] = value
+        elif key == "http_started" and type(value) is bool:
             out[key] = value
         elif key in {"request_id", "symbol_id", "query", "account_alias"} and type(value) is str and len(value) <= 160 and not any(ord(char) < 32 for char in value):
             out[key] = value

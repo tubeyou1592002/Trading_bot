@@ -42,6 +42,7 @@ overnight / multi-day windows.
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
@@ -422,10 +423,10 @@ def count_planned_turns(
     """
     Count the dispatch turns a window schedules at a millisecond cadence.
 
-    The count includes BOTH endpoints, because the dispatcher's first due
-    time is the window start and a due time exactly at the window end is
-    still inside the window. For 08:44:58..08:45:05 (7000 ms) at 100 ms
-    this is 71. The value is the number of SCHEDULED turns: a turn missed
+    Start is included and the end is an inclusive ceiling: a due time on
+    cadence exactly at the end is included. The formula is floor(duration /
+    interval) + 1, which also handles windows whose end is between cadence
+    points. The value is the number of SCHEDULED turns: a turn missed
     because the system was late is not replayed and therefore does not
     change this count.
     """
@@ -434,7 +435,7 @@ def count_planned_turns(
             "count_planned_turns requires datetime start and end"
         )
     if end_time < start_time:
-        raise ScheduleValidationError("end_time must not precede start_time")
+        raise ScheduleValidationError("schedule end must not be before start")
     if not isinstance(interval_ms, (int, float)) or interval_ms <= 0:
         raise ScheduleValidationError("interval_ms must be a positive number")
 
@@ -463,7 +464,6 @@ def build_schedule_summary(
     all_moments = (
         list(moments) if moments is not None else generate_schedule_times(timing)
     )
-    preview = tuple(assessment.upcoming[:preview_limit])
     start_time = getattr(timing, "start_time", None)
     end_time = getattr(timing, "end_time", None)
     planned_turns = None
@@ -475,6 +475,16 @@ def build_schedule_summary(
         planned_turns = count_planned_turns(
             start_time, end_time, dispatch_interval_ms
         )
+        cadence = timedelta(milliseconds=float(dispatch_interval_ms))
+        elapsed = max(0.0, (assessment.now - start_time).total_seconds())
+        offset = int(math.floor(elapsed / cadence.total_seconds())) + (1 if elapsed else 0)
+        preview = tuple(
+            start_time + (offset + index) * cadence
+            for index in range(preview_limit)
+            if offset + index < planned_turns
+        )
+    else:
+        preview = tuple(assessment.upcoming[:preview_limit])
     return ScheduleSummary(
         start_text=parsed.start_text,
         end_text=parsed.end_text,

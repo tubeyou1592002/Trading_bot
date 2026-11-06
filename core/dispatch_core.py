@@ -724,7 +724,7 @@ class DispatchCore:
         engine_kwargs = {
             "broker": broker,
             "provider": provider,
-            "ins_code": dispatch_request.order.nsc_id,
+            "ins_code": dispatch_request.order.ins_code,
             "order": dispatch_request.order,
             "account": dispatch_request.account,
             "live": dispatch_request.live,  # live comes from the BrokerDispatchRequest envelope; set ONLY by the Task 10.3 controlled SafetyGate bridge; Dry Run stays the default.

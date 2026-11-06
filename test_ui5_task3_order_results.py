@@ -69,6 +69,9 @@ from ui.order_configuration_page import (
     RESULT_EMPTY_STATE,
     RESULT_STATUS_BLOCKED,
     RESULT_STATUS_FAILED,
+    RESULT_STATUS_LIVE_SUCCESS,
+    RESULT_STATUS_NOT_SENT,
+    RESULT_STATUS_UNKNOWN,
     RESULT_STATUS_SUCCESS,
     _result_status_label,
     OrderConfigurationPage,
@@ -643,3 +646,45 @@ def test_e2_ui_keeps_display_symbol_at_enqueue_time(qapp):
     row = page.result_list.item(0).text()
     assert "آکو" in row
     assert "INS-SIM-1" not in row
+
+
+# Live and Dry Run are distinct user-facing outcomes; these tests use only
+# synthetic result objects and never invoke execution or broker paths.
+def test_run_mode_status_mapping_is_separate():
+    live_accepted = _StubResult(True, "READY")
+    live_accepted.sent = True
+    assert _result_status_label(live_accepted, "live") == RESULT_STATUS_LIVE_SUCCESS
+    assert _result_status_label(live_accepted, "dry_run") == RESULT_STATUS_SUCCESS
+
+    rejected = _StubResult(False, "NOT_SENT")
+    rejected.sent = False
+    assert _result_status_label(rejected, "live") == RESULT_STATUS_FAILED
+
+    accepted = _StubResult(True, "READY")
+    accepted.sent = False
+    assert _result_status_label(accepted, "live") == RESULT_STATUS_NOT_SENT
+
+    ambiguous = _StubResult(False, "UNKNOWN")
+    ambiguous.sent = False
+    assert _result_status_label(ambiguous, "live") == RESULT_STATUS_UNKNOWN
+
+
+def test_stale_results_are_not_rendered_after_new_run_identity(qapp):
+    page = _allow_order_authorization_for_non_auth_test(
+        OrderConfigurationPage(AccountStore(), order_queue=OrderQueue())
+    )
+    order = Order(nsc_id="NSC-STALE", side=SELL, price=1, quantity=1)
+    queue = OrderQueue()
+    queue.enqueue(order, account_id="ACC-001", broker_name=BROKER)
+    page._last_test_entries = queue.list_pending()
+    page._last_order_results = [craft_result(order, True, "DRY_RUN")]
+    page._last_test_run_mode = "dry_run"
+    page._active_result_execution_id = "run-current"
+    page._refresh_result_display()
+    assert RESULT_STATUS_SUCCESS in page.result_list.item(0).text()
+
+    page._active_result_execution_id = None
+    page._last_test_entries = []
+    page._last_order_results = None
+    page._refresh_result_display()
+    assert page.result_list.count() == 0
