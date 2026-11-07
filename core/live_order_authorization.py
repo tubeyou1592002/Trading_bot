@@ -709,8 +709,15 @@ def build_snapshot(
     execution_id: str,
     queue_revision: Any,
     queue_fingerprint: str,
+    allow_unarmed_preview: bool = False,
 ) -> LiveBatchSnapshot:
-    """Build a snapshot whose readiness statuses are evidence-derived only."""
+    """Build a snapshot whose readiness statuses are evidence-derived only.
+
+    ``allow_unarmed_preview`` is limited to the pre-confirmation readiness
+    path.  It permits a snapshot to describe otherwise valid evidence while
+    the scheduled lock is still off; it never changes the captured lock value
+    and is not accepted by authorization issuance.
+    """
     if not orders:
         raise LiveAuthorizationError("no prepared orders were supplied")
     if not destinations:
@@ -761,7 +768,8 @@ def build_snapshot(
             "M6 evidence is missing its completion timestamp"
         )
     if any(
-        destination.scheduled_live_enabled is not True
+        (destination.scheduled_live_enabled is not True
+         and allow_unarmed_preview is not True)
         or destination.broker_prepared_submit is not True
         or destination.session_state != "LOGGED_IN"
         or not destination.session_token_fingerprint

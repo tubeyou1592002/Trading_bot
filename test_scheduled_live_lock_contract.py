@@ -10,13 +10,14 @@ import pytest
 
 from brokers.agaah.broker import AgaahBroker
 from core.live_order_authorization import reserve_schedule_table
-from core.order_engine import PreparedBatch
+from core.order_engine import OrderEngine, PreparedBatch
 from models.account import Account
 from models.broker_instrument import BrokerInstrument
 from models.order import BUY, Order
 from models.trading_state import TradingState
 from ui.live_order_gate import check_live_batch_readiness
 from ui.session_manager import SessionManager
+from ui.order_configuration_page import OrderConfigurationPage
 
 
 class _Response:
@@ -88,6 +89,323 @@ class _Auth:
 
     def get_purchase_power(self, _account_id):
         return 100000
+
+
+def test_scheduled_prearm_failure_returns_specific_batch_reason():
+    reason = "M6-C capacity unavailable"
+    target = SimpleNamespace(entry=SimpleNamespace(order=SimpleNamespace(side="SELL")))
+    batch = PreparedBatch((), False, reason, False)
+
+    class Coordinator:
+        engine = object()
+
+        def prepare(self, targets):
+            assert targets == (target,)
+            return "offline-execution", batch
+
+    page = SimpleNamespace(
+        _frozen_dispatch_targets=lambda: (target,),
+        _live_prearm_factory=lambda targets: Coordinator(),
+        _live_batch_gate_factory=lambda **_kwargs: pytest.fail(
+            "invalid prearm batch must stop before the readiness gate"
+        ),
+    )
+
+    result = OrderConfigurationPage._prepare_live_schedule(page, None, 5000)
+
+    assert result == (False, None, None, None, reason)
+
+
+@pytest.mark.parametrize(("response", "expected"), [
+    ({"isSuccess": True}, "\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642"),
+    ({"isSuccess": False}, "پاسخ رد/ناموفق کارگزاری"),
+    ({"unexpected": True}, "پاسخ کارگزاری با ساختار نامعتبر"),
+])
+def test_scheduled_ticket_dict_outcomes_are_visible_and_accumulate(response, expected):
+    class Label:
+        text = ""
+        def setText(self, value):
+            self.text = value
+    page = SimpleNamespace(
+        _scheduled_ticket_results=[],
+        scheduled_ticket_results_label=Label(),
+        _scheduled_feedback_ids={},
+        _scheduled_fire_runtime=None,
+    )
+    page._append_scheduled_ticket_result = lambda ticket, verdict: OrderConfigurationPage._append_scheduled_ticket_result(page, ticket, verdict)
+    first_ticket = SimpleNamespace(turn_index=0, ticket_id="opaque-first")
+    second_ticket = SimpleNamespace(turn_index=1, ticket_id="opaque-second")
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, second_ticket, {"isSuccess": False})
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, first_ticket, response)
+    assert expected in page.scheduled_ticket_results_label.text
+    assert "پاسخ رد/ناموفق کارگزاری" in page.scheduled_ticket_results_label.text
+    assert page.scheduled_ticket_results_label.text.count("ticket") == 2
+    assert "نوبت 1، ticket opaque-first" in page.scheduled_ticket_results_label.text
+    assert "نوبت 2، ticket opaque-second" in page.scheduled_ticket_results_label.text
+    assert page.scheduled_ticket_results_label.text.index("opaque-second") < page.scheduled_ticket_results_label.text.index("opaque-first")
+
+
+@pytest.mark.parametrize(("post_started", "expected"), [
+    (False, "ارسال نشد (خطای پیش از ارسال)"),
+    (True, "نامشخص؛ احتمال ثبت سفارش وجود دارد"),
+])
+def test_scheduled_ticket_exception_preserves_safe_send_classification(post_started, expected):
+    class Label:
+        text = ""
+        def setText(self, value):
+            self.text = value
+    record = SimpleNamespace(post_start_ns=1 if post_started else None)
+    runtime = SimpleNamespace(latency_report=lambda: SimpleNamespace(
+        ticket=lambda *_args: record
+    ))
+    page = SimpleNamespace(
+        _scheduled_ticket_results=[], scheduled_ticket_results_label=Label(),
+        _scheduled_fire_runtime=runtime,
+        _schedule_cancel_event=__import__("threading").Event(),
+        _live_authorization=SimpleNamespace(snapshot=SimpleNamespace(orders=())),
+    )
+    page._append_scheduled_ticket_result = lambda ticket, verdict: OrderConfigurationPage._append_scheduled_ticket_result(page, ticket, verdict)
+    ticket = SimpleNamespace(turn_index=0, ticket_id="safe-id")
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, RuntimeError("secret"))
+    assert expected in page.scheduled_ticket_results_label.text
+
+
+def test_scheduled_ticket_signal_queues_result_slot_on_gui_thread():
+    import threading
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QThread
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    app = QApplication.instance() or QApplication([])
+    page = OrderConfigurationPage.__new__(OrderConfigurationPage)
+    # Initialize only QObject/QWidget internals; no account, network, or send setup.
+    from PySide6.QtWidgets import QWidget
+    QWidget.__init__(page)
+    page._scheduled_ticket_results = []
+
+    class ObservedLabel(QLabel):
+        def __init__(self):
+            super().__init__("")
+            self.set_text_threads = []
+
+        def setText(self, value):
+            self.set_text_threads.append(QThread.currentThread())
+            super().setText(value)
+
+    page.scheduled_ticket_results_label = ObservedLabel()
+    page._scheduled_feedback_ids = {}
+    page._scheduled_fire_runtime = None
+    page._dispatcher = None
+    page._schedule_cancel_event = None
+    page._schedule_timer = None
+    page.scheduled_ticket_completed.connect(page._handle_scheduled_ticket_complete)
+    observed_threads = []
+    original_append = page._append_scheduled_ticket_result
+
+    def observe_append(ticket, verdict):
+        observed_threads.append(QThread.currentThread())
+        original_append(ticket, verdict)
+
+    page._append_scheduled_ticket_result = observe_append
+    ticket = SimpleNamespace(turn_index=0, ticket_id="signal-ticket")
+    worker_threads = []
+
+    def emit_from_worker():
+        worker_threads.append(QThread.currentThread())
+        page.scheduled_ticket_completed.emit(ticket, {"isSuccess": True})
+
+    worker = threading.Thread(target=emit_from_worker)
+    worker.start()
+    worker.join()
+    app.processEvents()
+    assert page.scheduled_ticket_results_label.text().endswith("\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642")
+    assert worker_threads and worker_threads[0] is not app.thread()
+    assert observed_threads == [app.thread()]
+    assert page.scheduled_ticket_results_label.set_text_threads == [app.thread()]
+
+    # Avoid QWidget.close(): OrderConfigurationPage.closeEvent expects the
+    # complete runtime state, while this test intentionally initializes only
+    # the signal/UI pieces. Deferred deletion destroys the widget without
+    # entering that application-level close path.
+    page.deleteLater()
+    QCoreApplication.sendPostedEvents(page, QEvent.DeferredDelete)
+    app.processEvents()
+
+
+@pytest.mark.parametrize("bad", [None, True, -1, float("nan"), float("inf"), "100"])
+def test_scheduled_t1_invalid_second_account_does_not_mutate_or_prepare(bad):
+    accounts = [Account(account_id="a", tradable_balance_t1=1),
+                Account(account_id="b", tradable_balance_t1=2)]
+    targets = tuple(SimpleNamespace(account_id=account.account_id, account=account,
+                                    entry=SimpleNamespace(order=SimpleNamespace(side=BUY)))
+                    for account in accounts)
+    reads = []
+    def read(account_id):
+        reads.append(account_id)
+        return 100 if account_id == "a" else bad
+    page = SimpleNamespace(
+        _frozen_dispatch_targets=lambda: targets,
+        _authentication_service_factory=lambda: SimpleNamespace(get_purchase_power=read),
+        _live_prearm_factory=lambda _targets: pytest.fail("prearm must not run"),
+        _live_batch_gate_factory=object(),
+    )
+    result = OrderConfigurationPage._prepare_live_schedule(page, None, 5000)
+    assert not result[0] and "T1" in result[4]
+    assert reads == ["a", "b"]
+    assert [account.tradable_balance_t1 for account in accounts] == [1, 2]
+
+
+def test_scheduled_t1_unique_buy_accounts_are_independent():
+    accounts = [Account(account_id="a"), Account(account_id="b")]
+    targets = tuple(SimpleNamespace(account_id=account.account_id, account=account,
+                                    entry=SimpleNamespace(order=SimpleNamespace(side=BUY)))
+                    for account in (accounts[0], accounts[0], accounts[1]))
+    reads = []
+    def read(account_id):
+        reads.append(account_id)
+        return {"a": 100, "b": 200}[account_id]
+    class Coordinator:
+        def prepare(self, prepared_targets):
+            assert prepared_targets == targets
+            assert [account.tradable_balance_t1 for account in accounts] == [100, 200]
+            return "execution", PreparedBatch((), False, "stopped", False)
+    page = SimpleNamespace(
+        _frozen_dispatch_targets=lambda: targets,
+        _authentication_service_factory=lambda: SimpleNamespace(get_purchase_power=read),
+        _live_prearm_factory=lambda _targets: Coordinator(),
+        _live_batch_gate_factory=object(),
+    )
+    assert OrderConfigurationPage._prepare_live_schedule(page, None, 5000)[4] == "stopped"
+    assert reads == ["a", "b"]
+
+
+def test_scheduled_confirmation_summary_uses_contract_planned_turns():
+    start = datetime(2026, 11, 6, 10, 0, tzinfo=timezone.utc)
+    timing = SimpleNamespace(start_time=start, end_time=start + timedelta(seconds=5))
+    targets = tuple(
+        SimpleNamespace(
+            account_id="acct",
+            broker_name="offline",
+            account=SimpleNamespace(),
+            entry=SimpleNamespace(order=SimpleNamespace(side="SELL")),
+        )
+        for _ in range(2)
+    )
+    summaries = []
+
+    class Coordinator:
+        engine = object()
+
+        def prepare(self, prepared_targets):
+            return "execution", PreparedBatch(
+                tuple(object() for _ in prepared_targets), True, "", True
+            )
+
+    class GateResult:
+        ready_for_confirmation = True
+
+    page = SimpleNamespace(
+        _frozen_dispatch_targets=lambda: targets,
+        _live_prearm_factory=lambda _targets: Coordinator(),
+        _live_batch_gate_factory=lambda **_kwargs: GateResult(),
+        _authentication_service_factory=None,
+        _dispatch_snapshot=lambda current: tuple(current),
+        _dispatch_set_rejection=lambda: None,
+        _confirm_live_start=lambda summary: summaries.append(summary) or False,
+        order_queue=SimpleNamespace(revision=1),
+    )
+
+    result = OrderConfigurationPage._prepare_live_schedule(page, timing, 5000)
+
+    assert result[0] is False
+    assert "حداکثر ارسال‌ها: 4" in summaries[0]
+    assert "None" not in summaries[0]
+
+
+def test_freeze_snapshot_binds_frozen_live_mode_and_dispatch_interval():
+    interval_ms = 5000
+    page = SimpleNamespace(
+        _pending_dispatch_interval_ms=interval_ms,
+        _pending_live_mode=True,
+        _pending_live_gate=object(),
+        _pending_dispatch_targets=(),
+        _pending_dispatch_snapshot=None,
+        _dispatch_set_rejection=lambda: None,
+        _ensure_schedule_queue_listener=lambda: None,
+        # The dispatcher is constructed as part of freezing; keep its runner
+        # factory inert so this regression test cannot dispatch or use a
+        # network/live execution path.
+        _new_send_runner=lambda: None,
+        _frozen_dispatch_targets=lambda: (),
+        _schedule_timing=None,
+        _schedule_parsed=None,
+        _run_mode="live",
+        _get_session_manager=lambda: None,
+        _schedule_cancel_lock=__import__("threading").RLock(),
+    )
+
+    # The session-validation fail-closed path occurs after the snapshot is
+    # captured. Inspect the binding before that path clears it.
+    def session_manager():
+        return None
+
+    page._get_session_manager = session_manager
+    # Supply the account-free pieces needed to reach snapshot construction.
+    page._schedule_apply_queue_revision = None
+    page._effective_order_fingerprint = OrderConfigurationPage._effective_order_fingerprint
+    page._immutable_schedule_entry = lambda entry: entry
+    page.order_queue = SimpleNamespace(revision=0)
+    page._schedule_cancel_event = object()
+    page._locked_base_time = datetime.now(timezone.utc)
+    page._locked_mono_anchor = 0.0
+    page._set_schedule_locked = lambda _locked: None
+    page._set_schedule_state = lambda _state: None
+    page._set_schedule_summary = lambda _summary: None
+    page.store = SimpleNamespace(
+        get=lambda account_id: SimpleNamespace(
+            account_id=account_id, broker_name="offline"
+        ) if account_id == "acct" else None
+    )
+    page._schedule_destination_ids = ()
+    page._stop_dispatcher = lambda: None
+    page._clear_accepted_schedule = lambda: None
+    page._pending_schedule = None
+    page._schedule_times = ()
+    page._schedule_assessment = None
+    page._pending_dispatch_interval_ms = interval_ms
+    page._dispatch_interval_ms = None
+    page._dispatch_set_rejection = lambda: None
+    page._schedule_queue_listener_bound = True
+
+    # A logged-in account lets freezing complete without a broker/network path.
+    session = SimpleNamespace(account_id="acct", broker_name="offline", state=SimpleNamespace(value="logged_in"))
+    manager = SimpleNamespace(get=lambda _account_id: session,
+                              revision=lambda _account_id: 1)
+    page._get_session_manager = lambda: manager
+    target = SimpleNamespace(account_id="acct", broker_name="offline", account=object(),
+                             entry=SimpleNamespace(order=object()))
+    page._pending_dispatch_targets = (target,)
+    page._frozen_dispatch_targets = lambda: (target,)
+    page._schedule_queue_entries = (target.entry,)
+    page._run_mode = "live"
+    page._ensure_schedule_queue_listener = lambda: None
+    page._dispatch_interval_ms = None
+    page._frozen_targets = ()
+    page._schedule_snapshot = None
+    page._frozen_live_mode = False
+    page._pending_live_gate = object()
+    page._dispatch_turns_lock = __import__("threading").Lock()
+    page._dispatch_cursor = 0
+    page._schedule_session_identity = lambda account_id: (
+        "acct", "offline", "logged_in", 1
+    )
+    page._schedule_apply_queue_revision = 0
+    page._frozen_targets = (target,)
+
+    assert OrderConfigurationPage._freeze_dispatch_set(page) is True
+    assert page._schedule_snapshot["mode"] == "live"
+    assert page._schedule_snapshot["dispatch_interval_ms"] == interval_ms
+    assert OrderConfigurationPage._schedule_integrity_error(page) is None
 
 
 async def _scheduled_case():
@@ -182,6 +500,28 @@ def test_legacy_place_order_blocked_when_scheduled_live_is_enabled():
     with pytest.raises(RuntimeError, match="live_trading_enabled=False"):
         broker.place_order(Order("SYM", BUY, 10, 1), live=True)
     assert broker.live_trading_enabled is False
+
+
+def test_scheduled_lock_arm_restores_prior_value_on_stop():
+    broker = AgaahBroker()
+    broker.scheduled_live_enabled = False
+    page = SimpleNamespace(_scheduled_lock_states=[(broker, False)])
+    broker.scheduled_live_enabled = True
+    OrderConfigurationPage._restore_scheduled_locks(page)
+    assert broker.scheduled_live_enabled is False
+    assert broker.live_trading_enabled is False
+
+
+def test_live_batch_capture_requires_lock_after_human_confirmation(monkeypatch):
+    from test_live_batch_authorization import _setup, _readiness
+
+    state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = False
+    readiness = _readiness(state, human_approval=True)
+    assert not readiness.allowed
+    assert readiness.authorization is None
+    assert all(broker.live_trading_enabled is True for broker in state["brokers"].values())
 
 
 def test_manual_permit_submission_works_with_scheduled_live_enabled():
@@ -736,14 +1076,20 @@ async def test_apply_two_orders_two_turns_posts_all_tickets(monkeypatch):
             return provider
     manager = _Manager()
     store = AccountStore()
-    store.add("acct", broker.name, "offline").account.tradable_balance_t1 = 100000
+    account_record = store.add("acct", broker.name, "offline")
+    assert account_record.account.tradable_balance_t1 is None
+    original_account = account_record.account
     store.set_active("acct")
     sessions = SessionManager()
     sessions.register("acct", broker.name)
     sessions.begin_login("acct")
     sessions.mark_logged_in("acct", "offline-token")
     auth = _Auth()
-    auth.get_purchase_power = lambda _account_id: 100000
+    purchase_power_reads = []
+    def get_purchase_power(account_id):
+        purchase_power_reads.append(account_id)
+        return 100000
+    auth.get_purchase_power = get_purchase_power
     import ui.order_configuration_page as page_module
     from ui import scheduled_fire_runtime as runtime_module
     apply_clock = datetime.now(ZoneInfo("Asia/Tehran")).replace(microsecond=0)
@@ -811,6 +1157,9 @@ async def test_apply_two_orders_two_turns_posts_all_tickets(monkeypatch):
     fake_session = None
     try:
         assert runtime is not None, page.schedule_summary_label.text()
+        assert purchase_power_reads == ["acct"]
+        assert account_record.account is original_account
+        assert account_record.account.tradable_balance_t1 == 100000
         assert page._schedule_locked
         assert page._live_authorization is not None
         tickets = page._scheduled_send_table.tickets

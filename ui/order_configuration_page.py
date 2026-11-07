@@ -209,6 +209,7 @@ from ui.schedule_settings import (
     assess_schedule_window,
     build_dispatch_timing,
     build_schedule_summary,
+    count_planned_turns,
     describe_summary,
     generate_schedule_times,
     parse_schedule_inputs,
@@ -935,6 +936,7 @@ class OrderConfigurationPage(QWidget):
     """
 
     schedule_cancelled = Signal(str)
+    scheduled_ticket_completed = Signal(object, object)
 
     def _setup_limit_hint(self, line_edit, label, object_name):
         label.setObjectName(object_name)
@@ -973,6 +975,7 @@ class OrderConfigurationPage(QWidget):
         parent=None,
     ):
         super().__init__(parent)
+        self.scheduled_ticket_completed.connect(self._handle_scheduled_ticket_complete)
 
         self.store = account_store
         self.config = config if config is not None else OrderConfiguration()
@@ -1397,8 +1400,10 @@ class OrderConfigurationPage(QWidget):
         self._schedule_snapshot = None
         self._scheduled_send_table = None
         self._scheduled_fire_runtime = None
+        self._scheduled_lock_states = []
         self._scheduled_broker_manager_factory = None
         self._scheduled_feedback_ids = {}
+        self._scheduled_ticket_results = []
         self._scheduled_latency_report = None
         self._schedule_queue_entries = None
         self._schedule_apply_queue_revision = None
@@ -1747,6 +1752,12 @@ class OrderConfigurationPage(QWidget):
 
         # UI-9 Task 2: the scheduling column (right of the two).
         schedule_column_layout.addWidget(self.schedule_group)
+
+        self.scheduled_ticket_results_label = QLabel("", self)
+        self.scheduled_ticket_results_label.setObjectName("scheduledTicketResults")
+        self.scheduled_ticket_results_label.setWordWrap(True)
+        self.scheduled_ticket_results_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        schedule_column_layout.addWidget(self.scheduled_ticket_results_label)
         # The queue status line sits under the schedule (2.2), styled as a
         # muted status line.
         self.queue_status_label.setWordWrap(True)
@@ -3759,10 +3770,38 @@ class OrderConfigurationPage(QWidget):
             entries = [target.entry for target in targets]
             if not targets or self._live_prearm_factory is None or self._live_batch_gate_factory is None:
                 return False, None, None, None, STRINGS.LIVE_PREREQUISITES_UNKNOWN
+            buy_accounts = {}
+            for target in targets:
+                if target.entry.order.side == BUY:
+                    buy_accounts.setdefault(target.account_id, []).append(target.account)
+            if buy_accounts:
+                try:
+                    auth_factory = getattr(self, "_authentication_service_factory", None)
+                    auth_service = auth_factory() if callable(auth_factory) else None
+                    get_balance = getattr(auth_service, "get_purchase_power", None)
+                    if not callable(get_balance):
+                        raise ValueError("T1 service unavailable")
+                    balances = {}
+                    for account_id in buy_accounts:
+                        balance = get_balance(account_id)
+                        if (isinstance(balance, bool) or not isinstance(balance, (int, float))
+                                or not math.isfinite(balance) or balance < 0):
+                            raise ValueError("invalid T1 balance")
+                        balances[account_id] = balance
+                except Exception:
+                    return False, None, None, None, "\u062f\u0631\u06cc\u0627\u0641\u062a \u0645\u0648\u062c\u0648\u062f\u06cc \u0642\u0627\u0628\u0644 \u0645\u0639\u0627\u0645\u0644\u0647 T1 \u0646\u0627\u0645\u0648\u0641\u0642 \u06cc\u0627 \u0645\u0642\u062f\u0627\u0631 \u0622\u0646 \u0646\u0627\u0645\u0639\u062a\u0628\u0631 \u0627\u0633\u062a\u061b \u0632\u0645\u0627\u0646\u0628\u0646\u062f\u06cc \u0631\u062f \u0634\u062f."
+                for account_id, accounts in buy_accounts.items():
+                    for account in accounts:
+                        account.tradable_balance_t1 = balances[account_id]
             coordinator = self._live_prearm_factory(targets)
             execution_id, prepared_batch = coordinator.prepare(targets)
             if not getattr(prepared_batch, "valid", False) or len(prepared_batch.orders) != len(targets):
-                return False, None, None, None, STRINGS.LIVE_NOT_READY
+                batch_reason = getattr(prepared_batch, "message", None)
+                if not getattr(prepared_batch, "valid", False) and isinstance(batch_reason, str) and batch_reason.strip():
+                    reason = batch_reason.strip()
+                else:
+                    reason = STRINGS.LIVE_NOT_READY
+                return False, None, None, None, reason
             snapshot = self._dispatch_snapshot(targets)
             gate_args = dict(
                 targets=targets, prepared_batch=prepared_batch, timing=timing,
@@ -3774,8 +3813,10 @@ class OrderConfigurationPage(QWidget):
             readiness = self._live_batch_gate_factory(**gate_args)
             if not getattr(readiness, "ready_for_confirmation", False):
                 return False, None, None, None, getattr(readiness, "reason", STRINGS.LIVE_NOT_READY)
-            maximum = getattr(getattr(readiness, "authorization", None), "snapshot", None)
-            maximum = getattr(getattr(maximum, "schedule", None), "max_submissions", None)
+            planned_turns = count_planned_turns(
+                timing.start_time, timing.end_time, interval_ms
+            )
+            maximum = planned_turns * len(entries)
             summary = f"سفارش‌ها: {len(entries)}؛ حداکثر ارسال‌ها: {maximum}؛ شروع: {timing.start_time:%H:%M:%S}"
             if not self._confirm_live_start(summary):
                 return False, None, None, None, STRINGS.LIVE_CONFIRM_CANCELLED
@@ -3790,6 +3831,23 @@ class OrderConfigurationPage(QWidget):
                 or self._dispatch_snapshot(current_targets) != snapshot
             ):
                 return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
+            manager = self._scheduled_broker_manager()
+            if manager is None:
+                return False, None, None, None, STRINGS.LIVE_PREREQUISITES_UNKNOWN
+            armed = []
+            try:
+                for key in dict.fromkeys((target.account_id, target.broker_name)
+                                         for target in current_targets):
+                    broker = manager.get_for_account(*key)
+                    previous = getattr(broker, "scheduled_live_enabled", False)
+                    armed.append((broker, previous))
+                    if previous is not True:
+                        broker.scheduled_live_enabled = True
+                self._scheduled_lock_states = armed
+            except Exception:
+                for broker, previous in reversed(armed):
+                    broker.scheduled_live_enabled = previous
+                raise
             gate_args.update(targets=current_targets, human_approval=True)
             approved_args = dict(gate_args)
             approved_args["queue_revision"] = self.order_queue.revision
@@ -3800,19 +3858,29 @@ class OrderConfigurationPage(QWidget):
                     self._locked_mono_anchor
                     + (timing.start_time - self._locked_base_time).total_seconds()
                 )
-            approved = self._live_batch_gate_factory(**approved_args)
+            try:
+                approved = self._live_batch_gate_factory(**approved_args)
+            except Exception:
+                self._restore_scheduled_locks()
+                raise
             authorization = getattr(approved, "authorization", None)
             if not getattr(approved, "allowed", False) or authorization is None:
+                self._restore_scheduled_locks()
                 return False, None, None, None, getattr(approved, "reason", STRINGS.LIVE_NOT_READY)
-            check = self._live_batch_validator(
-                authorization=authorization,
-                targets=current_targets, prepared_batch=prepared_batch, timing=timing,
-                interval_ms=interval_ms, execution_id=execution_id,
-                queue_revision=self.order_queue.revision,
-                engine=coordinator.engine,
-                now=datetime.now().astimezone(), pre_arm=True,
-            ) if self._live_batch_validator is not None else None
+            try:
+                check = self._live_batch_validator(
+                    authorization=authorization,
+                    targets=current_targets, prepared_batch=prepared_batch, timing=timing,
+                    interval_ms=interval_ms, execution_id=execution_id,
+                    queue_revision=self.order_queue.revision,
+                    engine=coordinator.engine,
+                    now=datetime.now().astimezone(), pre_arm=True,
+                ) if self._live_batch_validator is not None else None
+            except Exception:
+                self._restore_scheduled_locks()
+                raise
             if check is None or not check.allowed:
+                self._restore_scheduled_locks()
                 return False, None, None, None, STRINGS.LIVE_SNAPSHOT_CHANGED
             self._prepared_live_batch = prepared_batch
             self._live_authorization = authorization
@@ -3838,7 +3906,7 @@ class OrderConfigurationPage(QWidget):
             key = (target.account_id, target.broker_name)
             brokers.setdefault(key, manager.get_for_account(*key))
         runtime = self._scheduled_runtime_factory(
-            on_complete=self._on_scheduled_ticket_complete
+            on_complete=self.scheduled_ticket_completed.emit
         )
         try:
             count = runtime.arm(
@@ -3848,6 +3916,7 @@ class OrderConfigurationPage(QWidget):
             if count != (len(brokers), len(self._scheduled_send_table.tickets)):
                 raise RuntimeError("scheduled resources are incomplete")
         except Exception:
+            self._restore_scheduled_locks()
             runtime.close()
             raise
         self._scheduled_fire_runtime = runtime
@@ -3866,7 +3935,27 @@ class OrderConfigurationPage(QWidget):
         return resolver() if callable(resolver) else None
 
     def _on_scheduled_ticket_complete(self, ticket, result):
+        """Queue runtime results for handling on the page's GUI thread."""
+        self.scheduled_ticket_completed.emit(ticket, result)
+
+    def _handle_scheduled_ticket_complete(self, ticket, result):
         """Collect one async result away from the firing cadence."""
+        if isinstance(result, Exception):
+            runtime = self._scheduled_fire_runtime
+            record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
+                      if runtime is not None else None)
+            classification = "UNKNOWN" if record and record.post_start_ns is not None else "NOT_SENT"
+            verdict = "\u0646\u0627\u0645\u0634\u062e\u0635\u061b \u0627\u062d\u062a\u0645\u0627\u0644 \u062b\u0628\u062a \u0633\u0641\u0627\u0631\u0634 \u0648\u062c\u0648\u062f \u062f\u0627\u0631\u062f" if classification == "UNKNOWN" else "\u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062f (\u062e\u0637\u0627\u06cc \u067e\u06cc\u0634 \u0627\u0632 \u0627\u0631\u0633\u0627\u0644)"
+            self._append_scheduled_ticket_result(ticket, verdict)
+        elif isinstance(result, dict):
+            if result.get("isSuccess") is True:
+                self._append_scheduled_ticket_result(ticket, "\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642")
+            elif result.get("isSuccess") is False:
+                self._append_scheduled_ticket_result(ticket, "\u067e\u0627\u0633\u062e \u0631\u062f/\u0646\u0627\u0645\u0648\u0641\u0642 \u06a9\u0627\u0631\u06af\u0632\u0627\u0631\u06cc")
+            else:
+                self._append_scheduled_ticket_result(ticket, "\u067e\u0627\u0633\u062e \u06a9\u0627\u0631\u06af\u0632\u0627\u0631\u06cc \u0628\u0627 \u0633\u0627\u062e\u062a\u0627\u0631 \u0646\u0627\u0645\u0639\u062a\u0628\u0631")
+        else:
+            self._append_scheduled_ticket_result(ticket, "\u0646\u062a\u06cc\u062c\u0647 \u0646\u0627\u0645\u0639\u062a\u0628\u0631")
         if isinstance(result, Exception):
             runtime = self._scheduled_fire_runtime
             record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
@@ -3906,6 +3995,15 @@ class OrderConfigurationPage(QWidget):
             broker = manager.get_for_account(*key) if manager is not None else None
             if broker is not None:
                 broker.on_order_placed(decision_id, ticket.prepared_order.order.nsc_id)
+
+    def _append_scheduled_ticket_result(self, ticket, verdict):
+        """Append a payload-free per-ticket outcome to the visible schedule status."""
+        turn = getattr(ticket, "turn_index", 0) + 1
+        ticket_id = getattr(ticket, "ticket_id", None)
+        if not isinstance(ticket_id, str) or not ticket_id:
+            ticket_id = "\u0634\u0646\u0627\u0633\u0647 \u0646\u0627\u0645\u0634\u062e\u0635"
+        self._scheduled_ticket_results.append(f"\u0646\u0648\u0628\u062a {turn}، ticket {ticket_id}: {verdict}")
+        self.scheduled_ticket_results_label.setText("\n".join(self._scheduled_ticket_results))
 
     def _record_scheduled_nats_feedback(self, account_id, broker_name, decision_id):
         """Record a scheduled NATS event only through its exact account and decision ID."""
@@ -6110,6 +6208,7 @@ class OrderConfigurationPage(QWidget):
         # wakes the worker, so no send is ever started after the page goes.
         self._stop_dispatcher()
         self._stop_countdown()
+        self._restore_scheduled_locks()
         super().closeEvent(event)
 
     # --- UI-7 Task 3: periodic, concurrent dispatch ------------------------
@@ -6707,6 +6806,7 @@ class OrderConfigurationPage(QWidget):
         dispatch is performed here. Connecting Stop to suppressing later
         sends belongs to UI-7 Task 3.
         """
+        self._restore_scheduled_locks()
         self._stop_countdown()
         self._stop_dispatcher()
         self._clear_locked_time_base()
@@ -7027,6 +7127,7 @@ class OrderConfigurationPage(QWidget):
 
     def _clear_accepted_schedule(self):
         """Forget the accepted schedule entirely and free every control."""
+        self._restore_scheduled_locks()
         self._stop_countdown()
         self._stop_dispatcher()
         self._clear_locked_time_base()
@@ -7052,6 +7153,11 @@ class OrderConfigurationPage(QWidget):
         self._set_schedule_locked(False)
         self._set_countdown_text(COUNTDOWN_LABEL_UNAVAILABLE)
         self._set_schedule_state(SCHEDULE_STATE_CONFIG)
+
+    def _restore_scheduled_locks(self):
+        states, self._scheduled_lock_states = self._scheduled_lock_states, []
+        for broker, previous in reversed(states):
+            broker.scheduled_live_enabled = previous
 
     def _set_schedule_locked(self, locked: bool):
         """

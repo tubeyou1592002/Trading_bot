@@ -4,7 +4,12 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from core.live_order_authorization import (
+    LiveAuthorizationError,
+    build_snapshot,
+    issue_authorization,
     validate_prepared_submission,
 )
 from core.order_engine import OrderEngine
@@ -33,6 +38,7 @@ class Provider:
 
 class Broker:
     live_trading_enabled = True
+    scheduled_live_enabled = True
 
     def __init__(self, name):
         self.name = name
@@ -267,7 +273,7 @@ def test_missing_destination_session_or_broker_capability_blocks_entire_batch(mo
     assert all(not broker.submits for broker in state["brokers"].values())
 
 
-def test_scheduled_gate_aggregates_buy_capacity_across_turns_and_same_symbol_orders(monkeypatch):
+def test_scheduled_gate_aggregates_buy_capacity_per_turn_for_same_symbol_orders(monkeypatch):
     """Use the real scheduled gate with an offline get_buy_capacity endpoint."""
     import socket
     original_connect = socket.socket.connect
@@ -314,7 +320,7 @@ def test_scheduled_gate_aggregates_buy_capacity_across_turns_and_same_symbol_ord
         prepared.append(item)
     batch = PreparedBatch(tuple(prepared), True, "", True, execution_id)
     endpoint_calls = []
-    endpoint_capacity = {"value": 8}
+    endpoint_capacity = {"value": 5}
     broker.get_buy_capacity = lambda nsc_id, side_code, fund, price: (
         endpoint_calls.append((nsc_id, side_code, fund, price))
         or endpoint_capacity["value"]
@@ -345,15 +351,101 @@ def test_scheduled_gate_aggregates_buy_capacity_across_turns_and_same_symbol_ord
         "aggregate scheduled buying capacity must reject before arm"
     )
     assert insufficient.authorization is None
-    assert len(endpoint_calls) > before_calls, (
-        "scheduled gate must query the existing buy-capacity endpoint"
+    assert len(endpoint_calls) == before_calls + 1, (
+        "scheduled gate must query capacity once per group"
     )
     assert all(not item.submits for item in state["brokers"].values())
 
     state = _setup(monkeypatch)
-    state["brokers"][("A1", "SIM-1")].live_trading_enabled = False
-    assert not _readiness(state).allowed
+    broker = state["brokers"][("A1", "SIM-1")]
+    broker.live_trading_enabled = False
+    broker.scheduled_live_enabled = True
+    offline_readiness = _readiness(state)
+    assert offline_readiness.allowed, offline_readiness.reason
+    assert offline_readiness.authorization is not None
     assert all(not broker.submits for broker in state["brokers"].values())
+
+
+def test_scheduled_gate_checks_buy_capacity_independently_per_symbol_and_price(monkeypatch):
+    """Each symbol/price group must cover its own planned-turn quantity."""
+    import socket
+
+    def deny_network(*_args, **_kwargs):
+        raise AssertionError("Network access is forbidden in this offline test")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
+    monkeypatch.setattr(socket, "create_connection", deny_network)
+
+    state = _setup(monkeypatch)
+    account = state["records"]["A1"].account
+    broker = state["brokers"][("A1", "SIM-1")]
+    broker.scheduled_live_enabled = True
+    entries = (
+        QueueEntry(Order("N1", BUY, 10, 2), "A1", "SIM-1"),
+        QueueEntry(Order("N2", BUY, 20, 2), "A1", "SIM-1"),
+    )
+    targets = tuple(Target(entry, account) for entry in entries)
+    execution_id = f"independent-capacity-{id(state)}"
+    prepared = []
+    for entry in entries:
+        instrument = BrokerInstrument(
+            nsc_id=entry.order.nsc_id, tse_id=entry.order.nsc_id,
+            minimum_order_quantity=1, lot_size=1,
+            maximum_order_quantity_for_buy=1000,
+            maximum_order_quantity_for_sell=1000, fixed_price_tick=1,
+            lower_price_threshold=1, upper_price_threshold=1000,
+        )
+        item, result = state["engine"].prepare_order(
+            broker=broker, provider=Provider(instrument),
+            ins_code=entry.order.nsc_id, order=entry.order, account=account,
+            account_id="A1", broker_name="SIM-1", execution_id=execution_id,
+            _execution_claimed=bool(prepared),
+        )
+        assert result.success and item is not None and item.scheduled_valid
+        prepared.append(item)
+    batch = PreparedBatch(tuple(prepared), True, "", True, execution_id)
+    capacities = {("N1", 10): 4, ("N2", 20): 4}
+    calls = []
+
+    def get_buy_capacity(*, nsc_id, side_code, fund, price):
+        calls.append((nsc_id, side_code, fund, price))
+        return capacities[(nsc_id, price)]
+
+    broker.get_buy_capacity = get_buy_capacity
+    now = datetime.now().astimezone()
+    timing = SimpleNamespace(start_time=now, end_time=now + timedelta(seconds=5))
+
+    def readiness():
+        return check_live_batch_readiness(
+            account_store=Store(state["records"]),
+            authentication_service=state["auth"],
+            session_manager=state["sessions"], broker_manager=state["manager"],
+            targets=targets, prepared_batch=batch, timing=timing,
+            interval_ms=5000, planned_turns=2, execution_id=execution_id,
+            queue_revision=42, engine=state["engine"],
+            explicit_live_request=True, human_approval=True, now=now,
+        )
+
+    enough = readiness()
+    assert enough.allowed, enough.reason
+    assert enough.authorization is not None
+    expected_calls = {
+        ("N1", BUY, account.tradable_balance_t1, 10),
+        ("N2", BUY, account.tradable_balance_t1, 20),
+    }
+    assert set(calls) == expected_calls
+    assert len(calls) == 2
+    assert all(not item.submits for item in state["brokers"].values())
+
+    capacities[("N2", 20)] = 1
+    calls.clear()
+    insufficient = readiness()
+    assert not insufficient.allowed
+    assert insufficient.authorization is None
+    assert set(calls) == expected_calls
+    assert len(calls) == 2
+    assert all(not item.submits for item in state["brokers"].values())
 
 
 def test_destination_session_generation_change_invalidates_existing_permit(monkeypatch):
@@ -399,10 +491,65 @@ def test_m6_failures_and_inconsistent_schedule_counts_never_issue_permission(mon
 
 def test_explicit_approval_is_required_after_real_preflight(monkeypatch):
     state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = False
     readiness = _readiness(state, human_approval=False)
     assert not readiness.allowed
     assert readiness.ready_for_confirmation
     assert readiness.authorization is None
+    assert readiness.send_table is None
+
+
+def test_final_gate_requires_real_scheduled_live_lock(monkeypatch):
+    state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = False
+    readiness = _readiness(state, human_approval=True)
+    assert not readiness.allowed
+    assert readiness.authorization is None
+
+
+def test_unarmed_preview_snapshot_preserves_lock_and_cannot_be_authorized(monkeypatch):
+    state = _setup(monkeypatch)
+    authorized = _readiness(state).authorization
+    assert authorized is not None
+    snapshot = authorized.snapshot
+    unarmed_destinations = tuple(
+        replace(destination, scheduled_live_enabled=False)
+        for destination in snapshot.destinations
+    )
+
+    preview = build_snapshot(
+        orders=snapshot.orders,
+        destinations=unarmed_destinations,
+        schedule=snapshot.schedule,
+        execution_id=snapshot.execution_id,
+        queue_revision=snapshot.queue_revision,
+        queue_fingerprint=snapshot.queue_fingerprint,
+        allow_unarmed_preview=True,
+    )
+    assert all(
+        destination.scheduled_live_enabled is False
+        for destination in preview.destinations
+    )
+    with pytest.raises(LiveAuthorizationError):
+        issue_authorization(
+            preview,
+            explicit_live_request=True,
+            human_approval=True,
+            gate_mode="ALLOWED",
+            gate_reason="test",
+            issued_at=state["now"],
+        )
+    with pytest.raises(LiveAuthorizationError):
+        build_snapshot(
+            orders=snapshot.orders,
+            destinations=unarmed_destinations,
+            schedule=snapshot.schedule,
+            execution_id=snapshot.execution_id,
+            queue_revision=snapshot.queue_revision,
+            queue_fingerprint=snapshot.queue_fingerprint,
+        )
 
 
 def test_snapshot_change_or_window_end_revokes_authorization(monkeypatch):
@@ -583,7 +730,7 @@ def test_local_authorization_review_does_not_call_capacity_endpoint_or_refresh(m
 
     assert check.allowed
     assert endpoint_calls == []
-    assert power_reads == ["A1", "A2"]
+    assert power_reads == []
 
 
 def test_live_submit_requires_matching_authorization_and_never_rechecks_m6(monkeypatch):

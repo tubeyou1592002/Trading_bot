@@ -398,6 +398,7 @@ def _capture_batch_snapshot(
     queue_revision=None,
     check_source_expiry=True,
     check_buy_capacity=False,
+    human_approval=None,
 ):
     """Capture the actual batch evidence. No network call is made."""
     auth_api = _live_authorization_api()
@@ -493,7 +494,6 @@ def _capture_batch_snapshot(
     from models.order import BUY, SELL
     destinations = {}
     orders = []
-    fresh_balances = {}
     buy_capacity_groups = {}
     for target in targets:
         entry = getattr(target, "entry", None)
@@ -565,17 +565,6 @@ def _capture_batch_snapshot(
                 raise LiveAuthorizationError(
                     "the destination local session is invalid"
                 )
-            balance_getter = getattr(authentication_service, "get_purchase_power", None)
-            if callable(balance_getter):
-                balance = balance_getter(account_id)
-            else:
-                adapter = authentication_service.get_adapter(account_id)
-                balance_getter = getattr(adapter, "get_purchase_power", None)
-                balance = balance_getter() if callable(balance_getter) else None
-            if (isinstance(balance, bool) or not isinstance(balance, (int, float))
-                    or not math.isfinite(balance) or balance < 0):
-                raise LiveAuthorizationError("fresh purchase balance is unavailable")
-            fresh_balances[account_id] = balance
             state = getattr(session.state, "value", str(session.state))
             if state != "logged_in":
                 raise LiveAuthorizationError(
@@ -598,10 +587,7 @@ def _capture_batch_snapshot(
                 raise LiveAuthorizationError(
                     "the resolved broker identity does not match the order"
                 )
-            if getattr(broker, "scheduled_live_enabled", False) is not True:
-                raise LiveAuthorizationError(
-                    "the scheduled Live lock is not enabled"
-                )
+            scheduled_lock = getattr(broker, "scheduled_live_enabled", False) is True
             if not callable(getattr(broker, "submit_prepared_order", None)):
                 raise LiveAuthorizationError(
                     "the broker cannot submit an already-prepared payload"
@@ -612,7 +598,7 @@ def _capture_batch_snapshot(
                 account_identity=id(record.account),
                 account_fingerprint=fingerprint(vars(record.account)),
                 broker_identity=id(broker),
-                scheduled_live_enabled=True,
+                scheduled_live_enabled=scheduled_lock,
                 broker_prepared_submit=True,
                 session_broker_name=session.broker_name,
                 session_state="LOGGED_IN",
@@ -702,7 +688,7 @@ def _capture_batch_snapshot(
                 raise LiveAuthorizationError(
                     f"buy capacity unavailable for destination {account_id!r}"
                 ) from exc
-            required = quantity_per_turn * int(planned_turns)
+            required = quantity_per_turn
             if (isinstance(capacity, bool) or not isinstance(capacity, (int, float))
                     or not math.isfinite(capacity) or capacity < required):
                 raise LiveAuthorizationError(
@@ -740,6 +726,7 @@ def _capture_batch_snapshot(
         execution_id=execution_id,
         queue_revision=queue_revision,
         queue_fingerprint=queue_fingerprint,
+        allow_unarmed_preview=human_approval is False,
     )
     return snapshot
 
@@ -795,6 +782,7 @@ def check_live_batch_readiness(
             now=now,
             engine=engine,
             queue_revision=queue_revision,
+            human_approval=human_approval,
             check_source_expiry=True,
             check_buy_capacity=True,
         )

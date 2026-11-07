@@ -1,6 +1,6 @@
 # Scheduled Live checkpoint
 
-Status: PARTIAL / NOT READY FOR ARCHITECTURAL REVIEW (2026-11-06)
+Status: LIVE USER TEST SUCCESSFUL; OFFLINE REGRESSION PARTIAL (2026-11-07)
 
 ## Current goal, position, and next step
 
@@ -10,30 +10,35 @@ per-order/per-turn tickets, no automatic retry, an unchanged closed legacy
 broker lock, and correct aggregate capacity checks. Offline fake-transport
 tests may verify handoff; they do not establish real broker acceptance.
 
-**Position:** the reported offline Apply-to-fake-POST acceptance covers two
-orders across two turns (four distinct tickets), UNKNOWN after a started POST,
-Stop, queue mutation, and target-session invalidation. The ticket ledger and
-broker-owned handoff are in place. BUY capacity is checked against Agaah's
-existing `get_buy_capacity` endpoint before authorization is issued. Its check
-is now excluded from local authorization revalidation, so that revalidation
-does not call the endpoint or trigger refresh. The latest focused verification
-reported **3 passed in 0.66s** for insufficient capacity, local revalidation
-without endpoint/refresh, and snapshot mutation. These are agent-reported
-results, not a fresh run in this documentation update.
+**Position:** the owner decision is that the user checks account purchasing
+power, the application schedules and submits orders, and the broker makes the
+final acceptance decision based on purchasing power. The application does not
+allocate capacity proportionally across symbols or prices and does not combine
+capacity from different groups. Existing M6-C and `get_buy_capacity` controls
+remain unchanged. Capacity is evaluated separately for each
+`(account, broker, nsc_id, side, fund, price)` group. New offline test coverage
+checks two symbol/price groups and that one insufficient group is not offset by
+another. `_capture_batch_snapshot` no longer calls `get_purchase_power`: the
+returned value was unused, and local revalidation must not call a balance or
+capacity endpoint or trigger Refresh.
 
-**Remaining blocker:** the current BUY aggregation groups requests by account,
-broker, instrument, side, fund, and price. It proves the repeated-order case
-for identical endpoint parameters, but it does not yet prove account-wide
-capacity when one account's scheduled queue contains different instruments or
-prices that each reuse the same available fund. The next implementation task
-is to define and test that account-wide aggregation using the existing broker
-capacity contract, without introducing endpoint calls during local
-revalidation. Keep the change limited to this gap and its offline tests.
+The owner performed a real Scheduled Live user test and reports that seven
+orders were registered at the broker. The UI showed seven successful
+ticket responses and four UNKNOWN outcomes in the same run; UNKNOWN means
+the app cannot determine whether the broker recorded those tickets. The
+owner should reconcile those four against the broker's order list before
+retrying. This confirms the user-facing seven-order test path, but does not
+establish universal reliability or production readiness.
 
-**After that:** rerun the focused Scheduled Live suite and review the complete
-diff. Only then decide whether the offline implementation is ready for
-architectural review. No real broker qualification or production-readiness
-claim is implied.
+Per-ticket results are displayed on the page through a Qt queued signal.
+The UI distinguishes successful responses, broker rejections, malformed
+responses, NOT_SENT, and UNKNOWN without showing response payloads.
+Independent verification after transfer: 14 tests passed in
+test_live_batch_authorization.py and 6 ticket-result/signal tests passed
+in test_scheduled_live_lock_contract.py. The complete
+test_schedule_send_table.py run did not complete in this environment and
+was interrupted; final regression coverage remains partial. No automated
+live connection or order was run by the developer.
 
 The owner selected the existing Dispatch interval in milliseconds as the
 scheduled Live cadence. The current arithmetic is inclusive-start with an
@@ -56,10 +61,11 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
 - `core/order_engine.py` M6-B/C/D/E checks each order independently. Aggregate
   SELL capacity is checked before authorization with the existing
   `get_sell_capacity` contract and total requested quantity across turns.
-  BUY capacity is queried from `get_buy_capacity` for each exact account,
-  broker, instrument, side, fund, and price group; requested quantity is
-  multiplied by planned turns. This does not yet prove account-wide capacity
-  across distinct prices or instruments using the same funds.
+  BUY capacity is queried from `get_buy_capacity` independently for each exact
+  account, broker, `nsc_id`, side, fund, and price group; requested quantity
+  per turn is checked without multiplying by future turns. Groups are not combined or proportionally
+  allocated across symbols or prices. The user's purchasing-power check and
+  the broker's final acceptance decision are outside this application check.
 - No evidence shows architectural approval of a new broker capability or
   a capacity/limit for safe ticket-table size. Do not infer approval from
   tests or this checkpoint.
@@ -76,14 +82,18 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
   definite API rejections separately from ambiguous outcomes.
 - `ui/live_order_gate.py`: enforces grouped aggregate BUY and SELL exposure.
   BUY capacity is checked during readiness only; local authorization
-  revalidation skips the endpoint and does not refresh credentials.
+  revalidation skips balance/capacity endpoints and does not trigger Refresh.
+  `_capture_batch_snapshot` no longer calls `get_purchase_power`, whose result
+  was unused. Capacity remains separate for every
+  `(account, broker, nsc_id, side, fund, price)` group.
 - `ui/order_configuration_page.py`: adds safe per-ticket trace/result capture,
   fixed stop reason mapping, snapshot bindings, and millisecond cadence preview.
   The queue now carries TSETMC `ins_code` separately from broker `nsc_id` for
   correct pre-arm lookup. Unrelated manual Live import edits in this shared
   file remain unstaged.
 - Offline tests cover ledger transition atomicity, direct-transport bypass,
-  aggregate capacity, and a Windows-compatible external socket denial guard.
+  separate symbol/price capacity groups including an insufficient group, and a
+  Windows-compatible external socket denial guard.
 - `ui/manual_live_trace.py`: permits narrowly typed scheduled correlation
   fields for ticket result logging.
 - `ui/schedule_settings.py` and `ui/schedule_dispatcher.py`: comments/status
@@ -91,22 +101,24 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
 
 ## Verification and blockers
 
-- Baseline before edits: `python -m pytest -q test_schedule_send_table.py test_live_batch_authorization.py test_ui11_stage4_prearm_workflow.py -k "not runtime_starts_every_ticket"` => 29 passed, 1 deselected.
+- Kilo reported `pytest -q test_schedule_send_table.py test_live_batch_authorization.py test_ui11_stage4_prearm_workflow.py -k "not runtime_starts_every_ticket"` => **36 passed, 1 deselected**.
+- Independent verification reported `test_live_batch_authorization.py` => **12 passed**, and `test_ui11_stage4_prearm_workflow.py` => **1 passed**.
+- Independent execution of the grouped suite on this host did not complete: it stalled/timed out during asyncio `ScheduledFireRuntime` event-loop startup. This differs from Kilo's reported grouped-suite result and remains unresolved.
 - Reported focused Apply-to-fake-POST acceptance: `test_apply_two_orders_two_turns_posts_all_tickets` passed, including four ticket/order/turn correlations and cleanup. Related UNKNOWN, Stop, queue-change, and session-invalidation cases were separately reported passing.
-- Latest reported BUY-capacity selection: `test_live_batch_authorization.py` targeted cases => 3 passed in 0.66s, covering insufficient grouped capacity, no endpoint/refresh during local revalidation, and snapshot mutation. These results were not rerun while updating this checkpoint.
+- Focused offline checks cover insufficient grouped capacity, no balance/capacity endpoint or Refresh during local revalidation, and snapshot mutation; see the independently reported test totals above.
 - Schedule summary preview now uses millisecond cadence on Live; countdown derives its next Live point from the same cadence. `end < start` is rejected.
 - Definite 4xx/API rejection is not UNKNOWN; timeout, 5xx and malformed response remain UNKNOWN and cannot retry.
 - The reported Apply-to-fake-POST test covers two orders x two turns and
   records four POSTs/outcomes. UNKNOWN, Stop, queue-change, and target-session
-  invalidation were also reported passing separately. A complete final
-  regression run after all current edits, all resource-close exits, and the
-  account-wide BUY-capacity case remain unverified.
-- This is not complete and is not yet approved for architectural review. No real broker network, authentication, order, Live run, or real schedule was performed. No production-readiness claim is made.
+  invalidation were also reported passing separately. No claim is made that
+  these offline checks establish live behavior.
+- The owner performed the Live schedule test reported above. No automated live
+  broker test was performed by this agent. Offline checks do not establish
+  universal reliability or production readiness. The interrupted full
+  `test_schedule_send_table.py` run remains unverified.
 
 ## Worktree preservation
 
-The workspace was already dirty before this task. Unrelated edits and untracked
-files were left untouched. This commit includes the `ins_code`/`nsc_id`
-separation needed by the Scheduled Live pre-arm path. Other symbol diagnostics,
-limit-hint work, temporary review files, and unrelated manual Live import edits
-remain outside the commit.
+The workspace may contain unrelated edits and untracked files; they were left
+untouched. Changes described elsewhere in this checkpoint are prior work, not
+part of this documentation-only update.

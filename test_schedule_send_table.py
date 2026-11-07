@@ -44,6 +44,8 @@ def _table(state, authorization, turns=3):
 
 
 def _approved(state, turns=3):
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
     return check_live_batch_readiness(
         account_store=SimpleNamespace(get=lambda key: state["records"][key]),
         authentication_service=state["auth"],
@@ -80,6 +82,8 @@ def test_exact_full_table_and_atomic_reservation(monkeypatch):
 
 def test_incomplete_or_duplicate_table_does_not_reserve(monkeypatch):
     state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
     authorization = _readiness(state, turns=3).authorization
     table = _table(state, authorization)
     with pytest.raises(LiveAuthorizationError, match="incomplete"):
@@ -91,6 +95,8 @@ def test_incomplete_or_duplicate_table_does_not_reserve(monkeypatch):
 
 def test_reservation_rejects_changed_destination_or_payload(monkeypatch):
     state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
     authorization = _readiness(state, turns=3).authorization
     from types import SimpleNamespace
     original = state["targets"][0]
@@ -114,6 +120,8 @@ def test_reservation_rejects_changed_destination_or_payload(monkeypatch):
 
 def _large_ready(monkeypatch, order_count=10, turns=80):
     state = _setup(monkeypatch)
+    for broker in state["brokers"].values():
+        broker.scheduled_live_enabled = True
     base_targets = state["targets"]
     base_prepared = state["prepared"]
     targets = []
