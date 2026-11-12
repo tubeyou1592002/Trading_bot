@@ -456,11 +456,6 @@ RESULT_SYMBOL_UNKNOWN = "-"
 # 2 path already computed.
 ORDER_LOG_GROUP_TITLE = STRINGS.GROUP_ORDER_LOG
 
-# UI-9 Task 2b — title of the group box that holds the queue status line in
-# the scheduling column. English for now: Persian localization is UI-9.3,
-# which must include this string in its translation list.
-QUEUE_STATUS_GROUP_TITLE = STRINGS.GROUP_QUEUE_STATUS
-
 # UI-9 Task 2 — how many Order Log rows stay visible before the table
 # scrolls. A row is GEOMETRY["rowHeight"] tall, so this is expressed as a
 # count and the height is derived, keeping the layout free of magic pixels.
@@ -1093,11 +1088,9 @@ class OrderConfigurationPage(QWidget):
         content_layout.setSpacing(_gap)
         self._page_scroll.setWidget(page_content)
 
-        # --- Top row: two EQUAL columns ---------------------------
-        # Left column  = order information (account, order form,
-        #               symbol info, amounts)
-        # Right column = scheduling (schedule + countdown) and the
-        #               queue status line
+        # --- Top row: two EQUAL columns below the full-width account ---
+        # Left column  = order form, amounts and queue
+        # Right column = schedule + countdown
         top_row = QHBoxLayout()
         top_row.setSpacing(_gap)
 
@@ -1128,12 +1121,6 @@ class OrderConfigurationPage(QWidget):
         top_row.addWidget(schedule_column, 1)
         content_layout.addLayout(top_row)
 
-        # --- Bottom area: the tables ------------------------------
-        # Order Queue and Test Results side by side, then Order Log
-        # full width beneath them, then the Diagnostic section last.
-        tables_row = QHBoxLayout()
-        tables_row.setSpacing(_gap)
-
         # ---------------------------------------------
         # Active account (from the existing UI-2.1 store)
         # ---------------------------------------------
@@ -1155,8 +1142,8 @@ class OrderConfigurationPage(QWidget):
         account_layout.addWidget(self.active_account_label, 1)
         account_group.setMinimumHeight(account_group.sizeHint().height())
         account_group.setMaximumHeight(account_group.sizeHint().height())
-        # UI-9 Task 2: the order-information column (left of the two).
-        order_column_layout.addWidget(account_group)
+        # Active account spans the page above the two content columns.
+        content_layout.insertWidget(0, account_group)
 
         # ---------------------------------------------
         # Order Configuration group
@@ -1549,7 +1536,7 @@ class OrderConfigurationPage(QWidget):
         # Amounts group
         # ---------------------------------------------
 
-        amounts_group = QGroupBox(STRINGS.GROUP_AMOUNTS, self)
+        amounts_group = QGroupBox(STRINGS.GROUP_AMOUNTS, form_group)
         self.amounts_group = amounts_group
         amounts_form = QFormLayout(amounts_group)
 
@@ -1573,7 +1560,7 @@ class OrderConfigurationPage(QWidget):
         self.amount_warning_label.setVisible(False)
         amounts_form.addRow(self.amount_warning_label)
 
-        order_column_layout.addWidget(amounts_group)
+        form_grid.addWidget(amounts_group, 6, 0, 1, 4)
         self._harmonize_panel_heights()
 
         # ---------------------------------------------
@@ -1584,55 +1571,44 @@ class OrderConfigurationPage(QWidget):
         queue_layout = QVBoxLayout(queue_group)
 
         self.queue_status_label = QLabel(QUEUE_STATUS_EMPTY, self)
-        # UI-9 Task 2b: the status label now lives in its OWN bordered group
-        # box ("Queue Status") placed in the scheduling column, matching the
-        # mockup. The group box is created and added to the column in the
-        # final assembly, so it renders BELOW the Schedule group. The label
-        # attribute, its word-wrap, its muted property and every setText()
-        # call site are unchanged.
+        # Keep status available to internal state and existing consumers, but
+        # do not present it as a separate card on the page.
+        self.queue_status_label.setVisible(False)
 
         # Visible pending-orders list — rendered ONLY from the existing
         # ``OrderQueue.list_pending()`` at refresh time; left untouched
         # at construction so no queue/core import ever runs offline.
-        self.queue_list = QListWidget(queue_group)
-        self.queue_list.setMaximumHeight(140)
-        self.queue_list.setUniformItemSizes(True)
-        self.queue_list.setSpacing(SPACING["xs"])
+        self.queue_list = QTableWidget(0, 5, queue_group)
+        self.queue_list.setHorizontalHeaderLabels(
+            ["ردیف", "نام حساب", "خرید یا فروش", "تعداد", "قیمت"]
+        )
+        self.queue_list.verticalHeader().setVisible(False)
+        self.queue_list.verticalHeader().setDefaultSectionSize(GEOMETRY["rowHeight"])
+        self.queue_list.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.queue_list.setSelectionBehavior(QTableWidget.SelectRows)
+        self.queue_list.setSelectionMode(QTableWidget.SingleSelection)
+        self.queue_list.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.queue_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.queue_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.queue_list.setFixedHeight(
+            self.queue_list.horizontalHeader().sizeHint().height()
+            + 4 * self.queue_list.verticalHeader().defaultSectionSize()
+            + 2 * self.queue_list.frameWidth()
+        )
         queue_layout.addWidget(self.queue_list)
+        self.remove_queue_button = QPushButton("حذف سفارش انتخاب‌شده", queue_group)
+        self.remove_queue_button.clicked.connect(self._remove_selected_queue_entry)
+        queue_layout.addWidget(self.remove_queue_button)
 
         self.queue_count_label = QLabel(STRINGS.QUEUE_COUNT_LABEL, queue_group)
         queue_layout.addWidget(self.queue_count_label)
         queue_layout.addWidget(self.test_button)
 
-        # UI-9 Task 2: the queue STATUS line moves to the scheduling
-        # column (per the 2.2 layout table); the queue GROUP itself goes to
-        # the bottom tables row. queue_list stays a direct child of this
-        # group box — no container is inserted between a list and its
-        # group (C5). The status label itself is appended to the scheduling
-        # column in the final assembly, so it renders BELOW the schedule.
-
         # ---------------------------------------------
         # Test Results display (UI-5 Task 3)
         # ---------------------------------------------
-
-        results_group = QGroupBox(STRINGS.GROUP_TEST_RESULTS, self)
-        results_layout = QVBoxLayout(results_group)
-
-        self.result_status_label = QLabel(RESULT_EMPTY_STATE, results_group)
-        results_layout.addWidget(self.result_status_label)
-
-        # Visible per-order result rows — rendered ONLY by the single final
-        # refresh of the last Test action (one refresh per run; a later run
-        # fully replaces the previous rows; no result history is kept).
-        self.result_list = QListWidget(results_group)
-        self.result_list.setMaximumHeight(140)
-        self.result_list.setUniformItemSizes(True)
-        self.result_list.setSpacing(SPACING["xs"])
-        results_layout.addWidget(self.result_list)
-
-        # UI-9 Task 2: Order Queue and Test Results side by side.
-        tables_row.addWidget(queue_group, 1)
-        tables_row.addWidget(results_group, 1)
+        # Send outcomes are shown in the full-width Order Log below.
+        order_column_layout.addWidget(queue_group)
 
         # ---------------------------------------------
         # Schedule configuration (UI-7 Task 1)
@@ -1751,11 +1727,13 @@ class OrderConfigurationPage(QWidget):
         schedule_form.addRow("وضعیت بازخورد:", self.feedback_status_label)
         self._fit_schedule_group_height()
 
-        # UI-9 Task 2: the scheduling column (right of the two).
-        schedule_column_layout.addWidget(self.schedule_group)
+        # UI-9 Task 2: the scheduling column (right of the two). Let this
+        # group fill the height of the form, amounts and queue stack.
+        self.schedule_group.setSizePolicy(
+            QSizePolicy.Preferred, QSizePolicy.Expanding
+        )
+        schedule_column_layout.addWidget(self.schedule_group, 1)
 
-        # The queue status line sits under the schedule (2.2), styled as a
-        # muted status line.
         self.queue_status_label.setWordWrap(True)
         self.queue_status_label.setProperty("muted", "true")
 
@@ -1833,6 +1811,7 @@ class OrderConfigurationPage(QWidget):
 
         log_group = QGroupBox(ORDER_LOG_GROUP_TITLE, self)
         log_layout = QVBoxLayout(log_group)
+        log_layout.setContentsMargins(0, 0, 0, 0)
 
         self.order_log_table = QTableWidget(0, len(ORDER_LOG_COLUMNS), log_group)
         self.order_log_table.setHorizontalHeaderLabels(list(ORDER_LOG_COLUMNS))
@@ -1863,34 +1842,13 @@ class OrderConfigurationPage(QWidget):
         # ---------------------------------------------
         #
         # Order of appearance inside the scroll area:
-        #   1. top row      — two equal columns (already added above)
-        #   2. tables row   — Order Queue | Test Results
-        #   3. Order Log    — full width
-        #   4. Diagnostic   — last, mode-gated exactly as before
-        content_layout.addLayout(tables_row)
+        #   1. Active account — full width
+        #   2. top row         — order/amounts/queue | schedule
+        #   3. Order Log       — full width
+        #   4. Diagnostic      — last, mode-gated exactly as before
         content_layout.addWidget(log_group)
         content_layout.addWidget(self.diagnostic_section)
         content_layout.addStretch(1)
-
-        # The queue status gets its own bordered group box in the scheduling
-        # column, directly BELOW the Schedule group (UI-9 Task 2b, matching
-        # the «وضعیت صف» box in the mockup).
-        #
-        # Every spacing/margin/radius value comes from ui/theme.py tokens, so
-        # this box is visually identical to the other group boxes on the page.
-        queue_status_group = QGroupBox(QUEUE_STATUS_GROUP_TITLE, self)
-        queue_status_layout = QVBoxLayout(queue_status_group)
-        queue_status_layout.setContentsMargins(0, 0, 0, 0)
-        queue_status_layout.setSpacing(0)
-        queue_status_layout.addWidget(self.queue_status_label)
-        # A themed group box already carries its own border, radius and
-        # padding from the stylesheet; nothing else is set here so it stays
-        # pixel-identical to its eight sibling group boxes.
-        schedule_column_layout.addWidget(queue_status_group)
-        # The scheduling column is naturally shorter than the order column;
-        # this trailing stretch keeps the group directly under the schedule
-        # instead of floating in the leftover vertical space.
-        schedule_column_layout.addStretch(1)
 
         self._refresh_amounts()
         self._start_auto_amount()
@@ -3276,9 +3234,9 @@ class OrderConfigurationPage(QWidget):
         the row's data role — orders are never cloned/rebuild for display,
         and display text is never parsed back into identity.
         """
-        self.queue_list.clear()
         pending = self.order_queue.list_pending()
-        for entry in pending:
+        self.queue_list.setRowCount(len(pending))
+        for row, entry in enumerate(pending):
             order = entry.order
             side_label = dict(SIDE_LABELS).get(
                 getattr(order, "side", None),
@@ -3296,36 +3254,33 @@ class OrderConfigurationPage(QWidget):
                 display_name = getattr(account_record, "display_name", None)
                 if isinstance(display_name, str) and display_name.strip():
                     account_name = display_name
-            symbol = self._order_symbols.get(id(order)) or STRINGS.VALUE_NOT_AVAILABLE
             quantity = getattr(order, "quantity", None)
             price = getattr(order, "price", None)
-            text = (
-                f"{account_name} | {symbol} | {side_label} | "
-                f"{quantity if quantity is not None else STRINGS.VALUE_NOT_AVAILABLE} | "
-                f"{price if price is not None else STRINGS.VALUE_NOT_AVAILABLE}"
+            values = (
+                row + 1,
+                account_name,
+                side_label,
+                quantity if quantity is not None else STRINGS.VALUE_NOT_AVAILABLE,
+                price if price is not None else STRINGS.VALUE_NOT_AVAILABLE,
             )
-            item = QListWidgetItem(text, self.queue_list)
-            item.setData(QUEUE_ENTRY_ROLE, entry)
-            row_widget = QWidget(self.queue_list)
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_label = QLabel(text, row_widget)
-            row_layout.addWidget(row_label, 1)
-            remove_button = QPushButton(STRINGS.BUTTON_REMOVE_FROM_QUEUE, row_widget)
-            remove_button.clicked.connect(
-                lambda checked=False, queued_entry=entry: self._remove_queue_entry_by_id(
-                    id(queued_entry)
-                )
-            )
-            row_layout.addWidget(remove_button)
-            self.queue_list.setItemWidget(item, row_widget)
-            item.setSizeHint(row_widget.sizeHint())
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column == 0:
+                    item.setData(QUEUE_ENTRY_ROLE, entry)
+                self.queue_list.setItem(row, column, item)
         # UI-9 Task 3: the count uses PERSIAN digits via the ONE formatter.
         self.queue_count_label.setText(
             STRINGS.QUEUE_COUNT_FORMAT.format(
                 count=STRINGS.format_persian_digits(len(pending))
             )
         )
+
+    def _remove_selected_queue_entry(self):
+        rows = self.queue_list.selectionModel().selectedRows()
+        item = self.queue_list.item(rows[0].row(), 0) if rows else None
+        if item is not None:
+            entry = item.data(QUEUE_ENTRY_ROLE)
+            self._remove_queue_entry_by_id(id(entry))
 
     def _remove_queue_entry(self, entry):
         """Remove exactly the selected queue entry; this never dispatches."""
@@ -4487,9 +4442,6 @@ class OrderConfigurationPage(QWidget):
         self._last_test_entries = list(entries)
         self._last_order_results = None
         self._last_test_run_mode = run_mode
-        self.result_list.clear()
-        self.result_status_label.setText(RESULT_EMPTY_STATE)
-
         # UI-5 Task 4 Stage 3 Task 3 — corrective contract: the feedback
         # binding is established BEFORE the send pass starts (lazily, once,
         # nothing new is started). A matching-engine registration event
@@ -5383,25 +5335,11 @@ class OrderConfigurationPage(QWidget):
 
     def _refresh_result_display(self):
         """
-        Render the per-order results of the last successful Test run.
+        Record existing Live diagnostics and refresh the diagnostic panel.
 
-        Called EXACTLY ONCE per successful run (the final refresh, at the
-        end of ``_run_test_pass``); it is never invoked from construction,
-        navigation, refresh/render or toggle-off paths. One call clears and
-        repopulates, so a new run fully replaces the previous rows.
-
-        One visible row per queued order, in exact queue order:
-
-            حساب {account_id} | {symbol} | {side} | {status} | {reason}
-
-        Everything is user-facing only: the account id and side label come
-        from the exact QueueEntry/Order, the display symbol from the UI-layer
-        map (recorded at Add-to-Queue from the real Instrument), and the
-        verdict from the fail-closed status mapper. No nscId/tseId, mode
-        name, message, Trace ID, latency, M6-* label, endpoint, broker
-        response or exception text is ever rendered here.
+        Per-order results are displayed only in the Order Log table; this
+        method does not render a second result list.
         """
-        self.result_list.clear()
         entries = self._last_test_entries or []
         results = self._last_order_results
         if getattr(self, "_last_test_run_mode", None) == "live":
@@ -5429,32 +5367,6 @@ class OrderConfigurationPage(QWidget):
                         pass
             except Exception:
                 pass
-        for index, entry in enumerate(entries):
-            result = None
-            if isinstance(results, list) and 0 <= index < len(results):
-                result = results[index]
-            order = entry.order
-            symbol = (
-                self._order_symbols.get(id(order), "")
-                or RESULT_SYMBOL_UNKNOWN
-            )
-            side_label = dict(SIDE_LABELS).get(
-                getattr(order, "side", None),
-                str(getattr(order, "side", "")),
-            )
-            status = _result_status_label(result, getattr(self, "_last_test_run_mode", "dry_run"))
-            text = (
-                f"\u062d\u0633\u0627\u0628 {entry.account_id} | {symbol} | "
-                f"{side_label} | {status} | "
-                f"{_result_reason_for_status(status, result)}"
-            )
-            QListWidgetItem(text, self.result_list)
-        if entries:
-            self.result_status_label.setText(
-                f"{len(entries)} result(s)"
-            )
-        else:
-            self.result_status_label.setText(RESULT_EMPTY_STATE)
         # UI-6 Task 1: the diagnostic section mirrors the same real
         # verdicts at the single final refresh (it renders only when the
         # display boundary lets it — visibility is mode-gated).
@@ -5508,9 +5420,7 @@ class OrderConfigurationPage(QWidget):
         """
         line = self.validation_error_label.fontMetrics().lineSpacing()
         validation_reserve = 3 * line + 2 * SPACING["md"]
-        self.form_group.setFixedHeight(
-            self.form_group.sizeHint().height() + validation_reserve
-        )
+        self._form_validation_reserve = validation_reserve
         self._fit_amounts_group_height()
 
     def _fit_amounts_group_height(self):
@@ -5528,6 +5438,17 @@ class OrderConfigurationPage(QWidget):
         self.amounts_group.setFixedHeight(
             self.amounts_group.sizeHint().height()
         )
+        form_layout = self.form_group.layout()
+        if form_layout is not None:
+            form_layout.activate()
+            validation_reserve = getattr(self, "_form_validation_reserve", 0)
+            required_height = max(
+                self.form_group.sizeHint().height() + validation_reserve,
+                self.amounts_group.geometry().bottom()
+                + form_layout.contentsMargins().bottom()
+                + 1,
+            )
+            self.form_group.setFixedHeight(required_height)
 
     def _fit_schedule_group_height(self):
         """Lock the schedule box to its real visible content.
@@ -5561,9 +5482,8 @@ class OrderConfigurationPage(QWidget):
             label.setMinimumHeight(needed)
         if layout is not None:
             layout.activate()
-        self.schedule_group.setFixedHeight(
-            self.schedule_group.sizeHint().height()
-        )
+        self.schedule_group.setMinimumHeight(self.schedule_group.sizeHint().height())
+        self.schedule_group.setMaximumHeight(16777215)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -7212,6 +7132,7 @@ class OrderConfigurationPage(QWidget):
         self.quantity_min_button.setEnabled(enabled)
         self.add_to_queue_button.setEnabled(enabled)
         self.queue_list.setEnabled(enabled)
+        self.remove_queue_button.setEnabled(enabled)
         if enabled:
             self._refresh_test_button_state()
         else:

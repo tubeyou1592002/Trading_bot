@@ -101,6 +101,91 @@ def test_1_order_configuration_page_opens(window):
     )
 
 
+def test_recent_page_layout_geometry(qapp, store):
+    """Check the rendered account, order/queue and schedule geometry."""
+    from PySide6.QtWidgets import QGroupBox
+
+    page = OrderConfigurationPage(store)
+    page.resize(1200, 1000)
+    page.show()
+    qapp.processEvents()
+    page.layout().activate()
+    qapp.processEvents()
+
+    def geometry_in_page(widget):
+        return widget.mapTo(page, widget.rect().topLeft()), widget.size()
+
+    account_pos, account_size = geometry_in_page(page.active_account_group)
+    form_pos, form_size = geometry_in_page(page.form_group)
+    amounts_pos, amounts_size = geometry_in_page(page.amounts_group)
+    queue_group = next(
+        group for group in page.findChildren(QGroupBox)
+        if group.title() == STRINGS.GROUP_ORDER_QUEUE
+    )
+    queue_pos, queue_size = geometry_in_page(queue_group)
+    schedule_pos, schedule_size = geometry_in_page(page.schedule_group)
+    log_group = next(
+        group for group in page.findChildren(QGroupBox)
+        if group.title() == STRINGS.GROUP_ORDER_LOG
+    )
+    log_pos, log_size = geometry_in_page(log_group)
+
+    content_width = page._page_scroll.viewport().width()
+    assert account_pos.y() <= form_pos.y()
+    assert account_size.width() >= content_width - 30
+    assert abs(form_size.width() - queue_size.width()) <= 2
+    assert page.amounts_group.parentWidget() is page.form_group
+    assert amounts_pos.y() >= form_pos.y()
+    assert amounts_pos.y() + amounts_size.height() <= form_pos.y() + form_size.height()
+    button_pos, _ = geometry_in_page(page.add_to_queue_button)
+    assert amounts_pos.y() >= button_pos.y() + page.add_to_queue_button.height()
+    assert queue_pos.y() >= form_pos.y() + form_size.height()
+    assert page.add_to_queue_button.parentWidget() is page.form_group
+    assert abs(schedule_pos.y() - form_pos.y()) <= 4
+    assert schedule_pos.x() > form_pos.x()
+    assert abs((schedule_pos.y() + schedule_size.height()) -
+               (queue_pos.y() + queue_size.height())) <= 4
+    assert log_pos.y() >= max(
+        schedule_pos.y() + schedule_size.height(),
+        queue_pos.y() + queue_size.height(),
+    )
+    assert log_size.width() >= content_width - 30
+    assert not any(
+        group.title() == "نتیجه اجرا" for group in page.findChildren(QGroupBox)
+    )
+    assert not page.queue_status_label.isVisible()
+
+
+def test_amount_panel_layout_resizes_with_warning(qapp, store):
+    page = OrderConfigurationPage(store)
+    page.resize(1200, 1000)
+    page.show()
+    qapp.processEvents()
+    page.layout().activate()
+
+    original_form_height = page.form_group.height()
+    page._set_amount_warning("خط هشدار اول\nخط هشدار دوم\nخط هشدار سوم")
+    qapp.processEvents()
+    page.form_group.layout().activate()
+    page._fit_amounts_group_height()
+    qapp.processEvents()
+
+    assert page.amounts_group.geometry().bottom() < page.form_group.rect().bottom()
+    assert page.form_group.height() > original_form_height
+    assert page.amount_warning_label.height() >= (
+        3 * page.amount_warning_label.fontMetrics().lineSpacing()
+    )
+
+    page._set_amount_warning("")
+    qapp.processEvents()
+    page.form_group.layout().activate()
+    page._fit_amounts_group_height()
+    qapp.processEvents()
+
+    assert page.amount_warning_label.isHidden()
+    assert page.amounts_group.geometry().bottom() < page.form_group.rect().bottom()
+
+
 # ============================================================
 # Test 2 — Symbol input/selection state exists
 # ============================================================

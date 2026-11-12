@@ -52,7 +52,7 @@ from pathlib import Path
 
 import pytest
 
-from PySide6.QtWidgets import QApplication, QTableWidgetItem
+from PySide6.QtWidgets import QApplication, QGroupBox, QTableWidgetItem
 
 from core.order_engine import OrderExecutionResult
 from core.order_queue import OrderQueue
@@ -435,6 +435,9 @@ def test_r3_base_information_of_a_real_send(qapp):
     assert cells[COLUMN_SYMBOL] == "ذوب"
 
     # توضیح — the fixed user-facing reason of the REAL per-order result.
+    assert not any(
+        group.title() == "نتیجه اجرا" for group in page.findChildren(QGroupBox)
+    )
     per_order = page._last_order_results[0]
     assert per_order.order is entry.order
     assert per_order.success is True

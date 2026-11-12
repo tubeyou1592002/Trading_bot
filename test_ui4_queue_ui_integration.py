@@ -62,7 +62,7 @@ import time
 
 import pytest
 
-from PySide6.QtWidgets import QApplication, QListWidget
+from PySide6.QtWidgets import QApplication, QTableWidget
 
 from models.instrument import Instrument
 from models.order import BUY, SELL, Order
@@ -314,8 +314,12 @@ def test_1_add_to_queue_action_and_queue_view_exist(qapp):
     assert page.add_to_queue_button is not None
     assert STRINGS.BUTTON_ADD_TO_QUEUE in page.add_to_queue_button.text()
 
-    assert isinstance(page.queue_list, QListWidget)
-    assert page.queue_list.count() == 0
+    assert isinstance(page.queue_list, QTableWidget)
+    assert page.queue_list.rowCount() == 0
+    assert [page.queue_list.horizontalHeaderItem(i).text() for i in range(5)] == [
+        "ردیف", "نام حساب", "خرید یا فروش", "تعداد", "قیمت"
+    ]
+    assert page.queue_list.columnCount() == 5
     assert hasattr(page, "queue_status_label")
     assert hasattr(page, "queue_count_label")
     from PySide6.QtWidgets import QGroupBox
@@ -325,6 +329,22 @@ def test_1_add_to_queue_action_and_queue_view_exist(qapp):
     assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
         count=STRINGS.format_persian_digits(0)
     )
+
+
+def test_queue_status_group_is_not_present_but_status_logic_remains(qapp):
+    page = OrderConfigurationPage(_store_with_active(), order_queue=OrderQueue())
+
+    assert page.queue_status_label is not None
+    assert not page.queue_status_label.isVisible()
+    from PySide6.QtWidgets import QGroupBox
+
+    assert not any(
+        group.title() == STRINGS.GROUP_QUEUE_STATUS
+        for group in page.findChildren(QGroupBox)
+    )
+
+    page._show_queue_status(QUEUE_STATUS_NO_ACCOUNT)
+    assert page.queue_status_label.text() == QUEUE_STATUS_NO_ACCOUNT
 
 
 # ============================================================
@@ -434,20 +454,17 @@ def test_6_visible_list_reflects_list_pending(qapp):
     _prepare_order(qapp, page, price=15000, quantity=500, side=BUY)
 
     assert page._on_add_to_queue() is True
-    assert page.queue_list.count() == 1
-    row_one = page.queue_list.item(0).text()
-    assert ACCOUNT_ONE in row_one
-    assert "آکو" in row_one
-    assert "خرید" in row_one          # side label is rendered, not raw 1
-    assert "15000" in row_one         # the int price
-    assert "500" in row_one           # the int quantity
+    assert page.queue_list.rowCount() == 1
+    assert [page.queue_list.item(0, col).text() for col in range(5)] == [
+        "1", ACCOUNT_ONE, "خرید", "500", "15000"
+    ]
     assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
         count=STRINGS.format_persian_digits(1)
     )
 
     page.symbol_input.setCurrentText("")  # clear keeps prior queue intact
     _drain(qapp, page)
-    assert page.queue_list.count() == 1  # display unchanged by symbol edit
+    assert page.queue_list.rowCount() == 1  # display unchanged by symbol edit
     assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
         count=STRINGS.format_persian_digits(1)
     )
@@ -470,20 +487,33 @@ def test_queue_rows_keep_bound_account_and_remove_exact_entry(qapp):
     assert page._on_add_to_queue()
     second = queue.list_pending()[1]
 
-    assert ACCOUNT_ONE in page.queue_list.item(0).text()
-    assert "حساب دو" in page.queue_list.item(1).text()
+    page.refresh_active_account()
+    page._refresh_queue_display()
+    assert [page.queue_list.item(0, col).text() for col in range(5)] == [
+        "1", ACCOUNT_ONE, "خرید", "500", "15000"
+    ]
+    assert [page.queue_list.item(1, col).text() for col in range(5)] == [
+        "2", "حساب دو", "فروش", "300", "12000"
+    ]
     assert page.test_button.text() == STRINGS.BUTTON_SEND_ONCE
     assert page.queue_list.parent().layout().indexOf(page.test_button) > page.queue_list.parent().layout().indexOf(page.queue_list)
 
-    # Simulate a reordered row: the callback retains stable entry identity,
-    # not a visual row number.
-    assert page._remove_queue_entry_by_id(id(second))
+    # The selected row's exact entry is removed, leaving the other intact.
+    page.queue_list.selectRow(1)
+    page.remove_queue_button.click()
     assert queue.list_pending() == [first]
-    assert page.queue_list.count() == 1
+    assert page.queue_list.rowCount() == 1
+    assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
+        count=STRINGS.format_persian_digits(1)
+    )
     assert page.test_button.isEnabled()
-    assert page._remove_queue_entry_by_id(id(first))
+    page.queue_list.selectRow(0)
+    page.remove_queue_button.click()
     assert queue.list_pending() == []
-    assert page.queue_list.count() == 0
+    assert page.queue_list.rowCount() == 0
+    assert page.queue_count_label.text() == STRINGS.QUEUE_COUNT_FORMAT.format(
+        count=STRINGS.format_persian_digits(0)
+    )
     assert not page.test_button.isEnabled()
 
 
@@ -492,8 +522,33 @@ def test_legacy_incomplete_queue_entry_displays_safely(qapp):
     queue.enqueue(object(), account_id="missing-account", broker_name=BROKER_ONE)
     page = OrderConfigurationPage(AccountStore(), order_queue=queue)
     page._refresh_queue_display()
-    assert page.queue_list.count() == 1
-    assert STRINGS.VALUE_NOT_AVAILABLE in page.queue_list.item(0).text()
+    assert page.queue_list.rowCount() == 1
+    assert page.queue_list.item(0, 1).text() == STRINGS.VALUE_NOT_AVAILABLE
+
+
+def test_queue_table_four_rows_fit_and_fifth_scrolls(qapp):
+    queue = OrderQueue()
+    page = OrderConfigurationPage(_store_with_active(), order_queue=queue)
+    page.resize(1200, 900)
+    page.show()
+    for index in range(4):
+        queue.enqueue(Order("technical-id", BUY, 100 + index, 10 + index),
+                      ACCOUNT_ONE, BROKER_ONE)
+    page._refresh_queue_display()
+    qapp.processEvents()
+    table = page.queue_list
+    assert table.horizontalHeader().isVisible()
+    assert table.verticalScrollBar().maximum() == 0
+    assert table.visualItemRect(table.item(3, 0)).bottom() < table.viewport().height()
+
+    queue.enqueue(Order("technical-id", SELL, 200, 20), ACCOUNT_ONE, BROKER_ONE)
+    page._refresh_queue_display()
+    qapp.processEvents()
+    assert table.verticalScrollBar().maximum() > 0
+    table.verticalScrollBar().setValue(table.verticalScrollBar().maximum())
+    qapp.processEvents()
+    assert table.visualItemRect(table.item(4, 0)).bottom() < table.viewport().height()
+    page.close()
 
 
 # ============================================================
@@ -563,7 +618,7 @@ def test_8_orders_not_cloned_for_display(qapp):
     assert page._on_add_to_queue() is True
 
     entry = queue.list_pending()[0]
-    item = page.queue_list.item(0)
+    item = page.queue_list.item(0, 0)
 
     # the ROW carries the exact QueueEntry (identity travels in the role);
     # the displayed order is the exact queued object — never rebuilt
@@ -922,7 +977,7 @@ def test_extra_main_window_construction_offline_lazy_queue():
             "assert not leaked, f'UI construction imported trading modules: {leaked}'",
             "",
             "# nothing queued; the queue object is only materialized lazily",
-            "assert page.queue_list.count() == 0",
+            "assert page.queue_list.rowCount() == 0",
             "assert page._injected_order_queue is None",
             "",
             "from core.order_queue import OrderQueue",
