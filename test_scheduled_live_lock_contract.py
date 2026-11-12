@@ -91,6 +91,72 @@ class _Auth:
         return 100000
 
 
+def test_scheduled_start_and_completion_update_only_matching_order_log_row():
+    from ui.user_log import OrderLog
+
+    page = SimpleNamespace(order_log=OrderLog(), _scheduled_fire_runtime=None,
+                           _scheduled_feedback_ids={}, _refresh_order_log_display=lambda: None)
+    first = SimpleNamespace(ticket_id="private-first", turn_index=0)
+    second = SimpleNamespace(ticket_id="private-second", turn_index=1)
+    timestamp = datetime.now().astimezone()
+    OrderConfigurationPage._handle_scheduled_ticket_start(page, first, timestamp, "حساب", "نماد")
+    OrderConfigurationPage._handle_scheduled_ticket_start(page, first, timestamp, "حساب", "نماد")
+    OrderConfigurationPage._handle_scheduled_ticket_start(page, second, timestamp, "حساب", "نماد")
+    before = page.order_log.rows()
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, second, {"isSuccess": False})
+    rows = page.order_log.rows()
+    assert len(rows) == 2 and rows[0] is before[0]
+    assert rows[1].sent_at == timestamp and rows[1].account_id == "حساب"
+    assert rows[1].symbol == "نماد" and rows[1].description == "پاسخ رد/ناموفق کارگزاری"
+    assert "private" not in " ".join(cell for row in rows for cell in row.cells())
+
+
+@pytest.mark.parametrize(("result", "expected"), [
+    ({"isSuccess": True}, "ارسال موفق"),
+    ({"isSuccess": False}, "پاسخ رد/ناموفق کارگزاری"),
+    ({"unexpected": True}, "پاسخ کارگزاری با ساختار نامعتبر"),
+])
+def test_scheduled_ticket_completion_updates_order_log_with_safe_classification(result, expected):
+    from ui.user_log import OrderLog, OrderLogRow
+
+    ticket = SimpleNamespace(ticket_id="private-ticket", turn_index=0)
+    original = OrderLogRow(description="در انتظار", key=ticket)
+    page = SimpleNamespace(
+        order_log=OrderLog([original]), _scheduled_fire_runtime=None,
+        _refresh_order_log_display=lambda: None,
+    )
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, result)
+    rows = page.order_log.rows()
+    assert len(rows) == 1 and rows[0].description == expected
+    assert rows[0].key is ticket
+    assert "private-ticket" not in " ".join(rows[0].cells())
+
+
+@pytest.mark.parametrize(("post_started", "expected"), [
+    (False, "ارسال نشد (خطای پیش از ارسال)"),
+    (True, "نامشخص؛ احتمال ثبت سفارش وجود دارد"),
+])
+def test_scheduled_ticket_exception_classification_updates_order_log(post_started, expected):
+    from ui.user_log import OrderLog, OrderLogRow
+
+    ticket = SimpleNamespace(ticket_id="private-ticket", turn_index=0)
+    record = SimpleNamespace(post_start_ns=1 if post_started else None)
+    runtime = SimpleNamespace(latency_report=lambda: SimpleNamespace(
+        ticket=lambda *_args: record
+    ))
+    page = SimpleNamespace(
+        order_log=OrderLog([OrderLogRow(description="در انتظار", key=ticket)]),
+        _scheduled_fire_runtime=runtime, _schedule_cancel_event=__import__("threading").Event(),
+        _live_authorization=SimpleNamespace(snapshot=SimpleNamespace(orders=())),
+        _refresh_order_log_display=lambda: None,
+    )
+    OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, RuntimeError("secret"))
+    row = page.order_log.rows()[0]
+    assert row.description == expected
+    assert "private-ticket" not in " ".join(row.cells())
+    assert "secret" not in " ".join(row.cells())
+
+
 def test_scheduled_prearm_failure_returns_specific_batch_reason():
     reason = "M6-C capacity unavailable"
     target = SimpleNamespace(entry=SimpleNamespace(order=SimpleNamespace(side="SELL")))
@@ -116,98 +182,33 @@ def test_scheduled_prearm_failure_returns_specific_batch_reason():
     assert result == (False, None, None, None, reason)
 
 
-@pytest.mark.parametrize(("response", "expected"), [
-    ({"isSuccess": True}, "\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642"),
-    ({"isSuccess": False}, "پاسخ رد/ناموفق کارگزاری"),
-    ({"unexpected": True}, "پاسخ کارگزاری با ساختار نامعتبر"),
-])
-def test_scheduled_ticket_dict_outcomes_are_visible_and_accumulate(response, expected):
-    class Label:
-        text = ""
-        def setText(self, value):
-            self.text = value
-    page = SimpleNamespace(
-        _scheduled_ticket_results=[],
-        scheduled_ticket_results_label=Label(),
-        _scheduled_feedback_ids={},
-        _scheduled_fire_runtime=None,
-    )
-    page._append_scheduled_ticket_result = lambda ticket, verdict: OrderConfigurationPage._append_scheduled_ticket_result(page, ticket, verdict)
-    first_ticket = SimpleNamespace(turn_index=0, ticket_id="opaque-first")
-    second_ticket = SimpleNamespace(turn_index=1, ticket_id="opaque-second")
-    OrderConfigurationPage._handle_scheduled_ticket_complete(page, second_ticket, {"isSuccess": False})
-    OrderConfigurationPage._handle_scheduled_ticket_complete(page, first_ticket, response)
-    assert expected in page.scheduled_ticket_results_label.text
-    assert "پاسخ رد/ناموفق کارگزاری" in page.scheduled_ticket_results_label.text
-    assert page.scheduled_ticket_results_label.text.count("ticket") == 2
-    assert "نوبت 1، ticket opaque-first" in page.scheduled_ticket_results_label.text
-    assert "نوبت 2، ticket opaque-second" in page.scheduled_ticket_results_label.text
-    assert page.scheduled_ticket_results_label.text.index("opaque-second") < page.scheduled_ticket_results_label.text.index("opaque-first")
-
-
-@pytest.mark.parametrize(("post_started", "expected"), [
-    (False, "ارسال نشد (خطای پیش از ارسال)"),
-    (True, "نامشخص؛ احتمال ثبت سفارش وجود دارد"),
-])
-def test_scheduled_ticket_exception_preserves_safe_send_classification(post_started, expected):
-    class Label:
-        text = ""
-        def setText(self, value):
-            self.text = value
-    record = SimpleNamespace(post_start_ns=1 if post_started else None)
-    runtime = SimpleNamespace(latency_report=lambda: SimpleNamespace(
-        ticket=lambda *_args: record
-    ))
-    page = SimpleNamespace(
-        _scheduled_ticket_results=[], scheduled_ticket_results_label=Label(),
-        _scheduled_fire_runtime=runtime,
-        _schedule_cancel_event=__import__("threading").Event(),
-        _live_authorization=SimpleNamespace(snapshot=SimpleNamespace(orders=())),
-    )
-    page._append_scheduled_ticket_result = lambda ticket, verdict: OrderConfigurationPage._append_scheduled_ticket_result(page, ticket, verdict)
-    ticket = SimpleNamespace(turn_index=0, ticket_id="safe-id")
-    OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, RuntimeError("secret"))
-    assert expected in page.scheduled_ticket_results_label.text
-
-
-def test_scheduled_ticket_signal_queues_result_slot_on_gui_thread():
+def test_scheduled_ticket_signal_queues_order_log_update_on_gui_thread():
     import threading
 
     from PySide6.QtCore import QCoreApplication, QEvent, QThread
-    from PySide6.QtWidgets import QApplication, QLabel
+    from PySide6.QtWidgets import QApplication
+    from ui.user_log import OrderLog, OrderLogRow
 
     app = QApplication.instance() or QApplication([])
     page = OrderConfigurationPage.__new__(OrderConfigurationPage)
     # Initialize only QObject/QWidget internals; no account, network, or send setup.
     from PySide6.QtWidgets import QWidget
     QWidget.__init__(page)
-    page._scheduled_ticket_results = []
-
-    class ObservedLabel(QLabel):
-        def __init__(self):
-            super().__init__("")
-            self.set_text_threads = []
-
-        def setText(self, value):
-            self.set_text_threads.append(QThread.currentThread())
-            super().setText(value)
-
-    page.scheduled_ticket_results_label = ObservedLabel()
-    page._scheduled_feedback_ids = {}
+    ticket = SimpleNamespace(ticket_id="signal-ticket", turn_index=0)
+    page.order_log = OrderLog([OrderLogRow(description="در انتظار", key=ticket)])
     page._scheduled_fire_runtime = None
-    page._dispatcher = None
     page._schedule_cancel_event = None
-    page._schedule_timer = None
+    page._refresh_order_log_display = lambda: None
     page.scheduled_ticket_completed.connect(page._handle_scheduled_ticket_complete)
     observed_threads = []
-    original_append = page._append_scheduled_ticket_result
+    original_complete = page._handle_scheduled_ticket_complete
 
-    def observe_append(ticket, verdict):
+    def observe_complete(ticket, result):
         observed_threads.append(QThread.currentThread())
-        original_append(ticket, verdict)
+        original_complete(ticket, result)
 
-    page._append_scheduled_ticket_result = observe_append
-    ticket = SimpleNamespace(turn_index=0, ticket_id="signal-ticket")
+    page.scheduled_ticket_completed.disconnect(page._handle_scheduled_ticket_complete)
+    page.scheduled_ticket_completed.connect(observe_complete)
     worker_threads = []
 
     def emit_from_worker():
@@ -218,15 +219,64 @@ def test_scheduled_ticket_signal_queues_result_slot_on_gui_thread():
     worker.start()
     worker.join()
     app.processEvents()
-    assert page.scheduled_ticket_results_label.text().endswith("\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642")
+    assert page.order_log.rows()[0].description == "ارسال موفق"
     assert worker_threads and worker_threads[0] is not app.thread()
     assert observed_threads == [app.thread()]
-    assert page.scheduled_ticket_results_label.set_text_threads == [app.thread()]
 
     # Avoid QWidget.close(): OrderConfigurationPage.closeEvent expects the
     # complete runtime state, while this test intentionally initializes only
     # the signal/UI pieces. Deferred deletion destroys the widget without
     # entering that application-level close path.
+    page.deleteLater()
+    QCoreApplication.sendPostedEvents(page, QEvent.DeferredDelete)
+    app.processEvents()
+
+
+def test_scheduled_ticket_started_from_worker_appends_private_keyed_row_on_gui_thread():
+    import threading
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QThread
+    from PySide6.QtWidgets import QApplication, QWidget
+    from ui.user_log import OrderLog
+
+    app = QApplication.instance() or QApplication([])
+    page = OrderConfigurationPage.__new__(OrderConfigurationPage)
+    QWidget.__init__(page)
+    ticket = SimpleNamespace(ticket_id="private-start-ticket", turn_index=0)
+    timestamp = datetime(2026, 11, 12, 10, 11, 12, tzinfo=timezone.utc)
+    page.order_log = OrderLog()
+    page._refresh_order_log_display = lambda: None
+    page.scheduled_ticket_started.connect(page._handle_scheduled_ticket_start)
+    observed_threads = []
+    original_start = page._handle_scheduled_ticket_start
+
+    def observe_start(ticket, sent_at, account_name, symbol):
+        observed_threads.append(QThread.currentThread())
+        original_start(ticket, sent_at, account_name, symbol)
+
+    page.scheduled_ticket_started.disconnect(page._handle_scheduled_ticket_start)
+    page.scheduled_ticket_started.connect(observe_start)
+    worker_threads = []
+
+    def emit_from_worker():
+        worker_threads.append(QThread.currentThread())
+        page.scheduled_ticket_started.emit(ticket, timestamp, "Display Account", "SYM")
+
+    worker = threading.Thread(target=emit_from_worker)
+    worker.start()
+    worker.join()
+    app.processEvents()
+
+    rows = page.order_log.rows()
+    assert len(rows) == 1
+    assert rows[0].key is ticket
+    assert rows[0].sent_at == timestamp
+    assert rows[0].account_id == "Display Account"
+    assert rows[0].symbol == "SYM"
+    assert "private-start-ticket" not in " ".join(rows[0].cells())
+    assert worker_threads and worker_threads[0] is not app.thread()
+    assert observed_threads == [app.thread()]
+
     page.deleteLater()
     QCoreApplication.sendPostedEvents(page, QEvent.DeferredDelete)
     app.processEvents()

@@ -937,6 +937,7 @@ class OrderConfigurationPage(QWidget):
 
     schedule_cancelled = Signal(str)
     scheduled_ticket_completed = Signal(object, object)
+    scheduled_ticket_started = Signal(object, object, object, object)
 
     def _setup_limit_hint(self, line_edit, label, object_name):
         label.setObjectName(object_name)
@@ -976,6 +977,7 @@ class OrderConfigurationPage(QWidget):
     ):
         super().__init__(parent)
         self.scheduled_ticket_completed.connect(self._handle_scheduled_ticket_complete)
+        self.scheduled_ticket_started.connect(self._handle_scheduled_ticket_start)
 
         self.store = account_store
         self.config = config if config is not None else OrderConfiguration()
@@ -1403,7 +1405,6 @@ class OrderConfigurationPage(QWidget):
         self._scheduled_lock_states = []
         self._scheduled_broker_manager_factory = None
         self._scheduled_feedback_ids = {}
-        self._scheduled_ticket_results = []
         self._scheduled_latency_report = None
         self._schedule_queue_entries = None
         self._schedule_apply_queue_revision = None
@@ -1753,11 +1754,6 @@ class OrderConfigurationPage(QWidget):
         # UI-9 Task 2: the scheduling column (right of the two).
         schedule_column_layout.addWidget(self.schedule_group)
 
-        self.scheduled_ticket_results_label = QLabel("", self)
-        self.scheduled_ticket_results_label.setObjectName("scheduledTicketResults")
-        self.scheduled_ticket_results_label.setWordWrap(True)
-        self.scheduled_ticket_results_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        schedule_column_layout.addWidget(self.scheduled_ticket_results_label)
         # The queue status line sits under the schedule (2.2), styled as a
         # muted status line.
         self.queue_status_label.setWordWrap(True)
@@ -3905,8 +3901,25 @@ class OrderConfigurationPage(QWidget):
         for target in self._frozen_targets:
             key = (target.account_id, target.broker_name)
             brokers.setdefault(key, manager.get_for_account(*key))
+        metadata = {}
+        snapshot = self._schedule_snapshot or {}
+        for original, frozen in snapshot.get("orders", ()):
+            try:
+                name = getattr(self.store.get(original.account_id), "display_name", None)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                name = None
+            name = name if isinstance(name, str) and name.strip() else None
+            symbol = self._order_symbols.get(id(original.order))
+            symbol = symbol if isinstance(symbol, str) and symbol.strip() else None
+            metadata[id(original)] = metadata[id(frozen)] = (name, symbol)
+
+        def post_start(ticket, sent_at):
+            name, symbol = metadata.get(id(ticket.queue_entry), (None, None))
+            self.scheduled_ticket_started.emit(ticket, sent_at, name, symbol)
+
         runtime = self._scheduled_runtime_factory(
-            on_complete=self.scheduled_ticket_completed.emit
+            on_complete=self.scheduled_ticket_completed.emit,
+            on_post_start=post_start,
         )
         try:
             count = runtime.arm(
@@ -3945,17 +3958,18 @@ class OrderConfigurationPage(QWidget):
             record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
                       if runtime is not None else None)
             classification = "UNKNOWN" if record and record.post_start_ns is not None else "NOT_SENT"
-            verdict = "\u0646\u0627\u0645\u0634\u062e\u0635\u061b \u0627\u062d\u062a\u0645\u0627\u0644 \u062b\u0628\u062a \u0633\u0641\u0627\u0631\u0634 \u0648\u062c\u0648\u062f \u062f\u0627\u0631\u062f" if classification == "UNKNOWN" else "\u0627\u0631\u0633\u0627\u0644 \u0646\u0634\u062f (\u062e\u0637\u0627\u06cc \u067e\u06cc\u0634 \u0627\u0632 \u0627\u0631\u0633\u0627\u0644)"
-            self._append_scheduled_ticket_result(ticket, verdict)
+            verdict = "نامشخص؛ احتمال ثبت سفارش وجود دارد" if classification == "UNKNOWN" else "ارسال نشد (خطای پیش از ارسال)"
         elif isinstance(result, dict):
             if result.get("isSuccess") is True:
-                self._append_scheduled_ticket_result(ticket, "\u0627\u0631\u0633\u0627\u0644 \u0645\u0648\u0641\u0642")
+                verdict = "ارسال موفق"
             elif result.get("isSuccess") is False:
-                self._append_scheduled_ticket_result(ticket, "\u067e\u0627\u0633\u062e \u0631\u062f/\u0646\u0627\u0645\u0648\u0641\u0642 \u06a9\u0627\u0631\u06af\u0632\u0627\u0631\u06cc")
+                verdict = "پاسخ رد/ناموفق کارگزاری"
             else:
-                self._append_scheduled_ticket_result(ticket, "\u067e\u0627\u0633\u062e \u06a9\u0627\u0631\u06af\u0632\u0627\u0631\u06cc \u0628\u0627 \u0633\u0627\u062e\u062a\u0627\u0631 \u0646\u0627\u0645\u0639\u062a\u0628\u0631")
+                verdict = "پاسخ کارگزاری با ساختار نامعتبر"
         else:
-            self._append_scheduled_ticket_result(ticket, "\u0646\u062a\u06cc\u062c\u0647 \u0646\u0627\u0645\u0639\u062a\u0628\u0631")
+            verdict = "نتیجه نامعتبر"
+        if self.order_log.update_send_outcome(ticket, verdict) is not None:
+            self._refresh_order_log_display()
         if isinstance(result, Exception):
             runtime = self._scheduled_fire_runtime
             record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
@@ -3996,14 +4010,14 @@ class OrderConfigurationPage(QWidget):
             if broker is not None:
                 broker.on_order_placed(decision_id, ticket.prepared_order.order.nsc_id)
 
-    def _append_scheduled_ticket_result(self, ticket, verdict):
-        """Append a payload-free per-ticket outcome to the visible schedule status."""
-        turn = getattr(ticket, "turn_index", 0) + 1
-        ticket_id = getattr(ticket, "ticket_id", None)
-        if not isinstance(ticket_id, str) or not ticket_id:
-            ticket_id = "\u0634\u0646\u0627\u0633\u0647 \u0646\u0627\u0645\u0634\u062e\u0635"
-        self._scheduled_ticket_results.append(f"\u0646\u0648\u0628\u062a {turn}، ticket {ticket_id}: {verdict}")
-        self.scheduled_ticket_results_label.setText("\n".join(self._scheduled_ticket_results))
+    def _handle_scheduled_ticket_start(self, ticket, sent_at, account_name, symbol):
+        """Append the POST-start row on the GUI thread, once per ticket."""
+        if any(row.key is ticket for row in self.order_log.rows()):
+            return
+        self.order_log.append(OrderLogRow(
+            sent_at=sent_at, account_id=account_name, symbol=symbol, key=ticket,
+        ))
+        self._refresh_order_log_display()
 
     def _record_scheduled_nats_feedback(self, account_id, broker_name, decision_id):
         """Record a scheduled NATS event only through its exact account and decision ID."""

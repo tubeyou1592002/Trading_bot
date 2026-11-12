@@ -52,10 +52,10 @@ Stage 3 Task 3 addition (trading-core registration only):
 
 Boundaries (explicitly NOT part of this module):
 
-    * rows are never reordered, removed, deduplicated by an update — the
-      only feedback mutation is the logical update of ONE row's
-      core-registration value/flag (``update_core_registration``), which
-      atomically substitutes the immutable row with its updated copy;
+    * rows are never reordered, removed, or deduplicated by an update — the
+      only permitted mutations are the logical update of ONE row's core
+      registration value/flag or send outcome description, each atomically
+      substituting the immutable row with its updated copy;
     * no NATS/OMS connection, no asynchronous feedback, no polling and no
       listener — the ONE permitted feedback entry point is the logical
       update above, nothing else;
@@ -158,11 +158,9 @@ class OrderLogRow:
     # with the registered highlight). It is set ONLY from the real event —
     # never guessed, never synthesized from any other state.
     registered_in_core: Optional[bool] = None
-    # UI-5 Task 4 Stage 3 Task 3 — the append-time correlation key: the
-    # EXACT sent ``Order`` object this row belongs to. It is identity only
-    # (an ``id``-style binding), is NEVER rendered, and is the sole link a
-    # feedback event's ``decisionId`` may be resolved through. Kept on the
-    # row so a later event can find its row without any external registry.
+    # Correlation key is identity-only and NEVER rendered. For an ordinary
+    # send it is the exact ``Order`` object; for Scheduled Live it may be the
+    # unique ticket for that POST, allowing its outcome to match this row.
     key: object = None
 
 
@@ -195,10 +193,9 @@ class OrderLog:
     order, and the row count and order never change afterwards. No row
     is ever persisted, exported or sent anywhere.
 
-    Stage 3 Task 3 update semantics: ``update_core_registration`` logically
-    updates the trading-core registration value/flag of ONE EXISTING row
-    from the real feedback event — feedback never creates a row and never
-    touches any other row or field.
+    Update semantics: core feedback may update registration fields, and
+    ``update_send_outcome`` may update only the description of ONE EXISTING
+    row. Neither operation creates rows or changes order or other fields.
     """
 
     def __init__(self, rows=None) -> None:
@@ -267,6 +264,23 @@ class OrderLog:
                 registered_in_core=True,
             ),
         )
+
+    def update_send_outcome(self, key, description):
+        """Update only the description for an existing send correlation key.
+
+        The key is identity-matched: ordinary sends use their ``Order``;
+        Scheduled Live may use the unique ticket for that POST. Keys are
+        internal and are never displayed. Invalid/blank descriptions and
+        unknown keys fail closed. A valid update replaces only the matching
+        immutable row at the same position; identical values are no-ops.
+        """
+        index = self._index_of(key)
+        if index is None or not isinstance(description, str) or not description.strip():
+            return None
+        row = self._rows[index]
+        if row.description == description:
+            return None
+        return self._replace(index, replace(row, description=description))
 
     def _index_of(self, key):
         """Position of the row appended for ``key``, or ``None``."""

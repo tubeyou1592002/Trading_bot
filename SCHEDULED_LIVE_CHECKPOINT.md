@@ -122,3 +122,23 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
 The workspace may contain unrelated edits and untracked files; they were left
 untouched. Changes described elsewhere in this checkpoint are prior work, not
 part of this documentation-only update.
+
+## Scheduled Live order-log behavior
+
+The lower existing OrderLog is the sole UI for scheduled ticket rows. A row is
+appended when the actual POST starts, using the real local timestamp and safe
+account display name/symbol. Completion updates only that row's description via
+its private ticket key. Ticket IDs and payloads are never rendered. The
+temporary upper scheduled-ticket results table has been removed.
+
+Latest focused offline verification: `test_scheduled_live_lock_contract.py` —
+26 passed. This is not a full regression pass and does not establish broker
+acceptance or production readiness.
+
+The latest three-file Kilo regression run reported 62 passed and 7 failed;
+all seven failures were in `test_ui5_task4_user_logs.py` (six harness setup
+failures involving `BrokerManager._account_lock` and one existing assertion
+about `nats` in the UI source). The equivalent combined run from the main
+workspace stalled during runtime startup and was interrupted. These results
+remain unresolved and are not attributed to the order-log change without a
+baseline comparison.

@@ -34,7 +34,8 @@ Extra contracts:
 
     E1 — before any send the table is empty (queueing alone creates no row).
     E2 — two sends append two batches; earlier rows are never touched.
-    E3 — the appended rows are immutable (append-only, never updated).
+    E3 — rows are immutable; the sole Scheduled Live outcome update
+         replaces only the matching row's description.
     E4 — the three feedback columns stay ``—`` even after a real full send.
     E5 — no technical value (nscId / tseId / Trace ID / latency / raw result
          message) ever reaches a log cell.
@@ -539,7 +540,7 @@ def test_r4_missing_and_blank_values_never_raise(qapp):
 # ===========================================================================
 
 
-def test_e3_rows_are_immutable_and_never_updated(qapp):
+def test_e3_rows_are_immutable_with_limited_scheduled_outcome_update(qapp):
     _store, page = make_page(qapp)
     order = Order(nsc_id="NSC-A", side=BUY, price=100, quantity=1)
     queue = OrderQueue()
@@ -550,6 +551,32 @@ def test_e3_rows_are_immutable_and_never_updated(qapp):
     with pytest.raises(Exception):
         row.description = "changed"
     assert page.order_log.rows()[0] is row
+
+
+def test_e3_scheduled_outcome_updates_only_matching_row_and_is_idempotent():
+    log = OrderLog()
+    left_key, ticket, right_key = object(), object(), object()
+    left = log.append(OrderLogRow(description="left", key=left_key))
+    scheduled = log.append(OrderLogRow(description="pending", key=ticket))
+    right = log.append(OrderLogRow(description="right", key=right_key))
+
+    updated = log.update_send_outcome(ticket, "completed")
+    rows = log.rows()
+    assert updated is rows[1]
+    assert len(rows) == 3
+    assert rows == [left, updated, right]
+    assert rows[0] is left and rows[2] is right
+    assert scheduled.description == "pending"
+    assert updated.description == "completed"
+    assert updated.key is ticket
+
+    assert log.update_send_outcome(object(), "unknown") is None
+    assert log.update_send_outcome(ticket, "") is None
+    assert log.update_send_outcome(ticket, "   ") is None
+    assert log.update_send_outcome(ticket, None) is None
+    assert log.rows()[1] is updated
+    assert log.update_send_outcome(ticket, "completed") is None
+    assert log.rows()[1] is updated
 
 
 def test_e5_no_technical_value_reaches_a_log_cell(qapp):

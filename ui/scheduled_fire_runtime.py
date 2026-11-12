@@ -6,6 +6,7 @@ import math
 import time
 from collections import OrderedDict
 import importlib
+from datetime import datetime
 
 
 _latency_api = importlib.import_module("core.latency_instrumentation")
@@ -35,10 +36,12 @@ def required_account_connections(table, authorization, *, timeout_seconds=ASYNC_
 class ScheduledFireRuntime:
     """Own one loop, account-private transports, and one task per ticket."""
 
-    def __init__(self, *, monotonic_clock=None, on_complete=None):
+    def __init__(self, *, monotonic_clock=None, on_complete=None, on_post_start=None):
         self._clock = monotonic_clock or time.monotonic
         self._clock_injected = monotonic_clock is not None
         self._on_complete = on_complete
+        self._on_post_start = on_post_start
+        self._post_start_notified = set()
         self._latency_clock = time.monotonic_ns
         self._latency_records = {}
         self._latency_report = None
@@ -240,6 +243,13 @@ class ScheduledFireRuntime:
                         raise RuntimeError("Schedule stopped before POST")
                     self._started.add(ticket.ticket_id)
                     self._update_latency(latency_key, post_start_ns=self._latency_clock())
+                    if (self._on_post_start is not None
+                            and latency_key not in self._post_start_notified):
+                        self._post_start_notified.add(latency_key)
+                        try:
+                            self._on_post_start(ticket, datetime.now().astimezone())
+                        except Exception:
+                            pass
                 kwargs["on_post_start"] = post_started
             result = await submit(transport, ticket.account_id, payload, **kwargs)
             if (self._latency_report.ticket(*latency_key).post_start_ns is None
