@@ -2256,6 +2256,7 @@ The following are explicitly **not** part of M6-E:
 - **M6-F / Order Splitting: Deferred / Future Development** — out of scope per Architect decision; no implementation planned at this stage.
 
 ### User Application (UI) Status
+- Scheduled Live false-reject fix (`ui/live_order_gate.py`): for each exact `(account, broker, nsc_id, side, fund, price)` group, `get_buy_capacity` is checked against the largest individual queued-order quantity, not the sum of duplicate queued orders, preventing a pre-dispatch false rejection. Distinct groups and accounts remain separate. M6-C/OrderEngine and local review without endpoint access are unchanged; an offline four-identical-order test uses the reported sample `613035` at `2095`. Verification: `test_live_batch_authorization.py` — 15 passed; `test_ui11_stage4_prearm_workflow.py` plus `test_prearm_ins_code_separation.py` — 6 passed. Offline results do not establish broker acceptance.
 - UI-1 Application Foundation: **COMPLETED** (`d73f3e0`)
 - UI-2 / UI-2.1 Account & Broker Management: **COMPLETED** (`283f58`)
 - UI-3 Order Configuration: **COMPLETED** — UI-3.1 (`97283c5`), UI-3.2A Symbol Search (`d14a8d2`), UI-3.2B Trading State Display (`a614597`)

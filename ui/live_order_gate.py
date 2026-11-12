@@ -647,9 +647,9 @@ def _capture_batch_snapshot(
                 order.side, fund, order.price,
             )
             group = buy_capacity_groups.setdefault(
-                capacity_key, [capacity_getter, 0]
+                capacity_key, [capacity_getter, order.quantity]
             )
-            group[1] += order.quantity
+            group[1] = max(group[1], order.quantity)
 
         order_payload = order.to_payload()
         order_fingerprint = fingerprint(order_payload)

@@ -7,7 +7,7 @@ Status: LIVE USER TEST SUCCESSFUL; OFFLINE REGRESSION PARTIAL (2026-11-07)
 **Goal:** complete the Scheduled Live path from Apply through the selected
 millisecond dispatch cadence, while preserving explicit approval, immutable
 per-order/per-turn tickets, no automatic retry, an unchanged closed legacy
-broker lock, and correct aggregate capacity checks. Offline fake-transport
+broker lock, and correct per-order BUY capacity checks. Offline fake-transport
 tests may verify handoff; they do not establish real broker acceptance.
 
 **Position:** the owner decision is that the user checks account purchasing
@@ -61,11 +61,12 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
 - `core/order_engine.py` M6-B/C/D/E checks each order independently. Aggregate
   SELL capacity is checked before authorization with the existing
   `get_sell_capacity` contract and total requested quantity across turns.
-  BUY capacity is queried from `get_buy_capacity` independently for each exact
-  account, broker, `nsc_id`, side, fund, and price group; requested quantity
-  per turn is checked without multiplying by future turns. Groups are not combined or proportionally
-  allocated across symbols or prices. The user's purchasing-power check and
-  the broker's final acceptance decision are outside this application check.
+  Scheduled BUY readiness queries `get_buy_capacity` for each exact account,
+  broker, `nsc_id`, side, fund, and price group, comparing it with the largest
+  individual order quantity in that group. Duplicate queued orders are not
+  summed against a single-order capacity. Distinct groups/accounts stay
+  separate. The user's purchasing-power check and the broker's final
+  acceptance decision remain outside this application check.
 - No evidence shows architectural approval of a new broker capability or
   a capacity/limit for safe ticket-table size. Do not infer approval from
   tests or this checkpoint.
@@ -80,9 +81,10 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
   transitions under one lock. A ticket is preserved only after actual handoff.
 - `ui/scheduled_fire_runtime.py`: records transport-start timing and classifies
   definite API rejections separately from ambiguous outcomes.
-- `ui/live_order_gate.py`: enforces grouped aggregate BUY and SELL exposure.
-  BUY capacity is checked during readiness only; local authorization
-  revalidation skips balance/capacity endpoints and does not trigger Refresh.
+- `ui/live_order_gate.py`: checks BUY capacity during readiness only, once per
+  exact group against its largest individual order quantity; local
+  authorization revalidation skips balance/capacity endpoints and does not
+  trigger Refresh.
   `_capture_batch_snapshot` no longer calls `get_purchase_power`, whose result
   was unused. Capacity remains separate for every
   `(account, broker, nsc_id, side, fund, price)` group.
@@ -103,6 +105,7 @@ is whole seconds and continues to feed the existing Block 3 schedule display.
 
 - Kilo reported `pytest -q test_schedule_send_table.py test_live_batch_authorization.py test_ui11_stage4_prearm_workflow.py -k "not runtime_starts_every_ticket"` => **36 passed, 1 deselected**.
 - Independent verification reported `test_live_batch_authorization.py` => **12 passed**, and `test_ui11_stage4_prearm_workflow.py` => **1 passed**.
+- After the repeated-order capacity fix, the full `test_live_batch_authorization.py` file passed (**15 passed**); `test_ui11_stage4_prearm_workflow.py` plus `test_prearm_ins_code_separation.py` passed (**6 passed**). These checks are offline and do not establish broker acceptance.
 - Independent execution of the grouped suite on this host did not complete: it stalled/timed out during asyncio `ScheduledFireRuntime` event-loop startup. This differs from Kilo's reported grouped-suite result and remains unresolved.
 - Reported focused Apply-to-fake-POST acceptance: `test_apply_two_orders_two_turns_posts_all_tickets` passed, including four ticket/order/turn correlations and cleanup. Related UNKNOWN, Stop, queue-change, and session-invalidation cases were separately reported passing.
 - Focused offline checks cover insufficient grouped capacity, no balance/capacity endpoint or Refresh during local revalidation, and snapshot mutation; see the independently reported test totals above.
