@@ -148,7 +148,7 @@ def test_5_broker_association_is_exact(store):
     # association lives on the record, not on the Account model
     assert not hasattr(record.account, "broker_name")
     # selector currently offers exactly the implemented broker
-    assert AVAILABLE_BROKERS == (BROKER,)
+    assert AVAILABLE_BROKERS == ("آگاه", "مفید")
 
 
 # ============================================================
@@ -248,8 +248,9 @@ def test_11_accounts_page_creates_no_real_broker(store, qapp):
     assert page.broker_selector is not None
     assert page.add_button is not None
     assert page.accounts_table is not None
-    assert page.broker_selector.count() == 1
+    assert page.broker_selector.count() == 2
     assert page.broker_selector.currentText() == BROKER
+    assert page.broker_selector.itemText(1) == "مفید"
 
     # no broker / manager object anywhere on the page
     for attr in (

@@ -666,6 +666,7 @@ LOGIN_PENDING = "یک تلاش ورود در حال انتظار است؛ ابت
 LOGIN_OPERATION_FAILED = "انجام عملیات مربوط به حساب ناموفق بود."
 LOGIN_CANCELLED = "تلاش ورود لغو شد."
 LOGIN_CHALLENGE_UNAVAILABLE = "چالش ورود قابل نمایش نیست؛ تلاش ورود لغو شد."
+LOGIN_CREDENTIALS_REJECTED = "نام کاربری یا رمز عبور اشتباه است، یا ورود توسط کارگزاری رد شد."
 BUTTON_COMPLETE_LOGIN = "تأیید پاسخ و ورود"
 BUTTON_LOGOUT = "خروج"
 BUTTON_REFRESH_STATUS = "بررسی وضعیت ورود حساب‌ها"

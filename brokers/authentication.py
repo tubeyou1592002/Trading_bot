@@ -166,6 +166,8 @@ class LoginChallenge:
 
 #: ثابت‌های نوع چالش شناخته‌شده (افزایش با افزودن بروکرها).
 CHALLENGE_CAPTCHA_IMAGE = "captcha_image"
+# Explicit result for adapters whose begin_login completed authentication.
+CHALLENGE_NONE = "no_challenge"
 
 
 @dataclass(frozen=True)

@@ -586,6 +586,24 @@ class AuthenticationService:
             self._clear_pending(account_id)
             raise
 
+        # Handle adapters that complete login without a user challenge.
+        from brokers.authentication import CHALLENGE_NONE, LoginChallenge
+        if isinstance(challenge, LoginChallenge) and challenge.kind == CHALLENGE_NONE:
+            authenticated = adapter.get_authenticated_session()
+            token = getattr(authenticated, "access_token", None)
+            if (not adapter.is_authenticated() or not isinstance(token, str) or not token.strip()):
+                self._clear_pending(account_id)
+                raise AuthenticationServiceError("آداپتر تکمیل ورود را بدون نشست معتبر گزارش کرد")
+            try:
+                self._sessions.mark_logged_in(account_id, token=token)
+            except Exception:
+                self._clear_pending(account_id)
+                self._detach_account_authentication(adapter)
+                raise AuthenticationServiceError("ثبت نشست ورود ناموفق بود؛ ورود مجدد لازم است") from None
+            self._adapters[account_id] = adapter
+            self._install_recovery(account_id)
+            return challenge
+
         # چالش دریافت شد: این آداپتر، تلاش ورود در حال انجام این حساب است.
         self._pending_logins[account_id] = adapter
         return challenge

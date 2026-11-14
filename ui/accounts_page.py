@@ -17,7 +17,7 @@ from ui.account_store import AccountStoreError
 from ui.credential_store import CredentialStoreError
 from ui import strings as STRINGS
 
-AVAILABLE_BROKERS = ("آگاه",)
+AVAILABLE_BROKERS = ("آگاه", "مفید")
 _ID, _DISPLAY, _ACTIVE, _STATUS, _PURCHASE_POWER, _ACTIONS = range(6)
 
 
@@ -322,6 +322,31 @@ class AccountsPage(QWidget):
         self._purchase_power_by_account.pop(account_id, None)
         if value is not None:
             self._purchase_power_by_account[account_id] = value
+        return value
+
+    def _purchase_power_diagnostic_message(self, service, account_id):
+        """Display a safe failure stage without exposing broker response data."""
+        try:
+            getter = getattr(service, "get_adapter", None)
+            adapter = getter(account_id) if callable(getter) else None
+            diagnostic = getattr(adapter, "last_purchase_power_diagnostic", None)
+        except Exception:
+            diagnostic = None
+        labels = {
+            "not_authenticated": "احراز هویت",
+            "same_login_transport_error": "ارتباط بررسی نشست",
+            "startsession_transport_error": "ارتباط با شروع نشست",
+            "startsession_schema_invalid": "پاسخ شروع نشست",
+            "money_transport_error": "ارتباط دریافت قدرت خرید",
+            "money_schema_invalid": "پاسخ قدرت خرید",
+            "ok": "نامشخص",
+        }
+        for prefix, stage in (("same_login_http_", "بررسی نشست"),
+                              ("startsession_http_", "شروع نشست"),
+                              ("money_http_", "قدرت خرید")):
+            if isinstance(diagnostic, str) and diagnostic.startswith(prefix) and diagnostic[len(prefix):].isdigit():
+                labels[diagnostic] = f"{stage} (HTTP {diagnostic[len(prefix):]})"
+        return f"ورود تأیید شد، اما دریافت قدرت خرید کامل نشد (مرحله: {labels.get(diagnostic, 'نامشخص')})."
 
     def _notify_lifecycle(self, event, account_id, broker_name=None):
         """Report an account lifecycle event to the optional observer."""
@@ -397,7 +422,9 @@ class AccountsPage(QWidget):
             self._report(STRINGS.ACCOUNT_OPERATION_FAILED, True)
 
     def _begin_login(self, account_id):
-        from brokers.authentication import CHALLENGE_CAPTCHA_IMAGE, LoginChallenge
+        from brokers.authentication import (
+            CHALLENGE_CAPTCHA_IMAGE, CHALLENGE_NONE, LoginChallenge, LoginRejectedError,
+        )
         if self._pending_login_account_id is not None:
             self._report(STRINGS.LOGIN_PENDING, True)
             return
@@ -414,6 +441,13 @@ class AccountsPage(QWidget):
                 candidate = getattr(challenge, "challenge", None)
                 if isinstance(candidate, LoginChallenge):
                     challenge = candidate
+            if isinstance(challenge, LoginChallenge) and challenge.kind == CHALLENGE_NONE:
+                self._login_status_by_account[account_id] = True
+                value = self._load_purchase_power(service, account_id)
+                self._report(STRINGS.LOGIN_COMPLETED if value is not None else
+                             self._purchase_power_diagnostic_message(service, account_id))
+                self._refresh_list()
+                return
             if not isinstance(challenge, LoginChallenge) or challenge.kind != CHALLENGE_CAPTCHA_IMAGE:
                 raise ValueError
             if not isinstance(challenge.display_payload, str):
@@ -422,6 +456,9 @@ class AccountsPage(QWidget):
             pixmap = QPixmap()
             if not pixmap.loadFromData(data) or pixmap.isNull():
                 raise ValueError
+        except LoginRejectedError:
+            self._report(STRINGS.LOGIN_CREDENTIALS_REJECTED, True)
+            return
         except Exception:
             if service is not None and challenge_received:
                 try:
@@ -484,8 +521,9 @@ class AccountsPage(QWidget):
         self._login_status_by_account[account_id] = True
         # Fetch the account's tradable balance once, only after this exact
         # account's login succeeded. Later table rebuilds/sorts use the cache.
-        self._load_purchase_power(service, account_id)
-        self._report(STRINGS.LOGIN_COMPLETED)
+        value = self._load_purchase_power(service, account_id)
+        self._report(STRINGS.LOGIN_COMPLETED if value is not None else
+                     self._purchase_power_diagnostic_message(service, account_id))
         self._finish_login(dialog)
         self._refresh_list()
 

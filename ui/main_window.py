@@ -538,12 +538,20 @@ class MainWindow(QMainWindow):
             make_agah_adapter_factory = import_module(
                 "brokers.agaah.auth_adapter"
             ).make_agah_adapter_factory
+            make_mofid_adapter_factory = import_module(
+                "brokers.mofid.auth_adapter"
+            ).make_mofid_adapter_factory
             service = AuthenticationService(
                 self.account_store,
                 self.credential_store,
                 self.session_manager,
                 adapter_factories={
                     "آگاه": make_agah_adapter_factory(manager),
+                    "مفید": make_mofid_adapter_factory(
+                        manager, client_id="easy_pkce",
+                        redirect_uri="https://d.easytrader.ir/auth-callback",
+                        build_no="59762",
+                    ),
                 },
             )
             self._authentication_service = service
