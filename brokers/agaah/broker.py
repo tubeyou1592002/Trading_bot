@@ -337,6 +337,7 @@ class AgaahBroker(Broker):
         self._queue_position_listeners = []
         self._order_error_listeners = []
         self._feedback_unavailable_listeners = []
+        self._normalized_feedback_listeners = []
 
         self._logger = logging.getLogger(__name__)
 
@@ -1771,17 +1772,48 @@ class AgaahBroker(Broker):
         """Register a callback for AcceptedByBourse order registration events."""
         self._order_registered_listeners.append(callback)
 
+    def remove_order_registered_listener(self, callback) -> None:
+        if callback in self._order_registered_listeners:
+            self._order_registered_listeners.remove(callback)
+
+    def add_normalized_feedback_listener(self, callback) -> None:
+        if callback not in self._normalized_feedback_listeners:
+            self._normalized_feedback_listeners.append(callback)
+
+    def remove_normalized_feedback_listener(self, callback) -> None:
+        if callback in self._normalized_feedback_listeners:
+            self._normalized_feedback_listeners.remove(callback)
+
+    def _on_normalized_feedback_forward(self, feedback) -> None:
+        for callback in tuple(self._normalized_feedback_listeners):
+            try:
+                callback(feedback)
+            except Exception:
+                self._logger.warning("Normalized feedback listener failed")
+
     def add_queue_position_listener(self, callback) -> None:
         """Register a callback for queue position updates."""
         self._queue_position_listeners.append(callback)
+
+    def remove_queue_position_listener(self, callback) -> None:
+        if callback in self._queue_position_listeners:
+            self._queue_position_listeners.remove(callback)
 
     def add_order_error_listener(self, callback) -> None:
         """Register a callback for order tracking errors."""
         self._order_error_listeners.append(callback)
 
+    def remove_order_error_listener(self, callback) -> None:
+        if callback in self._order_error_listeners:
+            self._order_error_listeners.remove(callback)
+
     def add_feedback_unavailable_listener(self, callback) -> None:
         """Register a display-only listener for NATS transport loss."""
         self._feedback_unavailable_listeners.append(callback)
+
+    def remove_feedback_unavailable_listener(self, callback) -> None:
+        if callback in self._feedback_unavailable_listeners:
+            self._feedback_unavailable_listeners.remove(callback)
 
     def _on_feedback_unavailable_forward(self, reason: str) -> None:
         """Forward NATS status without touching the order-send lifecycle."""
@@ -1831,6 +1863,8 @@ class AgaahBroker(Broker):
                 on_queue_position=self._on_queue_position_forward,
                 on_error=self._on_order_error_forward,
                 on_unavailable=self._on_feedback_unavailable_forward,
+                account_id=self._account_id,
+                on_normalized_feedback=self._on_normalized_feedback_forward,
             )
         return self._queue_position_provider
 

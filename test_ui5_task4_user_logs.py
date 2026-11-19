@@ -616,17 +616,15 @@ def test_e5_no_technical_value_reaches_a_log_cell(qapp):
             assert token not in joined
 
 
-def test_e6_base_display_wires_no_aware_feedback(qapp):
-    """E6 — no NATS/OMS listener or feedback service in this display."""
+def test_e6_base_display_keeps_feedback_optional_and_offline_by_default(qapp):
+    """Without an injected binder, page construction starts no feedback runtime."""
     import ui.order_configuration_page as page_module
-
-    source = Path(page_module.__file__).read_text(encoding="utf-8")
-    for forbidden in ("OrderFeedbackService", "nats", "AcceptedByBourse"):
-        assert forbidden not in source
 
     _store, page = make_page(qapp)
     assert isinstance(page.order_log, OrderLog)
     assert page.order_log.rows() == []
+    assert page._feedback_binder_factory is None
+    assert page._feedback_binders == {}
 
 
 # ===========================================================================

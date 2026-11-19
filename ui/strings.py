@@ -74,6 +74,10 @@ __all__ = [
     "TRACE_LOG_WRITE_OK",
     "TRACE_LOG_NOT_WRITTEN",
     "TRACE_LOG_STATUS_UNAVAILABLE",
+    "BUTTON_SAVE_LIVE_TRACE",
+    "LIVE_TRACE_SAVE_CANCELLED",
+    "LIVE_TRACE_SAVE_FAILED",
+    "LIVE_TRACE_SAVE_OK",
     "FEEDBACK_UNAVAILABLE",
     "SCHEDULE_STOPPED_IN_FLIGHT",
     "SUMMARY_TOTAL_POSSIBLE_SENDS",
@@ -389,6 +393,10 @@ TRACE_LOG_WRITE_FAILED = "ثبت گزارش با خطا روبه‌رو شد؛ �
 TRACE_LOG_WRITE_OK = "ثبت گزارش با موفقیت انجام شد."
 TRACE_LOG_NOT_WRITTEN = "وضعیت گزارش: هنوز نوشتن موفقی انجام نشده است."
 TRACE_LOG_STATUS_UNAVAILABLE = "مسیر فایل گزارش: نامشخص\nوضعیت ثبت گزارش در دسترس نیست."
+BUTTON_SAVE_LIVE_TRACE = "ذخیره رویدادهای اجرای زنده"
+LIVE_TRACE_SAVE_CANCELLED = "ذخیرهٔ گزارش لغو شد."
+LIVE_TRACE_SAVE_FAILED = "ذخیرهٔ گزارش انجام نشد؛ مسیر انتخاب‌شده را بررسی کنید."
+LIVE_TRACE_SAVE_OK = "رویدادهای اجرای اخیر ذخیره شد."
 FEEDBACK_UNAVAILABLE = "بازخورد از سازمان بورس دریافت نشده"
 SCHEDULE_STOPPED_IN_FLIGHT = (
     "زمان‌بندی متوقف شد؛ نوبت‌های بعدی شروع نمی‌شوند. "

@@ -90,7 +90,9 @@ class OrderFeedbackService(QThread):
     """
 
     order_registered = Signal(str, object, object)
-    order_registered_monotonic = Signal(str, int)
+    # ``int`` maps to a signed 32-bit Qt integer in PySide; monotonic_ns is
+    # a 64-bit Python integer. PyObject preserves its exact integer value.
+    order_registered_monotonic = Signal(str, object)
     queue_position = Signal(str, int)
     feedback_error = Signal(str)
     started = Signal()
@@ -129,6 +131,7 @@ class OrderFeedbackService(QThread):
         self._running = False
         self.account_id = account_id
         self.broker_name = broker_name
+        self.normalized_feedback = Signal(object)
         # The exact broker instance whose listener lists already hold this
         # service's callbacks. Installing listeners is idempotent per
         # broker instance: starting the service again must never register
@@ -221,14 +224,22 @@ class OrderFeedbackService(QThread):
         broker = self._broker
         if broker is None or broker is self._listeners_broker:
             return
-        broker.add_order_registered_listener(self._on_order_registered)
-        broker.add_queue_position_listener(self._on_queue_position)
-        broker.add_order_error_listener(self._on_order_error)
+        if self._on_order_registered not in getattr(broker, "_order_registered_listeners", ()):
+            broker.add_order_registered_listener(self._on_order_registered)
+        normalized_listener = getattr(broker, "add_normalized_feedback_listener", None)
+        if callable(normalized_listener):
+            if self._on_normalized_feedback not in getattr(broker, "_normalized_feedback_listeners", ()):
+                normalized_listener(self._on_normalized_feedback)
+        if self._on_queue_position not in getattr(broker, "_queue_position_listeners", ()):
+            broker.add_queue_position_listener(self._on_queue_position)
+        if self._on_order_error not in getattr(broker, "_order_error_listeners", ()):
+            broker.add_order_error_listener(self._on_order_error)
         unavailable_listener = getattr(
             broker, "add_feedback_unavailable_listener", None
         )
         if callable(unavailable_listener):
-            unavailable_listener(self._on_feedback_unavailable)
+            if self._on_feedback_unavailable not in getattr(broker, "_feedback_unavailable_listeners", ()):
+                unavailable_listener(self._on_feedback_unavailable)
         self._listeners_broker = broker
 
     def _ensure_provider(self) -> None:
@@ -265,6 +276,9 @@ class OrderFeedbackService(QThread):
     def _on_feedback_unavailable(self, _reason="") -> None:
         """Report optional transport loss as feedback-only status."""
         self.feedback_unavailable.emit()
+
+    def _on_normalized_feedback(self, feedback: Any) -> None:
+        self.normalized_feedback.emit(feedback)
 
     def start_service(self) -> None:
         """
@@ -322,6 +336,24 @@ class OrderFeedbackService(QThread):
         except Exception:
             pass
         finally:
+            if self._listeners_broker is not None:
+                listeners_removed = False
+                for name, callback in (
+                    ("remove_order_registered_listener", self._on_order_registered),
+                    ("remove_queue_position_listener", self._on_queue_position),
+                    ("remove_order_error_listener", self._on_order_error),
+                    ("remove_feedback_unavailable_listener", self._on_feedback_unavailable),
+                    ("remove_normalized_feedback_listener", self._on_normalized_feedback),
+                ):
+                    remover = getattr(self._listeners_broker, name, None)
+                    if callable(remover):
+                        remover(callback)
+                        listeners_removed = True
+                # Some legacy broker doubles expose add-only listeners. Keep
+                # the broker association in that case so restart cannot add a
+                # duplicate; production brokers with removers are detached.
+                if listeners_removed:
+                    self._listeners_broker = None
             if self._loop is not None:
                 try:
                     self._loop.close()

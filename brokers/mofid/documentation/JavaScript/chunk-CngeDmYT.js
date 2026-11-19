@@ -1,0 +1,3 @@
+import{Ct as Hs}from"./chunk-CcbyFaDJ.js";function a(e){let t=e.newOrderQuantity??0,n=e.openPositionQuantity??0,r=e.openBuyOrdersQuantity??0;return e.openPositionSide===Hs.Sell?Math.max(0,t+r-n):t}function u(e){return a(e)*e.symbolDelta}function l(e){let t=e.newOrderQuantity??0,n=e.openPositionQuantity??0,r=e.openSellOrdersQuantity??0;return e.openPositionSide===Hs.Buy?Math.max(0,t+r-n):t}function c(e){return l(e)*-e.symbolDelta}function y(e){let t=e.symbolDelta??0,n=e.executedQuantity??0;return e.side===Hs.Buy?(n+(e.openBuyQuantity??0))*t:e.side===Hs.Sell?-1*(n+(e.openSellQuantity??0))*t:0}export{y as i,c as n,u as r,a as t};
+//# debugId=53095632-4c13-595f-bdd4-ab581ec48317
+//# sourceMappingURL=chunk-CngeDmYT.js.map

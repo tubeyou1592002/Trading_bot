@@ -1,0 +1,9 @@
+﻿EASYTRADER STATIC JAVASCRIPT ANALYSIS
+Date: 2026-11-13 09:09:48
+Files scanned: 61
+Unique matches: 0
+
+===== API AND KEYWORD FINDINGS =====
+
+===== HTTP METHOD HINTS =====
+main-JXOX7C46.js : DELETE

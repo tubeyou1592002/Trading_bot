@@ -60,12 +60,16 @@ class AgahOrderCorrelator:
         on_queue_position: Optional[Callable[[str, int], None]] = None,
         on_error: Optional[Callable[[str, str], None]] = None,
         on_unavailable: Optional[Callable[[str], None]] = None,
+        account_id: Optional[str] = None,
+        on_normalized_feedback: Optional[Callable[[Any], None]] = None,
     ):
         self.broker = broker
         self.on_order_registered = on_order_registered
         self.on_queue_position = on_queue_position
         self.on_error = on_error
         self.on_unavailable = on_unavailable
+        self.account_id = account_id
+        self.on_normalized_feedback = on_normalized_feedback
 
         # Import here to avoid circular import
         from .nats_transport import AgahNatsTransport, AgahQueuePositionService
@@ -122,6 +126,21 @@ class AgahOrderCorrelator:
             return
 
         order_info = self._orders[decision_id]
+        if getattr(self, "on_normalized_feedback", None) is not None:
+            from .order_feedback_adapter import AgahOrderFeedbackAdapter
+            from brokers.order_feedback_contract import OrderFeedbackEvent
+
+            native = {
+                "action": oms.action,
+                "decision_id": decision_id,
+                "decision_registered": True,
+                "account_id": self.account_id,
+                "raw_timestamp": oms.raw_timestamp,
+                "app_received_monotonic_ns": oms.app_received_monotonic_ns,
+            }
+            feedback = AgahOrderFeedbackAdapter(self.account_id or "").normalize(native)
+            if isinstance(feedback, OrderFeedbackEvent):
+                self.on_normalized_feedback(feedback)
 
         if oms.action == 2:  # SavedInAsa
             self._handle_saved_in_asa(order_info, oms)
@@ -283,6 +302,8 @@ class AgahQueuePositionProvider:
         on_queue_position: Optional[Callable[[str, int], None]] = None,
         on_error: Optional[Callable[[str, str], None]] = None,
         on_unavailable: Optional[Callable[[str], None]] = None,
+        account_id: Optional[str] = None,
+        on_normalized_feedback: Optional[Callable[[Any], None]] = None,
     ):
         self.correlator = AgahOrderCorrelator(
             broker,
@@ -290,6 +311,8 @@ class AgahQueuePositionProvider:
             on_queue_position=on_queue_position,
             on_error=on_error,
             on_unavailable=on_unavailable,
+            account_id=account_id,
+            on_normalized_feedback=on_normalized_feedback,
         )
 
     async def start(self) -> None:

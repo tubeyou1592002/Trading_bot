@@ -157,6 +157,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QDialog,
     QMessageBox,
+    QFileDialog,
     QRadioButton,
     QScrollArea,
     QSizePolicy,
@@ -521,6 +522,9 @@ DIAGNOSTIC_TRACE_UNAVAILABLE = "-"  # ناموجود / نامشخص
 # scope; ns values are displayed converted to ms (display-only).
 DIAGNOSTIC_LATENCY_TOTAL_LABEL = STRINGS.DIAGNOSTIC_LATENCY_TOTAL_LABEL
 DIAGNOSTIC_VALUE_UNAVAILABLE = "\u0646\u0627\u0645\u0648\u062c\u0648\u062f"
+DIAGNOSTIC_LATENCY_HEADERS = (
+    "شماره سفارش", "حساب", "نماد", "نوبت", "منبع/مرحله", "مقدار", "واحد", "دامنه ساعت",
+)
 
 # The four internal dispatch stages (Block 8 Task 8.2 — exactly these).
 DIAGNOSTIC_LATENCY_STAGES = (
@@ -528,6 +532,15 @@ DIAGNOSTIC_LATENCY_STAGES = (
     "plan_account",
     "instrument_resolution",
     "order_engine_path",
+)
+DIAGNOSTIC_SUMMARY_HEADERS = (
+    "شماره سفارش", "حساب", "نماد", "نوبت", "وضعیت",
+    "plan_item (ns)", "plan_account (ns)", "instrument_resolution (ns)",
+    "order_engine_path (ns)", "duration_5 (ns)", "مدت فراخوانی کارگزاری (ns)",
+)
+DIAGNOSTIC_DETAIL_HEADERS = (
+    "شماره سفارش", "حساب", "نماد", "نوبت", "منبع", "مرحله/رویداد",
+    "مقدار", "واحد", "دامنه ساعت", "زمان دیواری",
 )
 DIAGNOSTIC_LATENCY_STAGE_PREFIX = STRINGS.DIAGNOSTIC_STAGE_PREFIX
 
@@ -650,6 +663,81 @@ def _manual_live_final_status(result):
     if getattr(result, "success", None) is True and getattr(result, "sent", False):
         return "SUCCESS"
     return "ERROR"
+
+
+def _xlsx_column_name(number):
+    """Convert a one-based spreadsheet column number to its A1 name."""
+    result = ""
+    while number:
+        number, remainder = divmod(number - 1, 26)
+        result = chr(65 + remainder) + result
+    return result
+
+
+def _xlsx_cell(value, row, column):
+    """Render a safe scalar as a SpreadsheetML cell (strings are inline)."""
+    import xml.etree.ElementTree as ET
+
+    address = f"{_xlsx_column_name(column)}{row}"
+    if value is None or isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        value = ""
+    if isinstance(value, str):
+        cell = ET.Element("c", {"r": address, "t": "inlineStr"})
+        inline = ET.SubElement(cell, "is")
+        ET.SubElement(inline, "t", {"{http://www.w3.org/XML/1998/namespace}space": "preserve"}).text = value
+    else:
+        cell = ET.Element("c", {"r": address})
+        ET.SubElement(cell, "v").text = str(value)
+    return cell
+
+
+def _write_live_trace_xlsx(path, summary_rows, event_rows, summary_headers=None, event_headers=None):
+    """Write two evidence-only sheets using the XLSX ZIP/XML standard."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    package_rel = "http://schemas.openxmlformats.org/package/2006/relationships"
+    content = "http://schemas.openxmlformats.org/package/2006/content-types"
+    ET.register_namespace("", main)
+    ET.register_namespace("r", rel)
+
+    def worksheet(headers, records):
+        root = ET.Element(f"{{{main}}}worksheet")
+        data = ET.SubElement(root, f"{{{main}}}sheetData")
+        for row_number, values in enumerate([headers, *records], start=1):
+            row = ET.SubElement(data, f"{{{main}}}row", {"r": str(row_number)})
+            for column, value in enumerate(values, start=1):
+                row.append(_xlsx_cell(value, row_number, column))
+        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+    workbook = ET.Element(f"{{{main}}}workbook")
+    sheets = ET.SubElement(workbook, f"{{{main}}}sheets")
+    for index, name in enumerate(("خلاصه", "جزئیات اجرا"), start=1):
+        ET.SubElement(sheets, f"{{{main}}}sheet", {
+            "name": name, "sheetId": str(index), f"{{{rel}}}id": f"rId{index}"
+        })
+    rels = ET.Element(f"{{{package_rel}}}Relationships")
+    for index in (1, 2):
+        ET.SubElement(rels, f"{{{package_rel}}}Relationship", {
+            "Id": f"rId{index}", "Type": f"{rel}/worksheet", "Target": f"worksheets/sheet{index}.xml"
+        })
+    types = ET.Element(f"{{{content}}}Types")
+    ET.SubElement(types, f"{{{content}}}Default", {"Extension": "rels", "ContentType": "application/vnd.openxmlformats-package.relationships+xml"})
+    ET.SubElement(types, f"{{{content}}}Default", {"Extension": "xml", "ContentType": "application/xml"})
+    ET.SubElement(types, f"{{{content}}}Override", {"PartName": "/xl/workbook.xml", "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"})
+    for index in (1, 2):
+        ET.SubElement(types, f"{{{content}}}Override", {"PartName": f"/xl/worksheets/sheet{index}.xml", "ContentType": "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"})
+    summary_headers = summary_headers or DIAGNOSTIC_SUMMARY_HEADERS
+    event_headers = event_headers or DIAGNOSTIC_DETAIL_HEADERS
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", ET.tostring(types, encoding="utf-8", xml_declaration=True))
+        archive.writestr("_rels/.rels", (f'<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="{package_rel}"><Relationship Id="rId1" Type="{rel}/officeDocument" Target="xl/workbook.xml"/></Relationships>').encode())
+        archive.writestr("xl/workbook.xml", ET.tostring(workbook, encoding="utf-8", xml_declaration=True))
+        archive.writestr("xl/_rels/workbook.xml.rels", ET.tostring(rels, encoding="utf-8", xml_declaration=True))
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet(summary_headers, summary_rows))
+        archive.writestr("xl/worksheets/sheet2.xml", worksheet(event_headers, event_rows))
 
 
 def _result_reason_for_status(status, result=None):
@@ -931,6 +1019,7 @@ class OrderConfigurationPage(QWidget):
     """
 
     schedule_cancelled = Signal(str)
+    dispatch_turn_completed = Signal()
     scheduled_ticket_completed = Signal(object, object)
     scheduled_ticket_started = Signal(object, object, object, object)
 
@@ -1089,8 +1178,8 @@ class OrderConfigurationPage(QWidget):
         self._page_scroll.setWidget(page_content)
 
         # --- Top row: two EQUAL columns below the full-width account ---
-        # Left column  = order form, amounts and queue
-        # Right column = schedule + countdown
+        # Left column  = order information (order form, amounts, queue)
+        # Right column = scheduling (schedule + countdown)
         top_row = QHBoxLayout()
         top_row.setSpacing(_gap)
 
@@ -1120,6 +1209,12 @@ class OrderConfigurationPage(QWidget):
         top_row.addWidget(order_column, 1)
         top_row.addWidget(schedule_column, 1)
         content_layout.addLayout(top_row)
+
+        # --- Bottom area: the tables ------------------------------
+        # Order Queue and Test Results side by side, then Order Log
+        # full width beneath them, then the Diagnostic section last.
+        tables_row = QHBoxLayout()
+        tables_row.setSpacing(_gap)
 
         # ---------------------------------------------
         # Active account (from the existing UI-2.1 store)
@@ -1388,6 +1483,8 @@ class OrderConfigurationPage(QWidget):
         self._frozen_targets = ()
         self._schedule_snapshot = None
         self._scheduled_send_table = None
+        self._scheduled_ticket_metadata = {}
+        self._scheduled_ticket_outcomes = ()
         self._scheduled_fire_runtime = None
         self._scheduled_lock_states = []
         self._scheduled_broker_manager_factory = None
@@ -1405,6 +1502,9 @@ class OrderConfigurationPage(QWidget):
         self._schedule_cancel_event.set()
         self.schedule_cancelled.connect(
             self._on_schedule_integrity_failure, Qt.ConnectionType.QueuedConnection
+        )
+        self.dispatch_turn_completed.connect(
+            self._refresh_diagnostic_latency_display, Qt.ConnectionType.QueuedConnection
         )
         if order_queue is not None and hasattr(order_queue, "add_change_listener"):
             order_queue.add_change_listener(self._on_order_queue_changed)
@@ -1465,6 +1565,9 @@ class OrderConfigurationPage(QWidget):
         # and the model never stores or invents a queue value. A cell whose
         # order holds no entry renders ``—`` (fail-closed).
         self._queue_status_text_by_order = {}
+        # Normalized OMS events are retained only after exact account-scoped
+        # decision-id correlation to an order sent by this page.
+        self._normalized_feedback_by_order = {}
 
         # --- UI-6 Task 1: diagnostic-section visibility state ---------
         # The single display-boundary flag of this page. NORMAL (the
@@ -1571,8 +1674,8 @@ class OrderConfigurationPage(QWidget):
         queue_layout = QVBoxLayout(queue_group)
 
         self.queue_status_label = QLabel(QUEUE_STATUS_EMPTY, self)
-        # Keep status available to internal state and existing consumers, but
-        # do not present it as a separate card on the page.
+        # Keep the status label available to internal state and existing
+        # consumers, but do not present it in the page layout.
         self.queue_status_label.setVisible(False)
 
         # Visible pending-orders list — rendered ONLY from the existing
@@ -1604,10 +1707,18 @@ class OrderConfigurationPage(QWidget):
         queue_layout.addWidget(self.queue_count_label)
         queue_layout.addWidget(self.test_button)
 
+        # UI-9 Task 2: the queue STATUS line moves to the scheduling
+        # column (per the 2.2 layout table); the queue GROUP itself goes to
+        # the bottom tables row. queue_list stays a direct child of this
+        # group box — no container is inserted between a list and its
+        # group (C5). The status label itself is appended to the scheduling
+        # column in the final assembly, so it renders BELOW the schedule.
+
         # ---------------------------------------------
         # Test Results display (UI-5 Task 3)
         # ---------------------------------------------
-        # Send outcomes are shown in the full-width Order Log below.
+
+        # The queue belongs directly below amounts in the left column.
         order_column_layout.addWidget(queue_group)
 
         # ---------------------------------------------
@@ -1727,8 +1838,7 @@ class OrderConfigurationPage(QWidget):
         schedule_form.addRow("وضعیت بازخورد:", self.feedback_status_label)
         self._fit_schedule_group_height()
 
-        # UI-9 Task 2: the scheduling column (right of the two). Let this
-        # group fill the height of the form, amounts and queue stack.
+        # UI-9 Task 2: the scheduling column (right of the two).
         self.schedule_group.setSizePolicy(
             QSizePolicy.Preferred, QSizePolicy.Expanding
         )
@@ -1779,12 +1889,21 @@ class OrderConfigurationPage(QWidget):
         )
         diagnostic_layout.addWidget(self.latency_total_label)
 
-        self.latency_detail_list = QListWidget(self.diagnostic_section)
-        self.latency_detail_list.setMaximumHeight(160)
+        self.latency_detail_list = QTableWidget(0, len(DIAGNOSTIC_LATENCY_HEADERS), self.diagnostic_section)
+        self.latency_detail_list.setHorizontalHeaderLabels(list(DIAGNOSTIC_LATENCY_HEADERS))
+        self.latency_detail_list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.latency_detail_list.horizontalHeader().setStretchLastSection(True)
+        self.latency_detail_list.setEditTriggers(QTableWidget.NoEditTriggers)
         diagnostic_layout.addWidget(self.latency_detail_list)
+        self.export_diagnostics_button = QPushButton("خروجی Excel تشخیص‌ها", self.diagnostic_section)
+        self.export_diagnostics_button.clicked.connect(self._export_diagnostic_rows)
+        diagnostic_layout.addWidget(self.export_diagnostics_button)
 
-        self.diagnostic_list = QListWidget(self.diagnostic_section)
-        self.diagnostic_list.setMaximumHeight(120)
+        self.diagnostic_list = QTableWidget(0, 3, self.diagnostic_section)
+        self.diagnostic_list.setHorizontalHeaderLabels(["شماره سفارش", "نماد و سمت", "وضعیت"])
+        self.diagnostic_list.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.diagnostic_list.horizontalHeader().setStretchLastSection(True)
+        self.diagnostic_list.setEditTriggers(QTableWidget.NoEditTriggers)
         diagnostic_layout.addWidget(self.diagnostic_list)
 
         self.diagnostic_status_label = QLabel(
@@ -1793,6 +1912,9 @@ class OrderConfigurationPage(QWidget):
         diagnostic_layout.addWidget(self.diagnostic_status_label)
         self.trace_logger_status_label = QLabel(self.diagnostic_section)
         diagnostic_layout.addWidget(self.trace_logger_status_label)
+        self.save_trace_button = QPushButton(STRINGS.BUTTON_SAVE_LIVE_TRACE, self.diagnostic_section)
+        self.save_trace_button.clicked.connect(self._save_latest_manual_trace)
+        diagnostic_layout.addWidget(self.save_trace_button)
 
         # UI-9 Task 2: the Diagnostic section is placed LAST in the
         # assembly below (after Order Log). Its NORMAL/DIAGNOSTIC
@@ -1842,10 +1964,10 @@ class OrderConfigurationPage(QWidget):
         # ---------------------------------------------
         #
         # Order of appearance inside the scroll area:
-        #   1. Active account — full width
-        #   2. top row         — order/amounts/queue | schedule
-        #   3. Order Log       — full width
-        #   4. Diagnostic      — last, mode-gated exactly as before
+        #   1. top row      — two equal columns (already added above)
+        #   2. tables row   — Order Queue
+        #   3. Order Log    — full width
+        #   4. Diagnostic   — last, mode-gated exactly as before
         content_layout.addWidget(log_group)
         content_layout.addWidget(self.diagnostic_section)
         content_layout.addStretch(1)
@@ -3234,6 +3356,7 @@ class OrderConfigurationPage(QWidget):
         the row's data role — orders are never cloned/rebuild for display,
         and display text is never parsed back into identity.
         """
+        self.queue_list.setRowCount(0)
         pending = self.order_queue.list_pending()
         self.queue_list.setRowCount(len(pending))
         for row, entry in enumerate(pending):
@@ -3256,13 +3379,9 @@ class OrderConfigurationPage(QWidget):
                     account_name = display_name
             quantity = getattr(order, "quantity", None)
             price = getattr(order, "price", None)
-            values = (
-                row + 1,
-                account_name,
-                side_label,
-                quantity if quantity is not None else STRINGS.VALUE_NOT_AVAILABLE,
-                price if price is not None else STRINGS.VALUE_NOT_AVAILABLE,
-            )
+            values = (row + 1, account_name, side_label,
+                      quantity if quantity is not None else STRINGS.VALUE_NOT_AVAILABLE,
+                      price if price is not None else STRINGS.VALUE_NOT_AVAILABLE)
             for column, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if column == 0:
@@ -3740,7 +3859,7 @@ class OrderConfigurationPage(QWidget):
                             raise ValueError("invalid T1 balance")
                         balances[account_id] = balance
                 except Exception:
-                    return False, None, None, None, "\u062f\u0631\u06cc\u0627\u0641\u062a \u0645\u0648\u062c\u0648\u062f\u06cc \u0642\u0627\u0628\u0644 \u0645\u0639\u0627\u0645\u0644\u0647 T1 \u0646\u0627\u0645\u0648\u0641\u0642 \u06cc\u0627 \u0645\u0642\u062f\u0627\u0631 \u0622\u0646 \u0646\u0627\u0645\u0639\u062a\u0628\u0631 \u0627\u0633\u062a\u061b \u0632\u0645\u0627\u0646\u0628\u0646\u062f\u06cc \u0631\u062f \u0634\u062f."
+                    return False, None, None, None, "دریافت موجودی قابل معامله T1 ناموفق یا مقدار آن نامعتبر است؛ زمان‌بندی رد شد."
                 for account_id, accounts in buy_accounts.items():
                     for account in accounts:
                         account.tradable_balance_t1 = balances[account_id]
@@ -3761,7 +3880,8 @@ class OrderConfigurationPage(QWidget):
                 queue_revision=self.order_queue.revision,
                 engine=coordinator.engine,
             )
-            readiness = self._live_batch_gate_factory(**gate_args)
+            readiness_args = dict(gate_args)
+            readiness = self._live_batch_gate_factory(**readiness_args)
             if not getattr(readiness, "ready_for_confirmation", False):
                 return False, None, None, None, getattr(readiness, "reason", STRINGS.LIVE_NOT_READY)
             planned_turns = count_planned_turns(
@@ -3868,6 +3988,24 @@ class OrderConfigurationPage(QWidget):
             symbol = symbol if isinstance(symbol, str) and symbol.strip() else None
             metadata[id(original)] = metadata[id(frozen)] = (name, symbol)
 
+        # Retain only display-safe identifiers after the schedule snapshot is cleared.
+        safe_entries = {}
+        schedule_account_aliases = {}
+        for index, (original, frozen) in enumerate(snapshot.get("orders", ())):
+            account_id = getattr(original, "account_id", None)
+            alias = None
+            if account_id:
+                alias = schedule_account_aliases.setdefault(
+                    account_id, f"account-{len(schedule_account_aliases) + 1}"
+                )
+            symbol = metadata[id(original)][1]
+            safe_entries[id(original)] = safe_entries[id(frozen)] = (index + 1, alias, symbol)
+        self._scheduled_ticket_metadata = {
+            (ticket.ticket_id, ticket.turn_index): safe_entries.get(id(ticket.queue_entry), (None, None, None))
+            for ticket in self._scheduled_send_table.tickets
+        }
+        self._scheduled_ticket_outcomes = ()
+
         def post_start(ticket, sent_at):
             name, symbol = metadata.get(id(ticket.queue_entry), (None, None))
             self.scheduled_ticket_started.emit(ticket, sent_at, name, symbol)
@@ -3889,6 +4027,8 @@ class OrderConfigurationPage(QWidget):
             raise
         self._scheduled_fire_runtime = runtime
         self._scheduled_latency_report = runtime.latency_report()
+        self._last_test_run_mode = None
+        self._last_test_trace_id = None
         if self._schedule_snapshot is not None:
             self._schedule_snapshot["ticket_table"] = self._scheduled_send_table
             self._schedule_snapshot["authorization"] = self._live_authorization
@@ -3925,6 +4065,7 @@ class OrderConfigurationPage(QWidget):
             verdict = "نتیجه نامعتبر"
         if self.order_log.update_send_outcome(ticket, verdict) is not None:
             self._refresh_order_log_display()
+        self._refresh_diagnostic_latency_display()
         if isinstance(result, Exception):
             runtime = self._scheduled_fire_runtime
             record = (runtime.latency_report().ticket(ticket.ticket_id, ticket.turn_index)
@@ -3967,6 +4108,7 @@ class OrderConfigurationPage(QWidget):
 
     def _handle_scheduled_ticket_start(self, ticket, sent_at, account_name, symbol):
         """Append the POST-start row on the GUI thread, once per ticket."""
+        self._refresh_diagnostic_latency_display()
         if any(row.key is ticket for row in self.order_log.rows()):
             return
         self.order_log.append(OrderLogRow(
@@ -4442,6 +4584,7 @@ class OrderConfigurationPage(QWidget):
         self._last_test_entries = list(entries)
         self._last_order_results = None
         self._last_test_run_mode = run_mode
+
         # UI-5 Task 4 Stage 3 Task 3 — corrective contract: the feedback
         # binding is established BEFORE the send pass starts (lazily, once,
         # nothing new is started). A matching-engine registration event
@@ -4775,6 +4918,11 @@ class OrderConfigurationPage(QWidget):
             queue_signal.connect(
                 self._make_queue_position_handler(account_id, broker_name)
             )
+        normalized_signal = getattr(binder, "normalized_feedback", None)
+        if callable(getattr(normalized_signal, "connect", None)):
+            normalized_signal.connect(
+                self._make_normalized_feedback_handler(account_id, broker_name)
+            )
         self._feedback_binders[key] = binder
         self._feedback_binder = binder
         if getattr(binder, "startup_error", None):
@@ -4816,6 +4964,37 @@ class OrderConfigurationPage(QWidget):
                 account_id, broker_name, decision_id, position
             )
         return handler
+
+    def _make_normalized_feedback_handler(self, account_id, broker_name):
+        """Tag a normalized service event with its account-scoped runtime."""
+        def handler(event):
+            self._on_normalized_feedback(account_id, broker_name, event)
+        return handler
+
+    def _on_normalized_feedback(self, account_id, broker_name, event):
+        """Render only OMS events whose exact decision binding is unambiguous."""
+        from brokers.order_feedback_contract import (
+            FeedbackMilestone, OrderFeedbackEvent,
+        )
+        if not isinstance(event, OrderFeedbackEvent):
+            return
+        if (event.account_id != account_id or event.broker_name != broker_name
+                or event.milestone is not FeedbackMilestone.OMS_ACCEPTED_BY_BOURSE
+                or not event.decision_id):
+            return
+        order = self._order_by_decision_key.get(
+            (account_id, broker_name, event.decision_id)
+        )
+        if order is None or id(order) not in self._queued_order_ids:
+            return
+        # If a broker order id is present, it must match the same exact sent
+        # order's known id; without a known mapping it is not safe to guess.
+        if event.order_id is not None:
+            known_id = getattr(order, "order_id", None)
+            if not isinstance(known_id, str) or known_id != event.order_id:
+                return
+        self._normalized_feedback_by_order[id(order)] = event
+        self._refresh_diagnostic_latency_display()
 
     def _on_queue_position_from_feedback(
         self, account_id, broker_name, decision_id, position
@@ -4901,9 +5080,13 @@ class OrderConfigurationPage(QWidget):
         self._refresh_order_log_display()
 
     def scheduled_latency_report(self):
-        """Return the current in-memory report for the active scheduled run."""
+        """Return the scheduled report snapshot, refreshed while runtime is active."""
         runtime = self._scheduled_fire_runtime
-        return runtime.latency_report() if runtime is not None else self._scheduled_latency_report
+        if runtime is not None:
+            report_reader = getattr(runtime, "latency_report", None)
+            if callable(report_reader):
+                self._scheduled_latency_report = report_reader()
+        return self._scheduled_latency_report
 
     @staticmethod
     def _order_log_description(result):
@@ -5063,7 +5246,7 @@ class OrderConfigurationPage(QWidget):
         a run and on visibility changes, never from construction or
         navigation.
         """
-        self.diagnostic_list.clear()
+        self.diagnostic_list.setRowCount(0)
         entries = self._last_test_entries or []
         results = self._last_order_results
         for index, entry in enumerate(entries):
@@ -5080,18 +5263,10 @@ class OrderConfigurationPage(QWidget):
                 str(getattr(order, "side", "")),
             )
             verdict = _result_status_label(result)
-            text = (
-                DIAGNOSTIC_ENTRY_PREFIX.format(position=index + 1)
-                + f"{symbol} | {side_label} | "
-                + DIAGNOSTIC_VERDICT_PREFIX
-                + verdict
-            )
-            item = QListWidgetItem(text, self.diagnostic_list)
-            # Fail-closed display guard: the diagnostic section is still a
-            # user-facing surface — no technical payload (exception text,
-            # mode name, broker response, decisionId, Trace ID) is ever
-            # attached to its items.
-            item.setData(Qt.UserRole, None)
+            row = self.diagnostic_list.rowCount()
+            self.diagnostic_list.insertRow(row)
+            for column, value in enumerate((index + 1, f"{symbol} | {side_label}", verdict)):
+                self.diagnostic_list.setItem(row, column, QTableWidgetItem(str(value)))
         if entries:
             self.diagnostic_status_label.setText(
                 f"{len(entries)} order(s) in the last Test pass"
@@ -5148,21 +5323,88 @@ class OrderConfigurationPage(QWidget):
         import. Rendering only updates widgets; no ordering/execution
         behavior is touched.
         """
-        self.latency_detail_list.clear()
+        self.latency_detail_list.setRowCount(0)
+        if (not self._has_scheduled_live_report()
+                and getattr(self, "_last_test_run_mode", None) != "live"
+                and self._diagnostic_latency_report() is None
+                and not self._normalized_feedback_by_order):
+            self.latency_total_label.setText(
+                DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
+            )
+            return
+        if self._has_scheduled_live_report():
+            report = self.scheduled_latency_report()
+            outcomes = {(item.get("ticket_id"), item.get("turn_index")): item
+                        for item in self._scheduled_ticket_outcomes}
+            tickets = getattr(report, "tickets", ()) if report is not None else ()
+            self.latency_total_label.setText(
+                DIAGNOSTIC_LATENCY_TOTAL_LABEL + f"{len(tickets)} scheduled ticket(s)"
+            )
+            for item in tickets:
+                outcome = outcomes.get((item.ticket_id, item.turn_index), {})
+                order_index, account, symbol = self._scheduled_ticket_metadata.get(
+                    (item.ticket_id, item.turn_index), (None, None, None))
+                identity = (order_index or DIAGNOSTIC_VALUE_UNAVAILABLE, account, symbol, item.turn_index + 1)
+                values = (
+                    ("زمان‌بندی تا بیداری", item.wake_lateness_ns),
+                    ("بیداری تا تحویل", getattr(item, "wake_to_handoff_ns", None)),
+                    ("تحویل تا POST", getattr(item, "handoff_to_post_ns", None)),
+                    ("POST تا پاسخ HTTP", item.http_round_trip_ns),
+                    ("POST تا NATS", item.nats_after_post_ns),
+                )
+                for stage, value in values:
+                    self._add_diagnostic_latency_item((*identity, f"Block 11 / {stage}", value, "ns", "monotonic scheduled"))
+                if not any(value is not None for _, value in values):
+                    self._add_diagnostic_latency_item((*identity, f"Block 11 / {outcome.get('state') or 'نتیجه'}", None, "", ""))
+            if getattr(self, "_last_test_run_mode", None) != "live":
+                self._add_normalized_feedback_diagnostic_rows()
+                return
+        if getattr(self, "_last_test_run_mode", None) == "live":
+            from ui.manual_live_trace import latest_trace_events
+            trace_id = getattr(self, "_last_test_trace_id", None)
+            events = latest_trace_events(trace_id)
+            self.latency_total_label.setText(STRINGS.DIAGNOSTIC_LATENCY_TOTAL_LABEL + "app-observed events")
+            previous_by_order = {}
+            for event in events:
+                index = event.get("order_index")
+                stamp = event.get("ts")
+                if type(index) is not int or type(stamp) not in (int, float):
+                    continue
+                prior = previous_by_order.get(index)
+                elapsed = max(0.0, (stamp - prior[0]) * 1000) if prior else None
+                previous_by_order[index] = (stamp, event.get("stage"))
+                duration = f" — {elapsed:.3f} ms since prior observed event" if elapsed is not None else ""
+                self._add_diagnostic_latency_item(
+                    f"Order {index + 1} · {event.get('stage', '')}{duration} (application-observed; not pure network/broker latency)"
+                )
+            if not events:
+                from ui.manual_live_trace import diagnostic_status
+                status = diagnostic_status()
+                path = status.get("path") or "نامشخص"
+                error = (status.get("error") or {}).get("code")
+                state = f"ثبت‌کننده: {error}" if error else (
+                    "ثبت‌کننده هنوز رویدادی ننوشته" if status.get("writable") is not True
+                    else "برای این شناسه رویدادی ثبت نشده"
+                )
+                self._add_diagnostic_latency_item(("", "", "", "", f"رویداد زنده: {state}; مسیر: {path}", trace_id, "", ""))
+            if not events:
+                self._add_normalized_feedback_diagnostic_rows()
+                return
         report = self._diagnostic_latency_report()
         if report is None:
             self.latency_total_label.setText(
                 DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
             )
-            return
+        else:
+            self.latency_total_label.setText(
+                DIAGNOSTIC_LATENCY_TOTAL_LABEL
+                + (_ns_to_ms_text(getattr(report, "dispatch_duration", None)) or DIAGNOSTIC_VALUE_UNAVAILABLE)
+            )
 
-        total_ms = _ns_to_ms_text(
-            getattr(report, "dispatch_duration", None)
-        )
-        self.latency_total_label.setText(
-            DIAGNOSTIC_LATENCY_TOTAL_LABEL
-            + (total_ms if total_ms is not None else DIAGNOSTIC_VALUE_UNAVAILABLE)
-        )
+        def add_block8(order_text, stage, value):
+            self._add_diagnostic_latency_item(
+                (order_text, "", "", "", f"Block 8 / {stage}", _ns_to_ms_text(value), "ms", "dispatch monotonic")
+            )
 
         # Categories 2/3 are rendered from each record and call, not from
         # distributions or cross-order totals. Each value therefore has
@@ -5176,7 +5418,7 @@ class OrderConfigurationPage(QWidget):
         # dispatched; the display label is that order's identity-keyed
         # symbol (the page's own map — never a list-position or symbol
         # guess).
-        records = getattr(report, "orders", None) or []
+        records = getattr(report, "orders", None) or [] if report is not None else []
         for record in records:
             result = getattr(record, "execution_result", None)
             order = getattr(result, "order", None)
@@ -5190,73 +5432,300 @@ class OrderConfigurationPage(QWidget):
             # THIS order. Missing stages are explicit, never treated as 0.
             for stage in DIAGNOSTIC_LATENCY_STAGES:
                 duration = record.duration_ns(stage)
-                stage_ms = _ns_to_ms_text(duration)
-                self._add_diagnostic_latency_item(
-                    DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
-                        order=order_text, stage=stage
-                    )
-                    + (
-                        stage_ms
-                        if stage_ms is not None
-                        else DIAGNOSTIC_VALUE_UNAVAILABLE
-                    )
-                )
+                add_block8(order_text, stage, duration)
 
             # Category 3 — every measured Broker/API call for THIS order,
             # kept as an individual full call with its recorded operation.
             for call_number, call in enumerate(
                 getattr(record, "broker_api_calls", None) or [], start=1
             ):
-                call_ms = _ns_to_ms_text(getattr(call, "duration_ns", None))
-                self._add_diagnostic_latency_item(
-                    DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
-                        order=order_text,
-                        operation=getattr(call, "operation", "unknown"),
-                        call_number=call_number,
-                    )
-                    + (
-                        call_ms
-                        if call_ms is not None
-                        else DIAGNOSTIC_VALUE_UNAVAILABLE
-                    )
-                )
+                add_block8(order_text, f"Broker/API {getattr(call, 'operation', 'unknown')} #{call_number}",
+                           getattr(call, "duration_ns", None))
             if not (getattr(record, "broker_api_calls", None) or []):
-                self._add_diagnostic_latency_item(
-                    DIAGNOSTIC_LATENCY_BROKER_NONE.format(order=order_text)
-                )
+                add_block8(order_text, "Broker/API round trip", None)
 
             for label, field_name in DIAGNOSTIC_LATENCY_APP_FIELDS:
-                value_ms = _ns_to_ms_text(
-                    getattr(record, field_name, None)
-                )
-                self._add_diagnostic_latency_item(
-                    label.format(order=order_text)
-                    + (
-                        value_ms
-                        if value_ms is not None
-                        else DIAGNOSTIC_VALUE_UNAVAILABLE
-                    )
-                )
+                add_block8(order_text, label.format(order="").strip(), getattr(record, field_name, None))
         if not records:
             # A report without order records has no stage or Broker/API
             # measurements; make that absence visible rather than implying
             # a zero or silently dropping the categories.
             for stage in DIAGNOSTIC_LATENCY_STAGES:
-                self._add_diagnostic_latency_item(
-                    DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
-                        order=RESULT_SYMBOL_UNKNOWN, stage=stage
-                    ) + DIAGNOSTIC_VALUE_UNAVAILABLE
-                )
-            self._add_diagnostic_latency_item(
-                DIAGNOSTIC_LATENCY_BROKER_NONE.format(
-                    order=RESULT_SYMBOL_UNKNOWN
-                )
-            )
+                add_block8(RESULT_SYMBOL_UNKNOWN, stage, None)
+            add_block8(RESULT_SYMBOL_UNKNOWN, "Broker/API round trip", None)
 
-    def _add_diagnostic_latency_item(self, text):
-        """ONE read-only list row; never carries a technical payload."""
-        item = QListWidgetItem(text, self.latency_detail_list)
-        item.setData(Qt.UserRole, None)
+        # Periodic Block 8 reports remain scoped to their completed turn and
+        # broker/account result. They are appended as separate rows and never
+        # replace the manual Test run's _last_latency_report.
+        with getattr(self, "_dispatch_turns_lock", threading.Lock()):
+            turns = tuple(getattr(self, "_dispatch_turns", ()))
+        for turn in turns:
+            for execution in getattr(turn, "results", ()):
+                periodic_report = getattr(execution, "latency_report", None)
+                if periodic_report is None:
+                    continue
+                identity = (f"Periodic turn {turn.turn_index + 1}",
+                            getattr(execution, "account_id", DIAGNOSTIC_VALUE_UNAVAILABLE),
+                            "", getattr(execution, "execution_id", DIAGNOSTIC_VALUE_UNAVAILABLE))
+                periodic_records = getattr(periodic_report, "orders", None) or []
+                for record in periodic_records:
+                    result = getattr(record, "execution_result", None)
+                    order = getattr(result, "order", None)
+                    order_text = (self._order_symbols.get(id(order), "")
+                                  if order is not None else "") or RESULT_SYMBOL_UNKNOWN
+                source = f"Periodic Block 8 / turn {turn.turn_index + 1} / execution {getattr(execution, 'execution_id', None) or DIAGNOSTIC_VALUE_UNAVAILABLE}"
+                for stage in DIAGNOSTIC_LATENCY_STAGES:
+                    self._add_diagnostic_latency_item(
+                            (*identity[:2], order_text, identity[0],
+                             f"{source} / {stage}",
+                             _ns_to_ms_text(record.duration_ns(stage)), "ms", "dispatch monotonic")
+                        )
+                    for call_number, call in enumerate(getattr(record, "broker_api_calls", None) or [], start=1):
+                        self._add_diagnostic_latency_item(
+                            (*identity[:2], order_text, identity[0],
+                             f"{source} / Broker/API {getattr(call, 'operation', 'unknown')} #{call_number}",
+                              _ns_to_ms_text(getattr(call, "duration_ns", None)), "ms", "dispatch monotonic")
+                        )
+        self._add_normalized_feedback_diagnostic_rows()
+
+    def _add_diagnostic_latency_item(self, values):
+        """Append a read-only diagnostics table row."""
+        if not isinstance(values, (tuple, list)):
+            values = (DIAGNOSTIC_VALUE_UNAVAILABLE, values, DIAGNOSTIC_VALUE_UNAVAILABLE)
+        row = self.latency_detail_list.rowCount()
+        self.latency_detail_list.insertRow(row)
+        for column, value in enumerate(values[:self.latency_detail_list.columnCount()]):
+            text = (DIAGNOSTIC_VALUE_UNAVAILABLE if value is None and column == 5 else
+                    "" if value is None else str(value))
+            self.latency_detail_list.setItem(row, column, QTableWidgetItem(text))
+
+    def _export_diagnostic_rows(self):
+        """Export the displayed diagnostic evidence without deriving measurements."""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "خروجی Excel تشخیص‌ها", "diagnostics.xlsx", "Excel Workbook (*.xlsx)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        rows = []
+        for row_index in range(self.latency_detail_list.rowCount()):
+            values = []
+            for column in range(self.latency_detail_list.columnCount()):
+                item = self.latency_detail_list.item(row_index, column)
+                value = item.text() if item is not None else ""
+                if column == 5 and value.isascii() and value.isdigit():
+                    unit_item = self.latency_detail_list.item(row_index, 6)
+                    if unit_item is not None and unit_item.text() == "ns":
+                        value = int(value)
+                values.append(value)
+            rows.append(tuple(values))
+        try:
+            _write_live_trace_xlsx(path, [], rows, summary_headers=DIAGNOSTIC_LATENCY_HEADERS,
+                                   event_headers=DIAGNOSTIC_LATENCY_HEADERS)
+        except (OSError, ValueError, TypeError):
+            QMessageBox.warning(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_FAILED)
+            return
+        QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_OK)
+
+    def _add_normalized_feedback_diagnostic_rows(self):
+        """Add safe OMS milestone rows without exposing event identifiers."""
+        for order_id, event in tuple(self._normalized_feedback_by_order.items()):
+            order = next((candidate for candidate in self._order_by_decision_key.values()
+                          if id(candidate) == order_id), None)
+            if order is None:
+                continue
+            self._add_diagnostic_latency_item((
+                None, None, self._order_symbols.get(order_id, ""), None,
+                "بازخورد OMS / پذیرش در بورس",
+                event.app_received_monotonic_ns, "ns", "monotonic دریافت برنامه",
+            ))
+            self._add_diagnostic_latency_item((
+                None, None, self._order_symbols.get(order_id, ""), None,
+                "زمان خارجی رویداد OMS", event.external_wall_timestamp,
+                "", "زمان دیواری خارجی",
+            ))
+
+    def _has_scheduled_live_report(self):
+        report = self.scheduled_latency_report()
+        table = getattr(self, "_scheduled_send_table", None)
+        return bool(getattr(self, "_frozen_live_mode", False) or
+                    getattr(self, "_schedule_snapshot", None) is not None or
+                    getattr(report, "tickets", None) or getattr(table, "tickets", None))
+
+    def _save_latest_manual_trace(self):
+        if (getattr(self, "_last_test_run_mode", None) is None
+                and self._has_scheduled_live_report()):
+            self._save_scheduled_live_report()
+            return
+
+        from ui.manual_live_trace import diagnostic_status, latest_trace_events
+        trace_id = getattr(self, "_last_test_trace_id", None) if getattr(self, "_last_test_run_mode", None) == "live" else None
+        status = diagnostic_status()
+        error = (status.get("error") or {}).get("code") or "بدون خطای ثبت‌شده"
+        context = f"شناسه: {trace_id or 'ناموجود'}؛ وضعیت ثبت‌کننده: {error}؛ مسیر گزارش: {status.get('path') or 'نامشخص'}"
+        events = latest_trace_events(trace_id) if trace_id else []
+        if getattr(self, "_last_test_run_mode", None) != "live":
+            QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC,
+                                    "برای خروجی، اجرای Live تکمیل‌شده لازم است. " + context)
+            return
+        if trace_id and not events:
+            QMessageBox.warning(self, STRINGS.GROUP_DIAGNOSTIC,
+                                "رویدادی برای این شناسه موجود نیست؛ ممکن است به دلیل چرخش گزارش حذف شده باشد. " + context)
+            return
+        path, _ = QFileDialog.getSaveFileName(self, STRINGS.BUTTON_SAVE_LIVE_TRACE, "manual-live-trace.xlsx", "Excel Workbook (*.xlsx)")
+        if not path:
+            QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_CANCELLED)
+            return
+        try:
+            if not path.lower().endswith(".xlsx"):
+                path += ".xlsx"
+            entries = getattr(self, "_last_test_entries", None) or []
+            results = getattr(self, "_last_order_results", None) or []
+            per_order_events = {}
+            previous_timestamp = {}
+            detail_rows = []
+            for event in events:
+                index = event.get("order_index")
+                timestamp = event.get("ts")
+                reason = event.get("reason_code")
+                interval = None
+                if type(index) is int and index >= 0 and type(timestamp) in (int, float):
+                    if index in previous_timestamp and timestamp >= previous_timestamp[index]:
+                        interval = (timestamp - previous_timestamp[index]) * 1_000_000_000
+                    previous_timestamp[index] = timestamp
+                    if interval is not None:
+                        per_order_events.setdefault(index, []).append((event.get("stage"), interval))
+                detail_rows.append((index + 1 if type(index) is int and index >= 0 else None,
+                                    None, None, None, "Manual Live trace", event.get("stage"),
+                                    interval, "ns", "wall clock", timestamp))
+            summary_rows = []
+            for index, entry in enumerate(entries):
+                result = results[index] if index < len(results) else None
+                order = getattr(entry, "order", None)
+                symbol = self._order_symbols.get(id(order), "") if order is not None else ""
+                account_id = getattr(entry, "account_id", None)
+                account_alias = self._diagnostic_account_aliases.setdefault(
+                    account_id, f"account-{len(self._diagnostic_account_aliases) + 1}"
+                ) if account_id else None
+                report_record = next((record for record in getattr(self._diagnostic_latency_report(), "orders", ())
+                                      if getattr(getattr(record, "execution_result", None), "order", None) is order), None)
+                stage_values = [getattr(report_record, "duration_ns", lambda _stage: None)(stage)
+                                if report_record is not None else None for stage in DIAGNOSTIC_LATENCY_STAGES]
+                call_total = None
+                if report_record is not None:
+                    calls = [getattr(call, "duration_ns", None) for call in (getattr(report_record, "broker_api_calls", ()) or ())]
+                    if calls:
+                        call_total = sum(value for value in calls if isinstance(value, int) and not isinstance(value, bool))
+                summary_rows.append((index + 1, account_alias, symbol, None,
+                                     _manual_live_final_status(result) if result is not None else None,
+                                     *stage_values, None, call_total))
+            report = self._diagnostic_latency_report()
+            for record in getattr(report, "orders", ()) if report is not None else ():
+                result = getattr(record, "execution_result", None)
+                order = getattr(result, "order", None)
+                order_index = next((i + 1 for i, entry in enumerate(entries)
+                                    if getattr(entry, "order", None) is order), None)
+                for stage in DIAGNOSTIC_LATENCY_STAGES:
+                    detail_rows.append((order_index, None, self._order_symbols.get(id(order), ""), None,
+                                        "Block 8", stage, record.duration_ns(stage), "ns", "dispatch monotonic", None))
+                for call_number, call in enumerate(getattr(record, "broker_api_calls", ()) or (), 1):
+                    detail_rows.append((order_index, None, self._order_symbols.get(id(order), ""), None,
+                                        "Block 8", f"Broker/API {call_number}",
+                                        getattr(call, "duration_ns", None), "ns", "broker API call clock", None))
+            for turn in tuple(getattr(self, "_dispatch_turns", ())):
+                for execution in getattr(turn, "results", ()):
+                    periodic = getattr(execution, "latency_report", None)
+                    for record in getattr(periodic, "orders", ()) if periodic else ():
+                        for stage in DIAGNOSTIC_LATENCY_STAGES:
+                            aid = getattr(execution, "account_id", None)
+                            alias = self._diagnostic_account_aliases.setdefault(aid, f"account-{len(self._diagnostic_account_aliases) + 1}") if aid else None
+                            detail_rows.append((None, alias, None, getattr(turn, "turn_index", 0) + 1,
+                                                "Periodic Block 8", stage, record.duration_ns(stage),
+                                                "ns", "dispatch monotonic", None))
+            scheduled = self.scheduled_latency_report()
+            for ticket in getattr(scheduled, "tickets", ()) if scheduled else ():
+                metadata = self._scheduled_ticket_metadata.get((ticket.ticket_id, ticket.turn_index), (None, None, None))
+                for stage, value in (("بیداری تا تحویل", getattr(ticket, "wake_to_handoff_ns", None)),
+                                     ("تحویل تا POST", getattr(ticket, "handoff_to_post_ns", None)),
+                                     ("POST تا پاسخ HTTP", ticket.http_round_trip_ns),
+                                     ("POST تا NATS", ticket.nats_after_post_ns)):
+                    account = metadata[1]
+                    alias = self._diagnostic_account_aliases.setdefault(account, f"account-{len(self._diagnostic_account_aliases) + 1}") if account else None
+                    detail_rows.append((metadata[0], alias, metadata[2], ticket.turn_index + 1,
+                                        "Block 11", stage, value, "ns", "monotonic scheduled", None))
+            for order_id, event in tuple(self._normalized_feedback_by_order.items()):
+                order_index = next((index + 1 for index, entry in enumerate(entries)
+                                    if id(getattr(entry, "order", None)) == order_id), None)
+                detail_rows.append((order_index, None, self._order_symbols.get(order_id, ""), None,
+                    "OMS", "پذیرش در بورس؛ دریافت برنامه", event.app_received_monotonic_ns, "ns", "monotonic", None))
+                detail_rows.append((order_index, None, self._order_symbols.get(order_id, ""), None,
+                    "OMS", "دریافت رویداد", None, None, "external wall", event.external_wall_timestamp))
+            _write_live_trace_xlsx(path, summary_rows, detail_rows,
+                                   summary_headers=DIAGNOSTIC_SUMMARY_HEADERS,
+                                   event_headers=DIAGNOSTIC_DETAIL_HEADERS)
+        except (OSError, ValueError, TypeError):
+            QMessageBox.warning(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_FAILED)
+            return
+        QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_OK)
+
+    def _save_scheduled_live_report(self):
+        """Export the existing scheduled ticket report and safe outcomes."""
+        report = self.scheduled_latency_report()
+        if report is None or not getattr(report, "tickets", None):
+            QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC,
+                                    "گزارش اجرای scheduled/burst Live برای خروجی موجود نیست.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, STRINGS.BUTTON_SAVE_LIVE_TRACE, "scheduled-live-trace.xlsx", "Excel Workbook (*.xlsx)"
+        )
+        if not path:
+            QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_CANCELLED)
+            return
+        try:
+            if not path.lower().endswith(".xlsx"):
+                path += ".xlsx"
+            outcomes = {(item.get("ticket_id"), item.get("turn_index")): item
+                        for item in self._scheduled_ticket_outcomes}
+            summary, details = [], []
+            summary_by_identity = {}
+            for ticket in report.tickets:
+                outcome = outcomes.get((ticket.ticket_id, ticket.turn_index), {})
+                order_index, account, symbol = self._scheduled_ticket_metadata.get(
+                    (ticket.ticket_id, ticket.turn_index), (None, None, None))
+                if account:
+                    if account.startswith("account-") and account[8:].isdigit():
+                        account = account
+                    else:
+                        account = self._diagnostic_account_aliases.setdefault(
+                            account, f"account-{len(self._diagnostic_account_aliases) + 1}"
+                        )
+                identity = (order_index, account, symbol, ticket.turn_index + 1)
+                values = []
+                for stage, value in (("زمان‌بندی تا بیداری", ticket.wake_lateness_ns),
+                                     ("بیداری تا تحویل", getattr(ticket, "wake_to_handoff_ns", None)),
+                                     ("تحویل تا POST", getattr(ticket, "handoff_to_post_ns", None)),
+                                     ("POST تا پاسخ HTTP", ticket.http_round_trip_ns),
+                                     ("POST تا NATS", ticket.nats_after_post_ns)):
+                    values.append(value)
+                    details.append((identity[0], identity[1], identity[2], identity[3], "Block 11", stage, value, "ns", "monotonic scheduled", None))
+                key = (order_index, account, symbol, ticket.turn_index + 1)
+                summary_by_identity[key] = (key, outcome.get("state"), values)
+                if not any(value is not None for value in (ticket.wake_lateness_ns, getattr(ticket, "wake_to_handoff_ns", None),
+                                                            getattr(ticket, "handoff_to_post_ns", None), ticket.http_round_trip_ns,
+                                                            ticket.nats_after_post_ns)):
+                    details.append((identity[0], identity[1], identity[2], identity[3], "Block 11", outcome.get("state") or "نتیجه", None, None, None, None))
+            summary = [(*identity, state, *values, None) for identity, state, values in summary_by_identity.values()]
+            _write_live_trace_xlsx(
+                path, summary, details,
+                summary_headers=DIAGNOSTIC_SUMMARY_HEADERS,
+                event_headers=DIAGNOSTIC_DETAIL_HEADERS,
+            )
+        except (OSError, ValueError, TypeError):
+            QMessageBox.warning(self, STRINGS.GROUP_DIAGNOSTIC, STRINGS.LIVE_TRACE_SAVE_FAILED)
+            return
+        QMessageBox.information(self, STRINGS.GROUP_DIAGNOSTIC,
+                                "گزارش scheduled/burst Live ذخیره شد.")
 
     def _refresh_diagnostic_trace_display(self):
         """
@@ -5335,11 +5804,25 @@ class OrderConfigurationPage(QWidget):
 
     def _refresh_result_display(self):
         """
-        Record existing Live diagnostics and refresh the diagnostic panel.
+        Render the per-order results of the last successful Test run.
 
-        Per-order results are displayed only in the Order Log table; this
-        method does not render a second result list.
+        Called EXACTLY ONCE per successful run (the final refresh, at the
+        end of ``_run_test_pass``); it is never invoked from construction,
+        navigation, refresh/render or toggle-off paths. One call clears and
+        repopulates, so a new run fully replaces the previous rows.
+
+        One visible row per queued order, in exact queue order:
+
+            حساب {account_id} | {symbol} | {side} | {status} | {reason}
+
+        Everything is user-facing only: the account id and side label come
+        from the exact QueueEntry/Order, the display symbol from the UI-layer
+        map (recorded at Add-to-Queue from the real Instrument), and the
+        verdict from the fail-closed status mapper. No nscId/tseId, mode
+        name, message, Trace ID, latency, M6-* label, endpoint, broker
+        response or exception text is ever rendered here.
         """
+        self._last_result_display_rows = []
         entries = self._last_test_entries or []
         results = self._last_order_results
         if getattr(self, "_last_test_run_mode", None) == "live":
@@ -5367,6 +5850,28 @@ class OrderConfigurationPage(QWidget):
                         pass
             except Exception:
                 pass
+        for index, entry in enumerate(entries):
+            result = None
+            if isinstance(results, list) and 0 <= index < len(results):
+                result = results[index]
+            order = entry.order
+            symbol = (
+                self._order_symbols.get(id(order), "")
+                or RESULT_SYMBOL_UNKNOWN
+            )
+            side_label = dict(SIDE_LABELS).get(
+                getattr(order, "side", None),
+                str(getattr(order, "side", "")),
+            )
+            status = _result_status_label(result, getattr(self, "_last_test_run_mode", "dry_run"))
+            text = (
+                f"\u062d\u0633\u0627\u0628 {entry.account_id} | {symbol} | "
+                f"{side_label} | {status} | "
+                f"{_result_reason_for_status(status, result)}"
+            )
+            # Keep the formatted per-order verdicts as diagnostic input;
+            # the standalone result-list widget is intentionally removed.
+            self._last_result_display_rows.append(text)
         # UI-6 Task 1: the diagnostic section mirrors the same real
         # verdicts at the single final refresh (it renders only when the
         # display boundary lets it — visibility is mode-gated).
@@ -6349,7 +6854,9 @@ class OrderConfigurationPage(QWidget):
             ),
             "queue_revision": getattr(self.order_queue, "revision", None),
             "settings": (self._schedule_parsed, timing, interval_ms,
-                         self._run_mode),
+                          self._run_mode),
+            "mode": "live" if self._frozen_live_mode else self._run_mode,
+            "dispatch_interval_ms": interval_ms,
         }
         self._schedule_snapshot["cancel_event"] = self._schedule_cancel_event
         if manager is None or not sessions or any(
@@ -6427,6 +6934,12 @@ class OrderConfigurationPage(QWidget):
         self._stop_dispatch_worker()
         runtime, self._scheduled_fire_runtime = self._scheduled_fire_runtime, None
         if runtime is not None:
+            report_reader = getattr(runtime, "latency_report", None)
+            if callable(report_reader):
+                self._scheduled_latency_report = report_reader()
+            get_outcomes = getattr(runtime, "ticket_outcomes", None)
+            if callable(get_outcomes):
+                self._scheduled_ticket_outcomes = tuple(get_outcomes())
             runtime.close()
         self._dispatcher = None
         self._dispatch_interval_ms = None
@@ -6565,6 +7078,8 @@ class OrderConfigurationPage(QWidget):
                     key=lambda item: item.turn_index,
                 )
             )
+        if dispatcher is not None:
+            self.dispatch_turn_completed.emit()
 
     def _stop_dispatch_worker(self):
         """Wake and stop the dispatch worker; it never blocks the caller."""

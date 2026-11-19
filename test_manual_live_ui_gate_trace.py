@@ -60,6 +60,414 @@ def test_ui_authorization_rejection_is_traced_without_engine(qapp, monkeypatch):
         page.close()
 
 
+def test_latest_manual_trace_events_are_correlated_and_sanitized(tmp_path, monkeypatch):
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", tmp_path / "trace.jsonl")
+    manual_live_trace.log_event("run-a", "engine_entry", order_index=0,
+                                extra={"classification": "LIVE"})
+    manual_live_trace.log_event("run-b", "engine_entry", order_index=1,
+                                extra={"classification": "LIVE"})
+    events = manual_live_trace.latest_trace_events("run-a")
+    assert len(events) == 1
+    assert events[0]["trace_id"] == "run-a"
+    assert events[0]["order_index"] == 0
+    assert "extra" in events[0]
+    assert manual_live_trace.latest_trace_events("run-b")[0]["trace_id"] == "run-b"
+
+
+def test_live_diagnostic_display_uses_completed_run_trace_events(qapp, monkeypatch, tmp_path):
+    from ui.main_window import ApplicationMode
+
+    trace_file = tmp_path / "manual_live_trace.jsonl"
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", trace_file)
+    monkeypatch.setattr(manual_live_trace, "_TRACE_DIR", tmp_path)
+    manual_live_trace.log_event("mlt-display-test", "engine_entry", order_index=0)
+    manual_live_trace.log_event("mlt-display-test", "ui_final_result", order_index=0,
+                                extra={"ui_result": "SUCCESS"})
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    try:
+        page._last_test_run_mode = "live"
+        page._last_test_trace_id = "mlt-display-test"
+        page.apply_mode(ApplicationMode.DIAGNOSTIC)
+        page._refresh_diagnostic_latency_display()
+        assert page.latency_detail_list.columnCount() == 8
+        assert page.latency_detail_list.horizontalHeaderItem(0).text() == "شماره سفارش"
+        rendered = [" ".join(page.latency_detail_list.item(i, j).text()
+                              for j in range(page.latency_detail_list.columnCount())
+                              if page.latency_detail_list.item(i, j))
+                    for i in range(page.latency_detail_list.rowCount())]
+        assert any("engine_entry" in item for item in rendered)
+        assert any("ui_final_result" in item for item in rendered)
+        assert all("mlt-display-test" not in item for item in rendered)
+
+        page._last_test_trace_id = "mlt-no-events"
+        page._refresh_diagnostic_latency_display()
+        empty = [" ".join(page.latency_detail_list.item(i, j).text()
+                           for j in range(page.latency_detail_list.columnCount())
+                           if page.latency_detail_list.item(i, j))
+                 for i in range(page.latency_detail_list.rowCount())]
+        assert len(empty) == 1
+        assert str(trace_file) in empty[0]
+        assert "mlt-no-events" in empty[0]
+        assert "رویدادی ثبت نشده" in empty[0]
+        assert page.diagnostic_list.columnCount() == 3
+    finally:
+        page.close()
+
+
+def test_save_trace_exports_every_order_and_linked_safe_events(qapp, monkeypatch, tmp_path):
+    import json
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from importlib.util import find_spec
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, queue = _page(qapp, monkeypatch, count=3)
+    target = tmp_path / "run.xlsx"
+    trace_file = tmp_path / "trace.jsonl"
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", trace_file)
+    events = [
+        {"trace_id": "run", "order_index": 0, "stage": "start", "ts": 10},
+        {"trace_id": "run", "order_index": 1, "stage": "start", "ts": 20},
+        {"trace_id": "run", "order_index": 0, "stage": "finish", "ts": 10.5,
+         "reason_code": "DONE", "payload": "PAYLOAD_SECRET", "extra": {"reply": "REPLY_SECRET"}},
+        {"trace_id": "run", "stage": "global_event", "ts": 21, "headers": "HEADER_SECRET"},
+    ]
+    trace_file.write_text("\n".join(json.dumps(event) for event in events), encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args: pytest.fail("export failed"))
+    try:
+        page._last_test_run_mode = "live"
+        page._last_test_trace_id = "run"
+        page._last_test_entries = list(queue.list_pending())
+        page._last_order_results = [SimpleNamespace(mode="UNKNOWN", message="EXCEPTION_SECRET")]
+        page._order_symbols[id(page._last_test_entries[0].order)] = "SYMBOL"
+        page._save_latest_manual_trace()
+
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        def rows(xml):
+            root = ET.fromstring(xml)
+            return [[(cell.findtext("s:is/s:t", default=None, namespaces=ns) or None)
+                     if cell.get("t") == "inlineStr" else cell.findtext("s:v", namespaces=ns)
+                     for cell in row] for row in root.findall("s:sheetData/s:row", ns)]
+
+        with zipfile.ZipFile(target) as archive:
+            assert archive.testzip() is None
+            assert "_rels/.rels" in archive.namelist()
+            assert "xl/_rels/workbook.xml.rels" in archive.namelist()
+            workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+            assert [sheet.get("name") for sheet in workbook.findall("s:sheets/s:sheet", ns)] == ["خلاصه", "جزئیات اجرا"]
+            summary = rows(archive.read("xl/worksheets/sheet1.xml"))
+            details = rows(archive.read("xl/worksheets/sheet2.xml"))
+            exported = b" ".join(archive.read(name) for name in archive.namelist())
+        assert len(summary) == 4 and len(details) == 5
+        assert summary[1][0:5] == ["1", "account-1", "SYMBOL", None, "UNKNOWN"]
+        assert summary[2][0:4] == ["2", "account-1", None, None]
+        assert summary[3][0:4] == ["3", "account-1", None, None]
+        assert [row[0] for row in details[1:]] == ["1", "2", "1", None]
+        assert [row[6] for row in details[1:]] == [None, None, "500000000.0", None]
+        assert all(secret not in exported for secret in (b"PAYLOAD_SECRET", b"REPLY_SECRET", b"HEADER_SECRET", b"EXCEPTION_SECRET"))
+        if find_spec("openpyxl") is not None:
+            import openpyxl
+            book = openpyxl.load_workbook(target, read_only=True)
+            assert book.sheetnames == ["خلاصه", "جزئیات اجرا"]
+            book.close()
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("mode", [None, "dry-run"])
+def test_save_trace_explains_missing_live_run(qapp, monkeypatch, mode):
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, _queue = _page(qapp, monkeypatch)
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", lambda _p, _t, text: messages.append(text))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_: pytest.fail("unexpected save dialog"))
+    try:
+        page._last_test_run_mode = mode
+        page._save_latest_manual_trace()
+        assert "Live تکمیل‌شده" in messages[0]
+        assert "شناسه" in messages[0] and "وضعیت ثبت‌کننده" in messages[0]
+    finally:
+        page.close()
+
+
+def test_save_trace_warns_when_events_missing(qapp, monkeypatch, tmp_path):
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, queue = _page(qapp, monkeypatch, count=1)
+    messages = []
+    monkeypatch.setattr(manual_live_trace, "_TRACE_FILE", tmp_path / "missing.jsonl")
+    monkeypatch.setattr(QMessageBox, "warning", lambda _p, _t, text: messages.append(text))
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_: pytest.fail("unexpected save dialog"))
+    try:
+        page._last_test_run_mode = "live"
+        page._last_test_trace_id = "missing-run"
+        page._last_test_entries = list(queue.list_pending())
+        page._last_order_results = [SimpleNamespace(mode="UNKNOWN")]
+        page._schedule_snapshot = {"orders": ()}
+        page._scheduled_latency_report = SimpleNamespace(tickets=[object()])
+        page._scheduled_fire_runtime = SimpleNamespace(
+            latency_report=lambda: page._scheduled_latency_report, close=lambda: None
+        )
+        page._save_latest_manual_trace()
+        assert "missing-run" in messages[0] and "چرخش" in messages[0]
+        assert str(tmp_path / "missing.jsonl") in messages[0]
+    finally:
+        page.close()
+
+
+def test_diagnostic_table_export_preserves_numeric_nanoseconds(qapp, monkeypatch, tmp_path):
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    target = tmp_path / "diagnostics.xlsx"
+    try:
+        page._add_diagnostic_latency_item((1, "account-1", "SYM", 1,
+                                           "Block 11 / POST response", 123456789012345, "ns",
+                                           "monotonic scheduled"))
+        page._add_diagnostic_latency_item((1, "account-1", "SYM", 1,
+                                           "external event", 1788000123.456, "", "external wall"))
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_: (str(target), ""))
+        monkeypatch.setattr(QMessageBox, "information", lambda *_: None)
+        monkeypatch.setattr(QMessageBox, "warning", lambda *_: pytest.fail("export failed"))
+        page._export_diagnostic_rows()
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(target) as archive:
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
+        rows = sheet.findall("s:sheetData/s:row", ns)
+        data = rows[1].findall("s:c", ns)
+        numeric = next(cell for cell in data if cell.findtext("s:v", namespaces=ns) == "123456789012345")
+        assert numeric.get("t") is None
+        assert len(rows) == 3
+        assert rows[2].findall("s:c", ns)[5].get("t") == "inlineStr"
+    finally:
+        page.close()
+
+
+def test_normalized_oms_feedback_diagnostic_and_export(qapp, monkeypatch, tmp_path):
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from PySide6.QtCore import QObject, Signal
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+    from brokers.order_feedback_contract import FeedbackMilestone, OrderFeedbackEvent
+    from core.order_engine import OrderExecutionResult
+    from ui import manual_live_trace
+
+    class Binder(QObject):
+        order_registered = Signal(str, object, object)
+        normalized_feedback = Signal(object)
+
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    order = Order("OMS-N", 1, 100, 1)
+    order.order_id = "BROKER-ORDER-1"
+    entry = SimpleNamespace(order=order, account_id="ACC-1", broker_name="SIM")
+    result = OrderExecutionResult(True, True, "LIVE", order, broker_name="SIM",
+                                  response={"isSuccess": True, "data": {"decisionId": "DEC-OMS"}})
+    binder = Binder()
+    page.set_feedback_binder_factory(lambda *_args: binder)
+    page._last_test_entries = [entry]
+    page._last_order_results = [result]
+    page._order_symbols[id(order)] = "OMS-SYMBOL"
+    page._append_order_log_rows([entry], __import__("datetime").datetime(2026, 9, 30), [result])
+    page._ensure_feedback_binding("ACC-1", "SIM")
+
+    event = OrderFeedbackEvent(
+        broker_name="SIM", account_id="ACC-1",
+        milestone=FeedbackMilestone.OMS_ACCEPTED_BY_BOURSE,
+        app_received_monotonic_ns=9_876_543_210_123_456,
+        source="offline-test", decision_id="DEC-OMS", order_id="BROKER-ORDER-1",
+        external_wall_timestamp=1788000123.456,
+    )
+    try:
+        monkeypatch.setattr(manual_live_trace, "latest_trace_events", lambda _trace: [{
+            "trace_id": "oms-test", "order_index": 0, "stage": "start", "ts": 1,
+        }])
+        page._last_test_run_mode = "live"
+        page._last_test_trace_id = "oms-test"
+        for invalid in (
+            __import__("dataclasses").replace(event, account_id="ACC-OTHER"),
+            __import__("dataclasses").replace(event, broker_name="OTHER"),
+            __import__("dataclasses").replace(event, milestone=FeedbackMilestone.API_RESPONSE),
+            __import__("dataclasses").replace(event, order_id="UNVERIFIED"),
+        ):
+            binder.normalized_feedback.emit(invalid)
+        assert page._normalized_feedback_by_order == {}
+
+        binder.normalized_feedback.emit(event)
+        binder.normalized_feedback.emit(event)
+        assert len(page._normalized_feedback_by_order) == 1
+        rows = [[page.latency_detail_list.item(r, c).text()
+                 if page.latency_detail_list.item(r, c) is not None else ""
+                 for c in range(page.latency_detail_list.columnCount())]
+                for r in range(page.latency_detail_list.rowCount())]
+        receipt = next(row for row in rows if "پذیرش در بورس" in row[4])
+        wall = next(row for row in rows if "زمان خارجی رویداد OMS" in row[4])
+        assert receipt[5:8] == [str(event.app_received_monotonic_ns), "ns", "monotonic دریافت برنامه"]
+        assert wall[5] == str(event.external_wall_timestamp)
+        assert "DEC-OMS" not in repr(rows) and "BROKER-ORDER-1" not in repr(rows)
+
+        target = tmp_path / "oms.xlsx"
+        monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_: (str(target), ""))
+        monkeypatch.setattr(QMessageBox, "information", lambda *_: None)
+        monkeypatch.setattr(QMessageBox, "warning", lambda *_: pytest.fail("export failed"))
+        page._save_latest_manual_trace()
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(target) as archive:
+            sheet = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
+            content = b" ".join(archive.read(name) for name in archive.namelist())
+        exported_rows = sheet.findall("s:sheetData/s:row", ns)
+        cells = [cell for row in exported_rows for cell in row.findall("s:c", ns)]
+        number_cell = next(cell for cell in cells if cell.findtext("s:v", namespaces=ns) == str(event.app_received_monotonic_ns))
+        assert number_cell.get("t") is None
+        assert any(cell.findtext("s:v", namespaces=ns) == str(event.external_wall_timestamp) for cell in cells)
+        assert b"DEC-OMS" not in content and b"BROKER-ORDER-1" not in content
+        assert b"PAYLOAD" not in content and b"TOKEN" not in content and b"private" not in content.lower()
+    finally:
+        page.close()
+
+
+def test_normalized_oms_diagnostic_is_absent_without_feedback(qapp, monkeypatch):
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    try:
+        page._refresh_diagnostic_latency_display()
+        assert not page._normalized_feedback_by_order
+        assert not any("OMS" in page.latency_detail_list.item(row, 4).text()
+                       for row in range(page.latency_detail_list.rowCount())
+                       if page.latency_detail_list.item(row, 4))
+    finally:
+        page.close()
+
+
+def test_scheduled_report_exports_each_order_turn(qapp, monkeypatch, tmp_path):
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, _queue = _page(qapp, monkeypatch, count=1)
+    target = tmp_path / "scheduled.xlsx"
+    report = SimpleNamespace(execution_id="exec", tickets=[
+        SimpleNamespace(ticket_id="ticket-a", turn_index=0, planned_due_ns=100,
+                        scheduler_wake_ns=110, handoff_start_ns=115, post_start_ns=120,
+                        http_response_ns=150, nats_feedback_ns=None, wake_lateness_ns=10,
+                        wake_to_post_ns=20, http_round_trip_ns=30, nats_after_post_ns=None),
+        SimpleNamespace(ticket_id="ticket-a", turn_index=1, planned_due_ns=200,
+                        scheduler_wake_ns=None, handoff_start_ns=None, post_start_ns=None,
+                        http_response_ns=None, nats_feedback_ns=None, wake_lateness_ns=None,
+                        wake_to_post_ns=None, http_round_trip_ns=None, nats_after_post_ns=None),
+    ])
+    runtime = SimpleNamespace(ticket_outcomes=lambda: (
+        {"ticket_id": "ticket-a", "turn_index": 0, "order_index": 0, "state": "HTTP_ACCEPTED"},
+        {"ticket_id": "ticket-a", "turn_index": 1, "order_index": 0, "state": "UNKNOWN"},
+    ))
+    runtime.close = lambda: None
+    page._frozen_live_mode = True
+    page.scheduled_latency_report = lambda: report
+    page._scheduled_fire_runtime = runtime
+    page._scheduled_ticket_metadata = {("ticket-a", 0): (1, "account-1", "SYM"),
+                                       ("ticket-a", 1): (1, "account-1", "SYM")}
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_args: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args: pytest.fail("export failed"))
+    try:
+        page._save_latest_manual_trace()
+        ns = {"s": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+        with zipfile.ZipFile(target) as archive:
+            summary = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+            detail = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
+            rows = summary.findall("s:sheetData/s:row", ns)
+            assert len(rows) == 3
+            def values(row):
+                return [cell.findtext("s:v", namespaces=ns) or cell.findtext("s:is/s:t", namespaces=ns)
+                        for cell in row.findall("s:c", ns)]
+            assert values(rows[0])[0:5] == ["شماره سفارش", "حساب", "نماد", "نوبت", "وضعیت"]
+            assert values(rows[1])[0:4] == ["1", "account-1", "SYM", "1"]
+            assert values(rows[1])[5] == "10"
+            assert values(rows[2])[0:4] == ["1", "account-1", "SYM", "2"]
+            assert all(cell.get("t") is None for cell in rows[1].findall("s:c", ns)[5:6])
+            detail_rows = detail.findall("s:sheetData/s:row", ns)
+            assert len(detail_rows) == 12
+            assert values(detail_rows[0]) == [
+                "شماره سفارش", "حساب", "نماد", "نوبت", "منبع", "مرحله/رویداد",
+                "مقدار", "واحد", "دامنه ساعت", "زمان دیواری",
+            ]
+            first_turn = detail_rows[1].findall("s:c", ns)
+            assert values(detail_rows[1])[:8] == [
+                "1", "account-1", "SYM0", "1", "Block 11", "بیداری تا تحویل", "20", "ns"
+            ]
+            assert next(cell for cell in first_turn if cell.get("r") == "G2").get("t") is None
+            assert values(detail_rows[4])[:7] == [
+                "1", "account-1", "SYM0", "1", "Block 11", "POST تا NATS", None
+            ]
+            assert values(detail_rows[6])[:7] == [
+                "1", "account-1", "SYM0", "2", "Block 11", "بیداری تا تحویل", None
+            ]
+    finally:
+        page.close()
+
+
+def test_completed_scheduled_report_uses_ticket_entry_mapping(qapp, monkeypatch, tmp_path):
+    import zipfile
+    from ui.order_configuration_page import QFileDialog, QMessageBox
+
+    page, _events, queue = _page(qapp, monkeypatch, count=3)
+    entries = [SimpleNamespace(order=entry.order, account_id=f"PRIVATE-{index}")
+               for index, entry in enumerate(queue.list_pending())]
+    frozen = [SimpleNamespace(order=entry.order) for entry in entries]
+    for index, entry in enumerate(entries):
+        page._order_symbols[id(entry.order)] = f"SYM{index}"
+    tickets = [SimpleNamespace(ticket_id=f"ticket-{index}-{turn}", turn_index=turn,
+                               queue_entry=frozen[index])
+               for turn in range(2) for index in range(3)]
+    records = [SimpleNamespace(ticket_id=t.ticket_id, turn_index=t.turn_index,
+                               planned_due_ns=100, scheduler_wake_ns=110,
+                               handoff_start_ns=115, post_start_ns=120,
+                               http_response_ns=150, nats_feedback_ns=None,
+                               wake_lateness_ns=10, wake_to_post_ns=20,
+                               http_round_trip_ns=30, nats_after_post_ns=None) for t in tickets]
+    report = SimpleNamespace(execution_id="exec", tickets=records)
+    runtime = SimpleNamespace(arm=lambda *_: (0, 6), latency_report=lambda: report,
+                              ticket_outcomes=lambda: (), close=lambda: None)
+    page._scheduled_send_table = SimpleNamespace(tickets=tickets)
+    page._schedule_snapshot = {"orders": tuple(zip(entries, frozen))}
+    page._frozen_targets = ()
+    page._scheduled_broker_manager_factory = lambda: object()
+    page._scheduled_runtime_factory = lambda **_: runtime
+    page._live_authorization = None
+    target = tmp_path / "scheduled.xlsx"
+    messages = []
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *_: (str(target), ""))
+    monkeypatch.setattr(QMessageBox, "information", lambda _p, _t, text: messages.append(text))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_: pytest.fail("export failed"))
+    try:
+        page._arm_scheduled_fire_runtime()
+        page._stop_dispatcher()
+        assert not page._frozen_live_mode and page._schedule_snapshot is None
+        page._refresh_diagnostic_latency_display()
+        page._refresh_diagnostic_latency_display()
+        table = page.latency_detail_list
+        assert table.rowCount() == 30
+        observed = set()
+        for row in range(table.rowCount()):
+            cells = [table.item(row, col).text() for col in range(table.columnCount())]
+            observed.add((cells[0], cells[1], cells[2], cells[3]))
+        assert observed == {(str(index + 1), f"account-{index + 1}", f"SYM{index}", str(turn + 1))
+                            for turn in range(2) for index in range(3)}
+        page._save_latest_manual_trace()
+        with zipfile.ZipFile(target) as archive:
+            content = b" ".join(archive.read(name) for name in archive.namelist())
+        for index in range(3):
+            assert f"account-{index + 1}".encode() in content
+            assert f"SYM{index}".encode() in content
+        assert b"PRIVATE-" not in content
+        assert not any("دستی" in message for message in messages)
+    finally:
+        page.close()
+
+
 def test_scope_rejection_has_one_correlated_event_per_order(qapp, monkeypatch):
     page, events, queue = _page(qapp, monkeypatch)
     try:
@@ -452,8 +860,8 @@ def test_ui_final_result_preserves_partial_status_and_ignores_logger_failure(qap
         page._refresh_result_display()
         assert page._last_order_results == original_results
         from ui.order_configuration_page import RESULT_STATUS_LIVE_SUCCESS, RESULT_STATUS_BLOCKED
-        assert RESULT_STATUS_LIVE_SUCCESS in page.result_list.item(0).text()
-        assert RESULT_STATUS_BLOCKED in page.result_list.item(1).text()
+        assert RESULT_STATUS_LIVE_SUCCESS in page._last_result_display_rows[0]
+        assert RESULT_STATUS_BLOCKED in page._last_result_display_rows[1]
     finally:
         page.close()
 

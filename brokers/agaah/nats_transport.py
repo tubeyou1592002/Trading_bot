@@ -216,6 +216,7 @@ class OmsStateChanged:
     channel: str
     nsc_id: str
     raw_timestamp: float = field(default_factory=time.time)
+    app_received_monotonic_ns: Optional[int] = None
 
 
 class OmsMessageDecoder:
@@ -438,7 +439,14 @@ class AgahNatsTransport:
         groups = []
         resp_data = data.get("data", {})
         if isinstance(resp_data, dict):
-            groups = resp_data.get("groups", []) or resp_data.get("messageTypes", []) or []
+            if "groups" in resp_data or "messageTypes" in resp_data:
+                groups = resp_data.get("groups", []) or resp_data.get("messageTypes", []) or []
+            elif "100" in resp_data:
+                # Observed Agah response: data is keyed by numeric message code.
+                # Accept only the exact string key and validate the mapped shape below.
+                candidate = resp_data["100"]
+                if isinstance(candidate, dict):
+                    groups = [{"code": 100, **candidate}]
         elif isinstance(resp_data, list):
             groups = resp_data
 
@@ -475,6 +483,21 @@ class AgahNatsTransport:
         # Extract group names (subjects) and schema from actual response
         group_names = oms_group.get("groupNames", []) or oms_group.get("subjects", []) or []
         schema = oms_group.get("schema", [])
+        if (
+            not isinstance(group_names, list)
+            or not group_names
+            or any(not isinstance(name, str) or not name for name in group_names)
+            or not isinstance(schema, list)
+            or not schema
+            or any(not isinstance(field_name, str) or not field_name for field_name in schema)
+        ):
+            _log_response_diagnostic(
+                _ENDPOINT_MESSAGE_TYPES,
+                response,
+                data,
+                code_100_found=False,
+            )
+            raise RuntimeError("Invalid OmsStateChanged (code 100) schema")
 
         self._oms_schema = MessageTypeSchema(
             code=oms_group.get("code", 100),
@@ -625,6 +648,7 @@ class AgahNatsTransport:
                 message=str(decoded.get("message", "")),
                 channel=str(decoded.get("channel", "")),
                 nsc_id=str(decoded.get("nscId", "")),
+                app_received_monotonic_ns=time.monotonic_ns(),
             )
 
             if oms.code == 100:
