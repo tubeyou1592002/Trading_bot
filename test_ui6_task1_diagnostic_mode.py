@@ -333,12 +333,12 @@ class TestDiagnosticSectionIsRealAndModeGated:
         # Before any mode application: the shipped default (hidden).
         assert page.is_diagnostic_visible() is False
         # The content exists for real and comes from the REAL result model.
-        assert page.diagnostic_list.count() == 1
-        item_text = page.diagnostic_list.item(0).text()
+        assert page.diagnostic_list.rowCount() == 1
+        cells = [page.diagnostic_list.item(0, col).text() for col in range(3)]
         assert DIAGNOSTIC_SECTION_TITLE in page.diagnostic_section.title()
-        assert STRINGS.DIAGNOSTIC_ENTRY_PREFIX.format(position=1) in item_text
-        assert "\u0622\u06a9\u0648" in item_text
-        assert "\u0645\u0648\u0641\u0642" in item_text
+        assert cells[0] == "1"
+        assert "\u0622\u06a9\u0648" in cells[1]
+        assert "\u0645\u0648\u0641\u0642" in cells[2]
 
         # NORMAL: hidden — the section's real content is not disclosed.
         window = MainWindow()
@@ -353,7 +353,7 @@ class TestDiagnosticSectionIsRealAndModeGated:
         window.set_mode(ApplicationMode.DIAGNOSTIC)
         assert page.is_diagnostic_visible() is True
         assert page.diagnostic_section.isVisibleTo(page) is True
-        assert page.diagnostic_list.count() == 1
+        assert page.diagnostic_list.rowCount() == 1
 
     def test_empty_state_before_any_test_pass(self, qapp):
         page = make_page(qapp)
@@ -371,7 +371,7 @@ class TestDiagnosticSectionIsRealAndModeGated:
         window.set_mode(ApplicationMode.DIAGNOSTIC)
         assert page.is_diagnostic_visible() is True
         # Real empty state: no Test pass has run — nothing is invented.
-        assert page.diagnostic_list.count() == 0
+        assert page.diagnostic_list.rowCount() == 0
         assert page.diagnostic_status_label.text() == DIAGNOSTIC_EMPTY_STATE
 
     def test_fail_closed_against_foreign_mode_values(self, qapp):
@@ -445,8 +445,9 @@ class TestDiagnosticTraceId:
         )
         # The trace id is a SECTION-level line: not attached to any
         # per-order item and never rendered into the order-log table.
-        for row in range(page.diagnostic_list.count()):
-            assert "TRACE-UI6-0001" not in page.diagnostic_list.item(row).text()
+        for row in range(page.diagnostic_list.rowCount()):
+            for col in range(page.diagnostic_list.columnCount()):
+                assert "TRACE-UI6-0001" not in page.diagnostic_list.item(row, col).text()
         for r in range(page.order_log_table.rowCount()):
             for c in range(page.order_log_table.columnCount()):
                 cell = page.order_log_table.item(r, c)
@@ -913,8 +914,8 @@ class TestNoOrderingBehaviorImpact:
         # The verdict mirrors the REAL result model in both modes.
         for mode in (ApplicationMode.NORMAL, ApplicationMode.DIAGNOSTIC):
             window.set_mode(mode)
-            assert page.diagnostic_list.count() == 1
-            text = page.diagnostic_list.item(0).text()
+            assert page.diagnostic_list.rowCount() == 1
+            text = page.diagnostic_list.item(0, 2).text()
             assert "\u0645\u0633\u062f\u0648\u062f\u0634\u062f\u0647" in text
 
 
@@ -943,11 +944,12 @@ def test_extra_standalone_page_defaults_hidden_and_diagnostic_items_carry_no_pay
 
     order = Order(nsc_id="NSC-4", side=BUY, price=1, quantity=1)
     _wire_and_run(page, [order], [_dry_run_result(order, success=True)])
-    for row in range(page.diagnostic_list.count()):
-        item = page.diagnostic_list.item(row)
-        # No technical payload rides on the display items.
-        assert item.data(0x20) in (None, "")  # Qt.UserRole stays empty
-        assert "DEC-" not in item.text()      # no decisionId-like value
+    for row in range(page.diagnostic_list.rowCount()):
+        for col in range(page.diagnostic_list.columnCount()):
+            item = page.diagnostic_list.item(row, col)
+            # No technical payload rides on the display items.
+            assert item.data(0x20) in (None, "")  # Qt.UserRole stays empty
+            assert "DEC-" not in item.text()      # no decisionId-like value
 
 
 def test_extra_main_window_construction_stays_offline():
@@ -1008,15 +1010,20 @@ class TestDiagnosticLatencyDisplay:
 
     def _diag_texts(self, page):
         return [
-            page.latency_detail_list.item(i).text()
-            for i in range(page.latency_detail_list.count())
+            " ".join(page.latency_detail_list.item(i, j).text()
+                     for j in range(page.latency_detail_list.columnCount())
+                     if page.latency_detail_list.item(i, j))
+            for i in range(page.latency_detail_list.rowCount())
         ]
 
     def _stage_rows(self, page):
         return {
-            (text.split("مرحله ", 1)[1].split(":", 1)[0]): text
-            for text in self._diag_texts(page)
-            if "مرحله " in text
+            row[4].text().split(" / ", 1)[1]: row[5].text()
+            for row in ([page.latency_detail_list.item(i, j)
+                         for j in range(page.latency_detail_list.columnCount())]
+                        for i in range(page.latency_detail_list.rowCount()))
+            if row[4] is not None and row[4].text().startswith("Block 8 /")
+            and row[4].text().split(" / ", 1)[1] in self.STAGE_MS
         }
 
     def _run_with_report(self, qapp, order=None, application_side_ns=1500000):
@@ -1082,21 +1089,21 @@ class TestDiagnosticLatencyDisplay:
         for stage, ms in self.STAGE_MS.items():
             assert stage_rows[stage].endswith(ms), stage_rows
         assert any(
-            "Broker/API place_order #1" in t and t.endswith("4.500 ms")
+            "Broker/API place_order #1" in t and "4.500 ms" in t
             for t in self._diag_texts(page)
         )
         # The order label is the IDENTITY-KEYED symbol of THIS run's own
         # Order object.
         assert any(
-            "Order آکو" in t
-            and t.endswith("1.500 ms")   # application_side_ns of THIS record
+            "آکو" in t and "application_side" in t
+            and "1.500 ms" in t   # application_side_ns of THIS record
             for t in self._diag_texts(page)
         )
 
     def test_2_normal_mode_hides_all_latency_data(self, qapp):
         page = self._run_with_report(qapp)
         assert page.latency_total_label.text().endswith("12.346 ms")
-        assert page.latency_detail_list.count() > 0
+        assert page.latency_detail_list.rowCount() > 0
         page.apply_mode(ApplicationMode.NORMAL)
         assert page.is_diagnostic_visible() is False
         # The latency widgets live INSIDE the mode-gated section: the
@@ -1105,7 +1112,7 @@ class TestDiagnosticLatencyDisplay:
         assert page.diagnostic_section.isVisibleTo(page) is False
         assert page.latency_detail_list.isVisibleTo(page) is False
         assert page.latency_total_label.isVisibleTo(page) is False
-        assert page.latency_detail_list.count() > 0
+        assert page.latency_detail_list.rowCount() > 0
 
     def test_3_categories_rendered_separately_not_summed(self, qapp):
         page = self._run_with_report(qapp)
@@ -1119,10 +1126,10 @@ class TestDiagnosticLatencyDisplay:
             "7.000 ms"                                # engine stage alone
         )
         assert any(
-            "Broker/API place_order #1" in t and t.endswith("4.500 ms")
+            "Broker/API place_order #1" in t and "4.500 ms" in t
             for t in texts
         )  # individual broker call
-        assert any(t.endswith("1.500 ms") for t in texts)   # app-side value
+        assert any("application_side" in t and "1.500 ms" in t for t in texts)
         # No display line carries an artificial sum (e.g. the 11.500 ms of
         # stage + broker) and no line is labelled network latency.
         assert not any("11.500" in t or "15.500" in t for t in texts)
@@ -1136,7 +1143,7 @@ class TestDiagnosticLatencyDisplay:
         page = self._run_with_report(qapp, application_side_ns=None)
         app_rows = [t for t in self._diag_texts(page) if "application" in t]
         assert len(app_rows) == 3
-        assert all(t.endswith(DIAGNOSTIC_VALUE_UNAVAILABLE) for t in app_rows)
+        assert all(DIAGNOSTIC_VALUE_UNAVAILABLE in t for t in app_rows)
         assert not any(
             ".000 ms" in t and "application" in t
             for t in self._diag_texts(page)
@@ -1150,9 +1157,9 @@ class TestDiagnosticLatencyDisplay:
         page._refresh_diagnostic_latency_display()
         missing_stage = next(
             t for t in self._diag_texts(page)
-            if "مرحله plan_account" in t
+            if "Block 8 / plan_account" in t
         )
-        assert missing_stage.endswith(DIAGNOSTIC_VALUE_UNAVAILABLE)
+        assert DIAGNOSTIC_VALUE_UNAVAILABLE in missing_stage
         assert ".000 ms" not in missing_stage
         # (b) NO report at all (plain/test-double runner path): the total
         # shows ناموجود and the detail list stays empty — no fabricated
@@ -1171,7 +1178,7 @@ class TestDiagnosticLatencyDisplay:
         assert page2.latency_total_label.text() == (
             DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
         )
-        assert page2.latency_detail_list.count() == 0
+        assert page2.latency_detail_list.rowCount() == 0
 
     def test_8_multiple_orders_and_calls_are_individually_labeled(self, qapp):
         from core.latency_instrumentation import BrokerApiCallTiming
@@ -1204,44 +1211,30 @@ class TestDiagnosticLatencyDisplay:
         page.apply_mode(ApplicationMode.DIAGNOSTIC)
         texts = self._diag_texts(page)
 
-        assert any(
-            DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
-                order="ORDER-A", stage="plan_item"
-            ) in t
-            and t.endswith("1.000 ms") for t in texts
-        )
-        assert any(
-            DIAGNOSTIC_LATENCY_STAGE_PREFIX.format(
-                order="ORDER-B", stage="plan_item"
-            ) in t
-            and t.endswith("3.000 ms") for t in texts
-        )
+        assert any("ORDER-A" in t and "Block 8 / plan_item" in t
+                   and "1.000 ms" in t for t in texts)
+        assert any("ORDER-B" in t and "Block 8 / plan_item" in t
+                   and "3.000 ms" in t for t in texts)
         # Same operation name is not collapsed into a cross-order sum;
         # each measured call has its own order and call number.
         assert any(
-            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
-                order="ORDER-A", operation="place_order", call_number=1
-            ) in t
-            and t.endswith("4.500 ms") for t in texts
+            "ORDER-A" in t and "Broker/API place_order #1" in t
+            and "4.500 ms" in t for t in texts
         )
         assert any(
-            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
-                order="ORDER-B", operation="place_order", call_number=1
-            ) in t
-            and t.endswith("2.000 ms") for t in texts
+            "ORDER-B" in t and "Broker/API place_order #1" in t
+            and "2.000 ms" in t for t in texts
         )
         assert any(
-            DIAGNOSTIC_LATENCY_BROKER_PREFIX.format(
-                order="ORDER-B", operation="place_order", call_number=2
-            ) in t
-            and t.endswith("3.000 ms") for t in texts
+            "ORDER-B" in t and "Broker/API place_order #2" in t
+            and "3.000 ms" in t for t in texts
         )
-        assert not any(t.endswith("9.500 ms") for t in texts)
+        assert not any("9.500 ms" in t for t in texts)
 
     def test_5_failed_issue_never_shows_previous_run_data(self, qapp):
         page = self._run_with_report(qapp)   # run 1: full data on display
         assert page.latency_total_label.text().endswith("12.346 ms")
-        assert page.latency_detail_list.count() > 0
+        assert page.latency_detail_list.rowCount() > 0
 
         class _FailingRunner:
             last_order_results = None
@@ -1264,10 +1257,10 @@ class TestDiagnosticLatencyDisplay:
         assert page.latency_total_label.text() == (
             DIAGNOSTIC_LATENCY_TOTAL_LABEL + DIAGNOSTIC_VALUE_UNAVAILABLE
         )
-        assert page.latency_detail_list.count() == 0
+        assert page.latency_detail_list.rowCount() == 0
         assert "12.346" not in page.latency_total_label.text()
-        for i in range(page.latency_detail_list.count()):
-            assert "12.346" not in page.latency_detail_list.item(i).text()
+        for i in range(page.latency_detail_list.rowCount()):
+            assert "12.346" not in " ".join(page.latency_detail_list.item(i, j).text() for j in range(page.latency_detail_list.columnCount()) if page.latency_detail_list.item(i, j))
         # Existing failure behavior intact: the error is surfaced, no new
         # dispatch happened, and a completed NEW run shows its own data.
         assert (
@@ -1288,7 +1281,7 @@ class TestDiagnosticLatencyDisplay:
         page._test_mode = True
         page._run_test_pass()
         assert page.latency_total_label.text().endswith("12.346 ms")
-        assert page.latency_detail_list.count() > 0
+        assert page.latency_detail_list.rowCount() > 0
 
     def test_6_display_changes_touch_no_send_behavior(self, qapp):
         order = Order(nsc_id="NSC-L4", side=BUY, price=5, quantity=1)
@@ -1313,7 +1306,7 @@ class TestDiagnosticLatencyDisplay:
         assert len(page.order_queue.list_pending()) == entries_before == 1
         assert page._test_mode is True
         assert len(page.order_log.rows()) == 1
-        assert page.latency_detail_list.count() > 0
+        assert page.latency_detail_list.rowCount() > 0
 
     def test_7_construction_imports_no_core_module(self):
         code = "\n".join(
@@ -1330,7 +1323,7 @@ class TestDiagnosticLatencyDisplay:
                 "assert page.latency_total_label.text().endswith(",
                 "    '\u0646\u0627\u0645\u0648\u062c\u0648\u062f'",
                 ")",
-                "assert page.latency_detail_list.count() == 0",
+                "assert page.latency_detail_list.rowCount() == 0",
                 "print('UI6_T3_OFFLINE_OK')",
             ]
         )

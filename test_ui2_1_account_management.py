@@ -60,7 +60,8 @@ from ui.credential_store import (
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
-BROKER = "آگاه"  # the only broker implemented in the repository today
+BROKER = "آگاه"
+MOFID_BROKER = "مفید"
 
 
 @pytest.fixture(scope="module")
@@ -147,8 +148,7 @@ def test_5_broker_association_is_exact(store):
     assert record.broker_name == BROKER
     # association lives on the record, not on the Account model
     assert not hasattr(record.account, "broker_name")
-    # selector currently offers exactly the implemented broker
-    assert AVAILABLE_BROKERS == ("آگاه", "مفید")
+    assert AVAILABLE_BROKERS == (BROKER, MOFID_BROKER)
 
 
 # ============================================================
@@ -250,7 +250,9 @@ def test_11_accounts_page_creates_no_real_broker(store, qapp):
     assert page.accounts_table is not None
     assert page.broker_selector.count() == 2
     assert page.broker_selector.currentText() == BROKER
-    assert page.broker_selector.itemText(1) == "مفید"
+    assert [page.broker_selector.itemText(i) for i in range(page.broker_selector.count())] == [
+        BROKER, MOFID_BROKER
+    ]
 
     # no broker / manager object anywhere on the page
     for attr in (
@@ -683,6 +685,7 @@ class FakeAuthenticationService:
         self.completed = []
         self.logged_out = []
         self.status_queries = []
+        self.adapter = None
 
     def begin_login(self, account_id):
         self.begun.append(account_id)
@@ -712,6 +715,9 @@ class FakeAuthenticationService:
         if account_id in self.status_errors:
             raise self.status_errors[account_id]
         return self.logged_in.get(account_id, False)
+
+    def get_adapter(self, account_id):
+        return self.adapter
 
 
 def _login_page(store, qapp, service):
@@ -748,6 +754,65 @@ def test_login_requires_selection_and_factory_is_lazy(store, qapp):
     page.accounts_table.setCurrentCell(0, 1)
     page._on_begin_login_clicked()
     assert page.login_message_label.text() == STRINGS.ACCOUNT_OPERATION_FAILED
+    page.close()
+
+
+def test_no_challenge_login_marks_logged_in_without_prompt_or_cancel(store, qapp):
+    from brokers.authentication import CHALLENGE_NONE, LoginChallenge
+
+    store.add("A", BROKER, "Account A")
+    service = FakeAuthenticationService(
+        challenge=LoginChallenge(CHALLENGE_NONE, "", ""),
+    )
+    page, _ = _login_page(store, qapp, service)
+    page.accounts_table.setCurrentCell(0, 1)
+
+    page._begin_login("A")
+
+    assert service.begun == ["A"]
+    assert service.cancelled == []
+    assert service.completed == []
+    assert page._captcha_dialog is None
+    assert page._pending_login_account_id is None
+    assert page._login_status_by_account["A"] is True
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_LOGGED_IN
+    page.close()
+
+
+def test_login_shows_only_safe_purchase_power_diagnostic(store, qapp):
+    from brokers.authentication import CHALLENGE_NONE, LoginChallenge
+
+    store.add("A", MOFID_BROKER, "Mofid")
+    service = FakeAuthenticationService(challenge=LoginChallenge(CHALLENGE_NONE, "", ""))
+    service.adapter = type("Adapter", (), {
+        "last_purchase_power_diagnostic": "money_http_503?token=secret",
+        "get_tradable_balance": lambda self: (_ for _ in ()).throw(RuntimeError("Cookie secret")),
+    })()
+    service.get_purchase_power = lambda account_id: service.adapter.get_tradable_balance()
+    page, _ = _login_page(store, qapp, service)
+
+    page._begin_login("A")
+
+    assert page.login_message_label.text() == (
+        "ورود تأیید شد، اما دریافت قدرت خرید کامل نشد (مرحله: نامشخص)."
+    )
+    assert page.accounts_table.item(0, 4).text() == STRINGS.PURCHASE_POWER_UNKNOWN
+    assert "secret" not in page.login_message_label.text()
+    page.close()
+
+
+def test_successful_purchase_power_message_is_not_replaced(store, qapp):
+    from brokers.authentication import CHALLENGE_NONE, LoginChallenge
+
+    store.add("A", MOFID_BROKER, "Mofid")
+    service = FakeAuthenticationService(challenge=LoginChallenge(CHALLENGE_NONE, "", ""))
+    service.get_purchase_power = lambda account_id: 123
+    page, _ = _login_page(store, qapp, service)
+
+    page._begin_login("A")
+
+    assert page.login_message_label.text() == STRINGS.LOGIN_COMPLETED
+    assert page.accounts_table.item(0, 4).text() == STRINGS.format_grouped(123)
     page.close()
 
 
@@ -1062,6 +1127,34 @@ def test_redesigned_add_generates_internal_id_and_saves_credentials_offline(stor
     assert backend.saved == [(record.account_id, BROKER, "offline-user", "offline-password")]
     assert not hasattr(page, "account_id_input")
     assert page.accounts_table.item(0, 2).text() == STRINGS.CURRENT_USE_INACTIVE
+    assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
+    page.close()
+
+
+def test_mofid_account_add_stores_selection_without_auto_login(store, qapp):
+    backend = FakeCredentialStore()
+    login_calls = []
+    page = AccountsPage(
+        store,
+        credential_store_factory=lambda: backend,
+        authentication_service_factory=lambda: login_calls.append(True),
+    )
+    page.broker_selector.setCurrentText(MOFID_BROKER)
+    page.display_name_input.setText("حساب مفید")
+    page.username_input.setText("offline-user")
+    page.password_input.setText("offline-password")
+
+    page.add_button.click()
+
+    (record,) = store.all_accounts()
+    assert record.broker_name == MOFID_BROKER
+    assert record.display_name == "حساب مفید"
+    assert backend.saved == [
+        (record.account_id, MOFID_BROKER, "offline-user", "offline-password")
+    ]
+    assert page._login_status_by_account == {}
+    assert page._pending_login_account_id is None
+    assert login_calls == []
     assert page.accounts_table.item(0, 3).text() == STRINGS.LOGIN_STATUS_UNKNOWN
     page.close()
 

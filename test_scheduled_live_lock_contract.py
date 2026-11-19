@@ -95,7 +95,8 @@ def test_scheduled_start_and_completion_update_only_matching_order_log_row():
     from ui.user_log import OrderLog
 
     page = SimpleNamespace(order_log=OrderLog(), _scheduled_fire_runtime=None,
-                           _scheduled_feedback_ids={}, _refresh_order_log_display=lambda: None)
+                           _scheduled_feedback_ids={}, _refresh_order_log_display=lambda: None,
+                           _refresh_diagnostic_latency_display=lambda: None)
     first = SimpleNamespace(ticket_id="private-first", turn_index=0)
     second = SimpleNamespace(ticket_id="private-second", turn_index=1)
     timestamp = datetime.now().astimezone()
@@ -124,6 +125,7 @@ def test_scheduled_ticket_completion_updates_order_log_with_safe_classification(
     page = SimpleNamespace(
         order_log=OrderLog([original]), _scheduled_fire_runtime=None,
         _refresh_order_log_display=lambda: None,
+        _refresh_diagnostic_latency_display=lambda: None,
     )
     OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, result)
     rows = page.order_log.rows()
@@ -149,6 +151,7 @@ def test_scheduled_ticket_exception_classification_updates_order_log(post_starte
         _scheduled_fire_runtime=runtime, _schedule_cancel_event=__import__("threading").Event(),
         _live_authorization=SimpleNamespace(snapshot=SimpleNamespace(orders=())),
         _refresh_order_log_display=lambda: None,
+        _refresh_diagnostic_latency_display=lambda: None,
     )
     OrderConfigurationPage._handle_scheduled_ticket_complete(page, ticket, RuntimeError("secret"))
     row = page.order_log.rows()[0]
@@ -199,6 +202,8 @@ def test_scheduled_ticket_signal_queues_order_log_update_on_gui_thread():
     page._scheduled_fire_runtime = None
     page._schedule_cancel_event = None
     page._refresh_order_log_display = lambda: None
+    page._refresh_diagnostic_latency_display = lambda: None
+    page.latency_detail_list = None
     page.scheduled_ticket_completed.connect(page._handle_scheduled_ticket_complete)
     observed_threads = []
     original_complete = page._handle_scheduled_ticket_complete
@@ -246,6 +251,8 @@ def test_scheduled_ticket_started_from_worker_appends_private_keyed_row_on_gui_t
     timestamp = datetime(2026, 11, 12, 10, 11, 12, tzinfo=timezone.utc)
     page.order_log = OrderLog()
     page._refresh_order_log_display = lambda: None
+    page._refresh_diagnostic_latency_display = lambda: None
+    page.latency_detail_list = None
     page.scheduled_ticket_started.connect(page._handle_scheduled_ticket_start)
     observed_threads = []
     original_start = page._handle_scheduled_ticket_start

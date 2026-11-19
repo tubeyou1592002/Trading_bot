@@ -325,28 +325,28 @@ class AccountsPage(QWidget):
         return value
 
     def _purchase_power_diagnostic_message(self, service, account_id):
-        """Display a safe failure stage without exposing broker response data."""
+        """Render only a whitelisted adapter diagnostic stage, never errors."""
         try:
-            getter = getattr(service, "get_adapter", None)
-            adapter = getter(account_id) if callable(getter) else None
+            adapter_getter = getattr(service, "get_adapter", None)
+            adapter = adapter_getter(account_id) if callable(adapter_getter) else None
             diagnostic = getattr(adapter, "last_purchase_power_diagnostic", None)
         except Exception:
             diagnostic = None
-        labels = {
+        allowed = {
             "not_authenticated": "احراز هویت",
-            "same_login_transport_error": "ارتباط بررسی نشست",
             "startsession_transport_error": "ارتباط با شروع نشست",
             "startsession_schema_invalid": "پاسخ شروع نشست",
             "money_transport_error": "ارتباط دریافت قدرت خرید",
             "money_schema_invalid": "پاسخ قدرت خرید",
             "ok": "نامشخص",
         }
-        for prefix, stage in (("same_login_http_", "بررسی نشست"),
-                              ("startsession_http_", "شروع نشست"),
-                              ("money_http_", "قدرت خرید")):
-            if isinstance(diagnostic, str) and diagnostic.startswith(prefix) and diagnostic[len(prefix):].isdigit():
-                labels[diagnostic] = f"{stage} (HTTP {diagnostic[len(prefix):]})"
-        return f"ورود تأیید شد، اما دریافت قدرت خرید کامل نشد (مرحله: {labels.get(diagnostic, 'نامشخص')})."
+        if isinstance(diagnostic, str):
+            for prefix in ("startsession_http_", "money_http_"):
+                if diagnostic.startswith(prefix) and diagnostic[len(prefix):].isdigit():
+                    stage = "شروع نشست" if prefix == "startsession_http_" else "قدرت خرید"
+                    allowed[diagnostic] = f"{stage} (HTTP {diagnostic[len(prefix):]})"
+        safe_stage = allowed.get(diagnostic, "نامشخص")
+        return f"ورود تأیید شد، اما دریافت قدرت خرید کامل نشد (مرحله: {safe_stage})."
 
     def _notify_lifecycle(self, event, account_id, broker_name=None):
         """Report an account lifecycle event to the optional observer."""
@@ -423,7 +423,8 @@ class AccountsPage(QWidget):
 
     def _begin_login(self, account_id):
         from brokers.authentication import (
-            CHALLENGE_CAPTCHA_IMAGE, CHALLENGE_NONE, LoginChallenge, LoginRejectedError,
+            CHALLENGE_CAPTCHA_IMAGE, CHALLENGE_NONE, LoginChallenge,
+            LoginRejectedError,
         )
         if self._pending_login_account_id is not None:
             self._report(STRINGS.LOGIN_PENDING, True)
@@ -457,6 +458,11 @@ class AccountsPage(QWidget):
             if not pixmap.loadFromData(data) or pixmap.isNull():
                 raise ValueError
         except LoginRejectedError:
+            if service is not None and challenge_received:
+                try:
+                    service.cancel_login(account_id)
+                except Exception:
+                    pass
             self._report(STRINGS.LOGIN_CREDENTIALS_REJECTED, True)
             return
         except Exception:

@@ -326,6 +326,10 @@ class BrokerTurnResult:
     #: they are never collapsed into a single shared one.
     #: ``None`` only when this group never reached the send path at all.
     started_mono: Optional[float] = None
+    #: The exact Block 8 report produced by this group's runner execution;
+    #: scoped by this result's turn, account, execution and trace identity.
+    #: None means the runner supplied no measured report.
+    latency_report: Optional[object] = None
 
 
 @dataclass(frozen=True)
@@ -805,6 +809,7 @@ class PeriodicScheduleDispatcher:
             _plan, execution_id, result = runner.run(
                 entries, account={group.account_id: group.account}
             )
+            latency_report = getattr(runner, "last_report", None)
             # The trace id is read ONLY from the real Core result.
             trace = getattr(result, "trace_id", None)
             success = bool(getattr(result, "success", False))
@@ -817,6 +822,7 @@ class PeriodicScheduleDispatcher:
                 success=success,
                 message=message,
                 started_mono=started_mono,
+                latency_report=latency_report,
             )
         except Exception as exc:  # fail-closed for THIS broker only
             return BrokerTurnResult(

@@ -2,12 +2,33 @@
 
 import json
 import os
+import zipfile
 from importlib import reload
 
 import pytest
 from PySide6.QtWidgets import QApplication
 
 from ui import manual_live_trace
+
+
+def test_live_trace_xlsx_contains_two_linked_sheets_and_safe_cells(tmp_path):
+    from ui.order_configuration_page import _write_live_trace_xlsx
+
+    target = tmp_path / "trace.xlsx"
+    _write_live_trace_xlsx(
+        target,
+        [(1, "account", "SYMBOL", "SUCCESS", "submit=1.250", "mlt-abc")],
+        [("mlt-abc", 1, "submit", "ACCEPTED", 123.5, None)],
+    )
+    with zipfile.ZipFile(target) as archive:
+        assert archive.testzip() is None
+        workbook = archive.read("xl/workbook.xml").decode()
+        summary = archive.read("xl/worksheets/sheet1.xml").decode()
+        details = archive.read("xl/worksheets/sheet2.xml").decode()
+    assert 'name="خلاصه"' in workbook
+    assert 'name="جزئیات اجرا"' in workbook
+    assert "SYMBOL" in summary and "mlt-abc" in summary
+    assert "submit" in details and "ACCEPTED" in details
 
 
 def _logger(monkeypatch, directory):

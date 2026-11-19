@@ -645,6 +645,43 @@ class TestAcceptedByBourseAtIsTheEventTimestamp:
 
         assert info.accepted_by_bourse_at == RAW_TS_REDELIVERED
 
+    def test_actual_correlator_normalizes_only_scoped_action5_events(self):
+        from brokers.agaah.queue_position import AgahOrderCorrelator, OrderTrackingInfo
+        from brokers.order_feedback_contract import FeedbackMilestone, OrderFeedbackEvent
+
+        emitted = []
+        correlator = object.__new__(AgahOrderCorrelator)
+        correlator.on_order_registered = None
+        correlator.on_normalized_feedback = emitted.append
+        correlator.account_id = "ACC-OMS"
+        correlator._running = True
+        correlator._orders = {
+            "DEC-NORMALIZED": OrderTrackingInfo(
+                decision_id="DEC-NORMALIZED", nsc_id="NSC-NORMALIZED"
+            )
+        }
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-NORMALIZED", ACTION_SAVED_IN_ASA, RAW_TS)
+        )
+        assert emitted == []
+
+        correlator._handle_oms_event(
+            make_oms_event("DEC-OTHER", ACTION_ACCEPTED_BY_BOURSE, RAW_TS)
+        )
+        assert emitted == []
+
+        event = make_oms_event("DEC-NORMALIZED", ACTION_ACCEPTED_BY_BOURSE, RAW_TS)
+        event.app_received_monotonic_ns = 9_876_543_210_123_456
+        correlator._handle_oms_event(event)
+
+        assert len(emitted) == 1
+        assert isinstance(emitted[0], OrderFeedbackEvent)
+        assert emitted[0].milestone is FeedbackMilestone.OMS_ACCEPTED_BY_BOURSE
+        assert emitted[0].account_id == "ACC-OMS"
+        assert emitted[0].decision_id == "DEC-NORMALIZED"
+        assert emitted[0].app_received_monotonic_ns == 9_876_543_210_123_456
+
 
 # ---------------------------------------------------------------------------
 # Contract B — the three-value order_registered signal
@@ -673,6 +710,20 @@ class TestFeedbackServiceCarriesThreeValues:
             qt_signal_signature(service, "order_registered")
             == "order_registered(QString,PyObject,PyObject)"
         )
+
+    def test_monotonic_signal_preserves_full_python_integer(self, qapp):
+        from ui.order_feedback_service import OrderFeedbackService
+
+        service = OrderFeedbackService(broker_factory=lambda: None)
+        received = []
+        service.order_registered_monotonic.connect(
+            lambda decision_id, monotonic_ns: received.append((decision_id, monotonic_ns))
+        )
+        service._on_order_registered("DEC-NS", None)
+
+        assert len(received) == 1
+        assert type(received[0][1]) is int
+        assert received[0][1] > 2**32
 
     def _service(self, received):
         from ui.order_feedback_service import OrderFeedbackService

@@ -173,6 +173,41 @@ def test_code_100_in_a_top_level_data_list_is_accepted(caplog):
     assert "response diagnostic" not in caplog.text
 
 
+def test_code_100_keyed_mapping_is_accepted_and_decoded_offline():
+    schema = [
+        "code", "action", "decisionId", "requestId", "currentTradeCount",
+        "message", "channel", "nscId",
+    ]
+    payload = {
+        "isSuccess": True,
+        "data": {
+            "100": {
+                "groupNames": ["omsStateChanged.TEST"],
+                "schema": schema,
+            }
+        },
+    }
+    transport = nt.AgahNatsTransport(FakeBroker(response=FakeResponse(payload)))
+
+    _run(transport._fetch_message_types())
+
+    assert transport._oms_schema.code == 100
+    assert transport._oms_schema.group_names == ["omsStateChanged.TEST"]
+    assert transport._decoder.field_names == schema
+    assert transport._decoder.decode("100,1,d,r,10,done,c,n") == dict(
+        zip(schema, ["100", "1", "d", "r", "10", "done", "c", "n"])
+    )
+
+
+@pytest.mark.parametrize("entry", [None, [], {"groupNames": "bad", "schema": ["code"]}, {"groupNames": ["oms"], "schema": [1]}])
+def test_keyed_mapping_invalid_shape_fails_closed(entry):
+    payload = {"isSuccess": True, "data": {"100": entry}}
+    transport = nt.AgahNatsTransport(FakeBroker(response=FakeResponse(payload)))
+
+    with pytest.raises(RuntimeError):
+        _run(transport._fetch_message_types())
+
+
 # ---------------------------------------------------------------------------
 # 2) Why code 100 is (or is not) found — safe structure evidence
 # ---------------------------------------------------------------------------

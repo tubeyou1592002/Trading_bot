@@ -586,25 +586,35 @@ class AuthenticationService:
             self._clear_pending(account_id)
             raise
 
-        # Handle adapters that complete login without a user challenge.
+        # A no-challenge result is an explicit report of completed auth.
         from brokers.authentication import CHALLENGE_NONE, LoginChallenge
-        if isinstance(challenge, LoginChallenge) and challenge.kind == CHALLENGE_NONE:
+        if (isinstance(challenge, LoginChallenge)
+                and challenge.kind == CHALLENGE_NONE):
             authenticated = adapter.get_authenticated_session()
             token = getattr(authenticated, "access_token", None)
-            if (not adapter.is_authenticated() or not isinstance(token, str) or not token.strip()):
+            if (not adapter.is_authenticated()
+                    or not isinstance(token, str) or not token.strip()):
                 self._clear_pending(account_id)
-                raise AuthenticationServiceError("آداپتر تکمیل ورود را بدون نشست معتبر گزارش کرد")
+                raise AuthenticationServiceError(
+                    "آداپتر تکمیل ورود را بدون نشست معتبر گزارش کرد"
+                )
             try:
-                self._sessions.mark_logged_in(account_id, token=token)
+                session = self._sessions.mark_logged_in(account_id, token=token)
             except Exception:
                 self._clear_pending(account_id)
-                self._detach_account_authentication(adapter)
-                raise AuthenticationServiceError("ثبت نشست ورود ناموفق بود؛ ورود مجدد لازم است") from None
+                cleanup_complete = self._detach_account_authentication_checked(adapter)
+                if not self._session_is_logged_out(account_id) or not cleanup_complete:
+                    _raise_clean(AuthenticationServiceError(
+                        "ثبت نشست ورود ناموفق بود و پاک‌سازی وضعیت امن تأیید نشد"
+                    ))
+                _raise_clean(AuthenticationServiceError(
+                    "ثبت نشست ورود ناموفق بود؛ ورود مجدد لازم است"
+                ))
             self._adapters[account_id] = adapter
             self._install_recovery(account_id)
             return challenge
 
-        # چالش دریافت شد: این آداپتر، تلاش ورود در حال انجام این حساب است.
+        # Challenge received: this adapter is the account's pending attempt.
         self._pending_logins[account_id] = adapter
         return challenge
 

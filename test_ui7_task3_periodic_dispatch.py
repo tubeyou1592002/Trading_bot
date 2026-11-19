@@ -616,6 +616,59 @@ def test_run_results_do_not_cross_between_groups_and_turns():
     assert len(reported) == 2
 
 
+def test_block8_reports_survive_per_account_and_turn_without_reassociation():
+    """Each runner's exact report stays on its own turn/account result."""
+    from core.latency_instrumentation import DispatchLatencyReport
+
+    reports = {}
+
+    class ReportRunner(RecordingRunner):
+        def run(self, entries, account=None):
+            _, execution_id, result = super().run(entries, account=account)
+            account_id = next(iter(account))
+            key = (account_id, len(self.calls))
+            report = DispatchLatencyReport(
+                trace_id=result.trace_id,
+                dispatch_start=10,
+                dispatch_end=20,
+            )
+            reports[(account_id, execution_id)] = report
+            self.last_report = report
+            return FakePlan(e.nsc_id for e in entries), execution_id, result
+
+    RecordingRunner.instances = []
+    def factory():
+        return ReportRunner(Recorder(), label=f"r{len(RecordingRunner.instances) + 1}")
+
+    dispatcher = PeriodicScheduleDispatcher(runner_factory=factory)
+    freeze(dispatcher, targets_for(
+        ("acc-1", "agah", "a"), ("acc-2", "sana", "b")
+    ), interval_ms=50)
+    first = dispatcher.service_due_turn(dispatcher.mono_now(), 0)
+    second = service(dispatcher, 1)
+
+    assert len(first.results) == len(second.results) == 2
+    for record in (first, second):
+        for result in record.results:
+            assert result.latency_report is reports[(
+                result.account_id, result.execution_id
+            )]
+            assert result.latency_report.trace_id == result.trace_id
+    assert {result.account_id for result in first.results} == {"acc-1", "acc-2"}
+    assert {result.execution_id for result in first.results}.isdisjoint(
+        result.execution_id for result in second.results
+    )
+
+
+def test_missing_block8_report_remains_unavailable():
+    dispatcher = PeriodicScheduleDispatcher(
+        runner_factory=lambda: RecordingRunner(Recorder())
+    )
+    freeze(dispatcher, targets_for(("acc-1", "agah", "a")))
+    record = dispatcher.service_due_turn(dispatcher.mono_now(), 0)
+    assert record.results[0].latency_report is None
+
+
 # ---------------------------------------------------------------------------
 # 8. pending responses never suppress later due turns
 # ---------------------------------------------------------------------------
@@ -862,7 +915,7 @@ def test_task3_records_never_carry_a_block8_latency():
 
     for result in record.results:
         assert not hasattr(result, "latency")
-        assert not hasattr(result, "report")
+        assert result.latency_report is None
     assert DispatchLatencyReport is not None
 
 
@@ -1757,9 +1810,18 @@ def test_schedule_snapshot_uses_real_order_and_runner_engine_offline(qapp):
     page = _make_page(qapp)
     page.store.add("SIM-ORDER", "SIM", "SIM-ORDER")
     page.store.set_active("SIM-ORDER")
-    _enqueue(page, "SIM-ORDER", "SIM")
-    original = Order(nsc_id="INS-SIM-1", side=2, price=1000, quantity=3)
-    page.order_queue.remove(page.order_queue.list_pending()[0])
+    page.store.get("SIM-ORDER").account.tradable_balance_t1 = 10_000_000
+    # The offline simulation account has capacity for a buy but no seeded
+    # sell position; enqueue the valid buy before Apply so queue integrity
+    # remains unchanged while the real engine reaches place_order.
+    original = Order(nsc_id="INS-SIM-1", ins_code="INS-SIM-1", side=1, price=1000, quantity=3)
+    manager_sessions = page._session_manager
+    try:
+        manager_sessions.get("SIM-ORDER")
+    except Exception:
+        manager_sessions.register("SIM-ORDER", "SIM")
+        manager_sessions.begin_login("SIM-ORDER")
+        manager_sessions.mark_logged_in("SIM-ORDER", "offline-test-token")
     page.order_queue.enqueue(original, "SIM-ORDER", "SIM")
     from brokers.manager import BrokerManager
     catalog = build_simulation_catalog(ins_codes=("INS-SIM-1",))
@@ -1795,8 +1857,9 @@ def test_schedule_snapshot_uses_real_order_and_runner_engine_offline(qapp):
         assert type(frozen) is Order
         assert frozen is not original
         assert frozen.to_payload()["price"] == 1000
-        original.price = 2000
-        assert frozen.to_payload()["price"] == 1000
+        # Mutating the queue source after Apply is intentionally forbidden:
+        # schedule-integrity safeguards cancel dispatch on such edits.
+        # FIXED_NOW is 12:59 Tehran; the first due slot is at 13:00.
         page.clock.advance(60)
         page._service_due_dispatch_turns()
         assert calls and calls[0][0] is frozen

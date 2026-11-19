@@ -878,3 +878,129 @@ def test_scheduled_latency_records_failed_http_and_never_retries(monkeypatch, fa
     finally:
         runtime.close()
         runtime.wait_closed()
+
+
+def test_runtime_post_start_callback_is_local_once_and_precedes_result(monkeypatch):
+    import asyncio
+    from datetime import datetime
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    key = (ticket.account_id, ticket.broker_name)
+    broker = state["brokers"][key]
+    broker._account_id = key[0]
+    broker._async_prepared_transports = set()
+    class Transport:
+        supports_post_start_callback = True
+    async def prepare(*_args, **_kwargs): return Transport()
+    events = []
+    async def submit(_transport, _account, _payload, **kwargs):
+        callback = kwargs["on_post_start"]
+        callback()
+        callback()
+        events.append("result")
+        return {"isSuccess": True}
+    async def close(_transport): pass
+    broker.prepare_async_order_transport = prepare
+    broker.submit_from_async_prepared_transport = submit
+    broker.close_async_prepared_transport = close
+    broker.live_trading_enabled = True
+    one_ticket_table = replace(table, tickets=(ticket,), order_count=1, planned_turns=1)
+    authorization.ticket_ledger._reserved = {ticket.ticket_id: ticket}
+    callbacks = []
+    def on_post_start(seen_ticket, sent_at):
+        events.append("post_start")
+        callbacks.append((seen_ticket, sent_at))
+    runtime = ScheduledFireRuntime(
+        monotonic_clock=lambda: ticket.due_mono, on_post_start=on_post_start
+    )
+    try:
+        runtime.arm(one_ticket_table, authorization, {key: broker}, lambda **_: None)
+        for _ in range(20):
+            if runtime.outcomes(): break
+            runtime._call(asyncio.sleep(0.005))
+        assert events == ["post_start", "result"]
+        assert len(callbacks) == 1 and callbacks[0][0] is ticket
+        sent_at = callbacks[0][1]
+        assert isinstance(sent_at, datetime)
+        assert sent_at.tzinfo is not None
+        assert sent_at.utcoffset() is not None
+        assert sent_at == sent_at.astimezone()
+    finally:
+        runtime.close()
+        runtime.wait_closed()
+
+
+def test_runtime_post_start_callback_failure_does_not_change_handoff(monkeypatch):
+    import asyncio
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    key = (ticket.account_id, ticket.broker_name)
+    broker = state["brokers"][key]
+    broker._account_id = key[0]
+    class Transport: supports_post_start_callback = True
+    async def prepare(*_args, **_kwargs): return Transport()
+    calls = []
+    async def submit(_transport, _account, _payload, **kwargs):
+        kwargs["on_post_start"]()
+        calls.append(ticket.ticket_id)
+        return {"isSuccess": True}
+    async def close(_transport): pass
+    broker.prepare_async_order_transport = prepare
+    broker.submit_from_async_prepared_transport = submit
+    broker.close_async_prepared_transport = close
+    broker.live_trading_enabled = True
+    one = replace(table, tickets=(ticket,), order_count=1, planned_turns=1)
+    authorization.ticket_ledger._reserved = {ticket.ticket_id: ticket}
+    runtime = ScheduledFireRuntime(
+        monotonic_clock=lambda: ticket.due_mono,
+        on_post_start=lambda *_: (_ for _ in ()).throw(RuntimeError("offline callback")),
+    )
+    try:
+        runtime.arm(one, authorization, {key: broker}, lambda **_: None)
+        for _ in range(20):
+            if runtime.outcomes(): break
+            runtime._call(asyncio.sleep(0.005))
+        assert calls == [ticket.ticket_id]
+        assert not isinstance(runtime.outcomes()[ticket.ticket_id], Exception)
+    finally:
+        runtime.close()
+        runtime.wait_closed()
+
+
+def test_runtime_post_start_callback_not_called_when_post_does_not_start(monkeypatch):
+    from ui.scheduled_fire_runtime import ScheduledFireRuntime
+
+    state, authorization, table, *_ = _large_ready(monkeypatch)
+    ticket = table.tickets[0]
+    key = (ticket.account_id, ticket.broker_name)
+    broker = state["brokers"][key]
+    async def prepare(*_args, **_kwargs):
+        transport = type("Transport", (), {"supports_post_start_callback": True})()
+        return transport
+    async def submit(*_args, **_kwargs):
+        raise AssertionError("POST must not start")
+    async def close(_transport): pass
+    broker.prepare_async_order_transport = prepare
+    broker.submit_from_async_prepared_transport = submit
+    broker.close_async_prepared_transport = close
+    broker.live_trading_enabled = True
+    one = replace(table, tickets=(ticket,), order_count=1, planned_turns=1)
+    authorization.ticket_ledger._reserved = {ticket.ticket_id: ticket}
+    calls = []
+    runtime = ScheduledFireRuntime(
+        monotonic_clock=lambda: ticket.due_mono, on_post_start=lambda *args: calls.append(args)
+    )
+    try:
+        runtime.arm(one, authorization, {key: broker}, lambda **_: None)
+        runtime.stop()
+        runtime.close()
+        runtime.wait_closed()
+        assert calls == []
+    finally:
+        if not runtime._stopped.is_set():
+            runtime.close()
+            runtime.wait_closed()

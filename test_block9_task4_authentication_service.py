@@ -127,6 +127,7 @@ class FakeAgahAdapter(AuthenticationAdapter):
         self.last_response = None
         self.pending = False
         self.authenticated_session = None
+        self.no_challenge = False
         self.instance_id = id(self)
 
     @property
@@ -138,6 +139,15 @@ class FakeAgahAdapter(AuthenticationAdapter):
         self.last_username = username
         self.last_password = password
         self.pending = True
+        if self.no_challenge:
+            self.pending = False
+            self.authenticated_session = AuthenticatedSession(
+                access_token=ACCESS_TOKEN,
+                user_identifier=USER_IDENTIFIER,
+                refresh_token=REFRESH_TOKEN,
+            )
+            from brokers.authentication import CHALLENGE_NONE
+            return LoginChallenge(CHALLENGE_NONE, "", "")
         return LoginChallenge(
             kind=CHALLENGE_CAPTCHA_IMAGE,
             display_payload="fake-captcha-image",
@@ -308,6 +318,20 @@ def test_begin_login_marks_session_pending():
 
     assert service._sessions.state(ACC_A) is SessionState.LOGIN_PENDING
     assert service.is_logged_in(ACC_A) is False
+
+
+def test_no_challenge_begin_login_completes_session_without_pending_attempt():
+    service = make_service(adapter_kwargs={"no_challenge": True})
+    seed_account(service._accounts, service._credentials)
+
+    challenge = service.begin_login(ACC_A)
+
+    from brokers.authentication import CHALLENGE_NONE
+    assert challenge.kind == CHALLENGE_NONE
+    assert service.is_logged_in(ACC_A) is True
+    assert service._sessions.get_token(ACC_A) == ACCESS_TOKEN
+    assert ACC_A not in service._pending_logins
+    assert service.get_adapter(ACC_A) is service.created_adapters[-1]
 
 
 def test_begin_login_reads_account_and_credentials_by_pair():

@@ -366,87 +366,6 @@ def test_scheduled_gate_checks_buy_capacity_per_order_for_same_symbol_orders(mon
     assert all(not broker.submits for broker in state["brokers"].values())
 
 
-def test_scheduled_gate_accepts_four_identical_buys_when_capacity_covers_each_order(monkeypatch):
-    """A single-order capacity must not be compared with the queue sum."""
-    import socket
-
-    def deny_network(*_args, **_kwargs):
-        raise AssertionError("Network access is forbidden in this offline test")
-
-    monkeypatch.setattr(socket.socket, "connect", deny_network)
-    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
-    monkeypatch.setattr(socket, "create_connection", deny_network)
-
-    state = _setup(monkeypatch)
-    account = state["records"]["A1"].account
-    quantity = 613035
-    price = 2095
-    one_order_amount = quantity * price
-    account.tradable_balance_t1 = one_order_amount
-    state["auth"].get_purchase_power = lambda _account_id: one_order_amount
-    broker = state["brokers"][("A1", "SIM-1")]
-    broker.scheduled_live_enabled = True
-    entries = tuple(
-        QueueEntry(Order("N1", BUY, price, quantity), "A1", "SIM-1")
-        for _ in range(4)
-    )
-    targets = tuple(Target(entry, account) for entry in entries)
-    execution_id = f"four-buy-capacity-{id(state)}"
-    instrument = BrokerInstrument(
-        nsc_id="N1", tse_id="N1", minimum_order_quantity=1, lot_size=1,
-        maximum_order_quantity_for_buy=1000000,
-        maximum_order_quantity_for_sell=1000000, fixed_price_tick=1,
-        lower_price_threshold=1, upper_price_threshold=5000,
-    )
-    # M6 preparation is offline and must accept each individual order.
-    broker.get_buy_capacity = lambda **kwargs: quantity + 1
-    prepared = []
-    for index, entry in enumerate(entries):
-        item, result = state["engine"].prepare_order(
-            broker=broker, provider=Provider(instrument), ins_code="N1",
-            order=entry.order, account=account, account_id="A1",
-            broker_name="SIM-1", execution_id=execution_id,
-            _execution_claimed=bool(index),
-        )
-        assert result.success and item is not None and item.scheduled_valid
-        prepared.append(item)
-    batch = PreparedBatch(tuple(prepared), True, "", True, execution_id)
-    calls = []
-    broker.get_buy_capacity = lambda **kwargs: calls.append(kwargs) or quantity
-    now = datetime.now().astimezone()
-    timing = SimpleNamespace(start_time=now, end_time=now + timedelta(seconds=5))
-
-    def readiness():
-        return check_live_batch_readiness(
-            account_store=Store(state["records"]),
-            authentication_service=state["auth"],
-            session_manager=state["sessions"], broker_manager=state["manager"],
-            targets=targets, prepared_batch=batch, timing=timing,
-            interval_ms=5000, planned_turns=2, execution_id=execution_id,
-            queue_revision=42, engine=state["engine"],
-            explicit_live_request=True, human_approval=True, now=now,
-        )
-
-    enough = readiness()
-    assert enough.allowed, enough.reason
-    assert enough.authorization is not None
-    assert len(calls) == 1
-    assert calls[0] == {
-        "nsc_id": "N1", "side_code": BUY,
-        "fund": account.tradable_balance_t1, "price": price,
-    }
-
-    broker.get_buy_capacity = (
-        lambda **kwargs: calls.append(kwargs) or quantity - 1
-    )
-    insufficient = readiness()
-    assert not insufficient.allowed
-    assert insufficient.authorization is None
-    assert f"required {quantity}, received {quantity - 1}" in insufficient.reason
-    assert len(calls) == 2
-    assert all(not item.submits for item in state["brokers"].values())
-
-
 def test_scheduled_gate_checks_buy_capacity_independently_per_symbol_and_price(monkeypatch):
     """Each symbol/price group must cover its own planned-turn quantity."""
     import socket
@@ -526,6 +445,83 @@ def test_scheduled_gate_checks_buy_capacity_independently_per_symbol_and_price(m
     assert insufficient.authorization is None
     assert set(calls) == expected_calls
     assert len(calls) == 2
+    assert all(not item.submits for item in state["brokers"].values())
+
+
+def test_scheduled_gate_rejects_four_identical_buys_when_capacity_covers_each_order(monkeypatch):
+    """Grouped readiness requires capacity for the largest individual order."""
+    import socket
+
+    def deny_network(*_args, **_kwargs):
+        raise AssertionError("Network access is forbidden in this offline test")
+
+    monkeypatch.setattr(socket.socket, "connect", deny_network)
+    monkeypatch.setattr(socket.socket, "connect_ex", deny_network)
+    monkeypatch.setattr(socket, "create_connection", deny_network)
+
+    state = _setup(monkeypatch)
+    account = state["records"]["A1"].account
+    account.tradable_balance_t1 = 10000000
+    state["auth"].get_purchase_power = lambda _account_id: 10000000
+    broker = state["brokers"][("A1", "SIM-1")]
+    broker.scheduled_live_enabled = True
+    quantity = 10000
+    entries = tuple(
+        QueueEntry(Order("N1", BUY, 10, quantity), "A1", "SIM-1")
+        for _ in range(4)
+    )
+    targets = tuple(Target(entry, account) for entry in entries)
+    execution_id = f"four-buy-capacity-{id(state)}"
+    instrument = BrokerInstrument(
+        nsc_id="N1", tse_id="N1", minimum_order_quantity=1, lot_size=1,
+        maximum_order_quantity_for_buy=1000000,
+        maximum_order_quantity_for_sell=1000000, fixed_price_tick=1,
+        lower_price_threshold=1, upper_price_threshold=1000,
+    )
+    broker.get_buy_capacity = lambda **kwargs: quantity + 1
+    prepared = []
+    for index, entry in enumerate(entries):
+        item, result = state["engine"].prepare_order(
+            broker=broker, provider=Provider(instrument), ins_code="N1",
+            order=entry.order, account=account, account_id="A1",
+            broker_name="SIM-1", execution_id=execution_id,
+            _execution_claimed=bool(index),
+        )
+        assert result.success and item is not None and item.scheduled_valid
+        prepared.append(item)
+    batch = PreparedBatch(tuple(prepared), True, "", True, execution_id)
+    calls = []
+    broker.get_buy_capacity = lambda **kwargs: calls.append(kwargs) or quantity
+    now = datetime.now().astimezone()
+    timing = SimpleNamespace(start_time=now, end_time=now + timedelta(seconds=5))
+
+    def readiness():
+        return check_live_batch_readiness(
+            account_store=Store(state["records"]),
+            authentication_service=state["auth"],
+            session_manager=state["sessions"], broker_manager=state["manager"],
+            targets=targets, prepared_batch=batch, timing=timing,
+            interval_ms=5000, planned_turns=2, execution_id=execution_id,
+            queue_revision=42, engine=state["engine"],
+            explicit_live_request=True, human_approval=True, now=now,
+        )
+
+    insufficient = readiness()
+    assert not insufficient.allowed
+    assert insufficient.authorization is None
+    assert f"required {quantity}, received {quantity - 1}" in insufficient.reason
+    assert len(calls) == 1
+    assert calls[0] == {
+        "nsc_id": "N1", "side_code": BUY,
+        "fund": account.tradable_balance_t1, "price": 10,
+    }
+
+    # Capacity equal to one order is sufficient regardless of group count.
+    broker.get_buy_capacity = lambda **kwargs: quantity
+    smaller = readiness()
+    assert smaller.allowed, smaller.reason
+    assert smaller.authorization is not None
+    assert f"required {quantity}" not in smaller.reason
     assert all(not item.submits for item in state["brokers"].values())
 
 

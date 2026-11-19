@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+import re
 from pathlib import Path
 
 _TRACE_LOCK = threading.Lock()
@@ -54,6 +55,41 @@ _DIAGNOSTIC_REASONS = {
 
 _LAST_ERROR = {"code": None, "path": None}
 _HAS_WRITTEN = False
+
+
+def latest_trace_events(trace_id):
+    """Return only structurally safe events belonging to one manual run."""
+    if not isinstance(trace_id, str) or not re.fullmatch(r"mlt-[0-9a-f]{32}|[A-Za-z0-9_-]{1,80}", trace_id):
+        return []
+    events = []
+    with _TRACE_LOCK:
+        try:
+            with _TRACE_FILE.open("r", encoding="utf-8") as stream:
+                for line in stream:
+                    try:
+                        item = json.loads(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if not isinstance(item, dict) or item.get("trace_id") != trace_id:
+                        continue
+                    ts = item.get("ts")
+                    stage = item.get("stage")
+                    if type(ts) not in (int, float) or not isinstance(stage, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", stage):
+                        continue
+                    event = {"ts": ts, "trace_id": trace_id, "stage": stage}
+                    index = item.get("order_index")
+                    if type(index) is int and index >= 0:
+                        event["order_index"] = index
+                    reason = item.get("reason_code")
+                    if isinstance(reason, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", reason):
+                        event["reason_code"] = reason
+                    extra = _sanitize_extra(item.get("extra"))
+                    if extra:
+                        event["extra"] = extra
+                    events.append(event)
+        except OSError:
+            return []
+    return events
 
 
 def _ensure_dir():

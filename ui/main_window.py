@@ -547,9 +547,13 @@ class MainWindow(QMainWindow):
                 self.session_manager,
                 adapter_factories={
                     "آگاه": make_agah_adapter_factory(manager),
+                    # Nexus reference settings only; Mofid runtime acceptance
+                    # remains unverified and must be validated before use.
                     "مفید": make_mofid_adapter_factory(
-                        manager, client_id="easy_pkce",
+                        manager,
+                        client_id="easy_pkce",
                         redirect_uri="https://d.easytrader.ir/auth-callback",
+                        # Follows the current web app build; update when Mofid updates.
                         build_no="59762",
                     ),
                 },

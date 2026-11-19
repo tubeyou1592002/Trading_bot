@@ -540,7 +540,6 @@ def test_queue_table_four_rows_fit_and_fifth_scrolls(qapp):
     assert table.horizontalHeader().isVisible()
     assert table.verticalScrollBar().maximum() == 0
     assert table.visualItemRect(table.item(3, 0)).bottom() < table.viewport().height()
-
     queue.enqueue(Order("technical-id", SELL, 200, 20), ACCOUNT_ONE, BROKER_ONE)
     page._refresh_queue_display()
     qapp.processEvents()
