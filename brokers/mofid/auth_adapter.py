@@ -37,6 +37,12 @@ TOKEN_URL = AUTH_ORIGIN + "/connect/token"
 MONEY_URL = "https://api-mts.orbis.easytrader.ir/easy/api/money"
 START_SESSION_URL = "https://api-mts.orbis.easytrader.ir/easy/api/startsession"
 SAME_LOGIN_URL = "https://api-mts.orbis.easytrader.ir/easy/api/account/same-login"
+_IDENTITY_ORIGIN = "https://api-mts.orbis.easytrader.ir"
+_IDENTITY_PATHS = {
+    "/symbols/api/symbols/all",
+    "/symbols/api/marketdata/v2",
+    "/symbols/api/MarketData/symbol-info-data",
+}
 SCOPE = "easy2_api mts_api openid profile login_delegation-api"
 CAPTCHA_FIELD = "CaptchaInput"
 _CSRF_NAME = "__RequestVerificationToken"
@@ -77,6 +83,8 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
         self._username = self._password = self._state = self._verifier = None
         self._csrf = None
         self._authenticated = None
+        self._same_login_session = None
+        self._same_login_token = None
         self._captcha_action = None
         self.last_purchase_power_diagnostic = "not_authenticated"
 
@@ -237,6 +245,8 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
         if isinstance(expires_in, bool) or not isinstance(expires_in, int) or expires_in <= 0:
             raise IncompleteLoginError("Mofid token response is incomplete")
         self._authenticated = AuthenticatedSession(body["access_token"], self._username)
+        self._same_login_session = None
+        self._same_login_token = None
 
     def cancel_login(self):
         if self._username is None:
@@ -251,6 +261,8 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
 
     def clear_authenticated_session(self):
         self._authenticated = None
+        self._same_login_session = None
+        self._same_login_token = None
 
     def get_tradable_balance(self):
         """Read purchase power for this authenticated account only."""
@@ -259,31 +271,38 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
             raise AuthenticationUnavailableError("Mofid account is not authenticated")
         self.last_purchase_power_diagnostic = "startsession_transport_error"
         try:
-            headers = {"Authorization": "Bearer " + self._authenticated.access_token}
-            self.last_purchase_power_diagnostic = "same_login_transport_error"
-            try:
-                handshake = self._session.request(
-                    "POST", SAME_LOGIN_URL, headers=headers, json={
-                        "uuid": self._account_uuid,
-                        "userDeviceInfo": {
-                            "appBuildNo": self._build_no,
-                            "width": self._viewport_width,
-                            "height": self._viewport_height,
-                            "devicePlatform": "Desktop",
-                            "platformInfo": self._platform_info,
-                        },
-                    }, allow_redirects=False,
-                )
-            except Exception:
+            authenticated = self._authenticated
+            token = authenticated.access_token
+            headers = {"Authorization": "Bearer " + token}
+            if self._same_login_session is not authenticated or self._same_login_token != token:
+                self._same_login_session = None
+                self._same_login_token = None
                 self.last_purchase_power_diagnostic = "same_login_transport_error"
-                raise
-            if not 200 <= handshake.status_code < 300:
-                self.last_purchase_power_diagnostic = f"same_login_http_{handshake.status_code}"
-                raise ValueError
+                try:
+                    handshake = self._session.request(
+                        "POST", SAME_LOGIN_URL, headers=headers, json={
+                            "uuid": self._account_uuid,
+                            "userDeviceInfo": {
+                                "appBuildNo": self._build_no,
+                                "width": self._viewport_width,
+                                "height": self._viewport_height,
+                                "devicePlatform": "Desktop",
+                                "platformInfo": self._platform_info,
+                            },
+                        }, allow_redirects=False, timeout=(5, 15),
+                    )
+                except Exception:
+                    self.last_purchase_power_diagnostic = "same_login_transport_error"
+                    raise
+                if not 200 <= handshake.status_code < 300:
+                    self.last_purchase_power_diagnostic = f"same_login_http_{handshake.status_code}"
+                    raise ValueError
+                self._same_login_session = authenticated
+                self._same_login_token = token
             try:
                 activation = self._session.request(
                     "GET", START_SESSION_URL, headers=headers,
-                    allow_redirects=False,
+                    allow_redirects=False, timeout=(5, 15),
                 )
             except Exception:
                 self.last_purchase_power_diagnostic = "startsession_transport_error"
@@ -304,7 +323,7 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
             self.last_purchase_power_diagnostic = "money_transport_error"
             try:
                 response = self._session.request(
-                    "GET", MONEY_URL, headers=headers, allow_redirects=False,
+                    "GET", MONEY_URL, headers=headers, allow_redirects=False, timeout=(5, 15),
                 )
             except Exception:
                 self.last_purchase_power_diagnostic = "money_transport_error"
@@ -318,8 +337,12 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
                 if not isinstance(body, dict):
                     raise ValueError
                 value = body.get("buyPowerT2")
-                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not math.isfinite(value) or value < 0
+                        or (isinstance(value, float) and not value.is_integer())):
                     raise ValueError
+                if isinstance(value, float):
+                    value = int(value)
             except Exception:
                 self.last_purchase_power_diagnostic = "money_schema_invalid"
                 raise
@@ -327,6 +350,45 @@ class MofidAuthenticationAdapter(AuthenticationAdapter):
             return value
         except Exception:
             raise AuthenticationUnavailableError("Mofid purchase power is unavailable") from None
+
+    def _read_symbol_data(self, path, payload):
+        """Read only the explicitly allowlisted, account-authenticated symbol APIs."""
+        if path not in _IDENTITY_PATHS:
+            raise ValueError("Unsupported Mofid read-only path")
+        if path == "/symbols/api/symbols/all":
+            valid = type(payload) is dict and set(payload) == {"hash"} and payload["hash"] == "null"
+        elif path == "/symbols/api/marketdata/v2":
+            valid = (type(payload) is list and len(payload) == 1
+                     and isinstance(payload[0], str) and bool(payload[0].strip()))
+        else:
+            valid = (type(payload) is dict and set(payload) == {"isin"}
+                     and isinstance(payload["isin"], str) and bool(payload["isin"].strip()))
+        if not valid:
+            raise ValueError("Invalid Mofid read-only request shape")
+        authenticated = self._authenticated
+        token = getattr(authenticated, "access_token", None)
+        if not isinstance(token, str) or not token.strip():
+            raise AuthenticationUnavailableError("Mofid account is not authenticated")
+        try:
+            response = self._session.request(
+                "POST", _IDENTITY_ORIGIN + path,
+                headers={"Authorization": "Bearer " + token}, json=payload,
+                allow_redirects=False, timeout=(5, 15),
+            )
+            if response.status_code != 200:
+                raise ValueError
+            body = response.json()
+            if path == "/symbols/api/symbols/all":
+                if type(body) is not dict or type(body.get("symbols")) is not list:
+                    raise ValueError
+            elif path == "/symbols/api/marketdata/v2":
+                if type(body) is not list or any(type(item) is not dict for item in body):
+                    raise ValueError
+            elif type(body) is not dict:
+                raise ValueError
+            return body
+        except Exception:
+            raise AuthenticationUnavailableError("Mofid symbol data is unavailable") from None
 
 def make_mofid_adapter_factory(broker_manager=None, *, client_id, redirect_uri, build_no,
                                viewport_width=1366, viewport_height=768, platform_info=None):

@@ -125,6 +125,8 @@ import threading
 import inspect
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from datetime import datetime, timedelta
 from pathlib import Path
 from ui.manual_live_trace import log_event as _diagnostic_log_event
@@ -933,6 +935,33 @@ def _valid_limit(value, *, allow_zero=True):
     if number < 0 or (number == 0 and not allow_zero):
         return None
     return number
+
+
+def _mofid_pricing(details):
+    values = []
+    defaults = {"buy_commission": 0, "hide_price": 0, "csize": 1}
+    for name in ("buy_commission", "hide_price", "csize"):
+        value = getattr(details, name, None)
+        if value is None:
+            value = defaults[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+            raise ValueError(f"فرادادهٔ قیمت‌گذاری مفید {name} غایب یا نامعتبر است")
+        try:
+            number = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            raise ValueError(f"فرادادهٔ قیمت‌گذاری مفید {name} غایب یا نامعتبر است") from None
+        if not number.is_finite() or number < 0 or (name == "csize" and number == 0):
+            raise ValueError(f"فرادادهٔ قیمت‌گذاری مفید {name} غایب یا نامعتبر است")
+        values.append(Fraction(number))
+    return values
+
+
+def _mofid_total(price, quantity, pricing):
+    commission, hide_price, csize = pricing
+    # The order-form fee calculation is independent of hidePrice. For
+    # nonnegative values, Math.round is equivalent to floor(x + 1/2).
+    fee = quantity * price * commission * csize
+    return (2 * fee.numerator + fee.denominator) // (2 * fee.denominator)
 
 
 class _PriceLimitsWorker(QThread):
@@ -2036,7 +2065,7 @@ class OrderConfigurationPage(QWidget):
         self._quantity_limits_factory = factory
 
     def set_buy_preview_factory(self, factory):
-        """Inject account-bound, read-only Agaah preview service factory."""
+        """Inject the active account's read-only preview service factory."""
         self._buy_preview_factory = factory
 
     def _buy_preview_snapshot(self):
@@ -2054,10 +2083,12 @@ class OrderConfigurationPage(QWidget):
             raise ValueError("شناسهٔ نماد در دسترس نیست")
         if not nsc_id:
             self._log_calculator_readiness("IDENTITY_PENDING")
+            if record.broker_name == "مفید":
+                raise ValueError("شناسهٔ مفید هنوز آماده نشده است")
             raise ValueError("شناسهٔ آگاه هنوز آماده نشده است")
-        if record.broker_name != "آگاه":
-            self._log_calculator_readiness("BROKER_MISMATCH")
-            raise ValueError("ماشین‌حساب پیش‌نمایش فقط برای آگاه در دسترس است")
+        if record.broker_name not in ("آگاه", "مفید"):
+            self._log_calculator_readiness("BROKER_UNSUPPORTED")
+            raise ValueError("ماشین‌حساب این کارگزاری پشتیبانی نمی‌شود")
         if self.config.side != BUY:
             self._log_calculator_readiness("SIDE_NOT_BUY")
             raise ValueError("پیش‌نمایش فقط برای سفارش خرید است")
@@ -2157,8 +2188,10 @@ class OrderConfigurationPage(QWidget):
             lambda snap: self._get_preview_power_and_form(snap, factory), self,
         )
         self._buy_preview_worker = self._buy_preview_thread = worker
+        self._buy_preview_worker_running = True
         worker.succeeded.connect(self._on_preview_power_loaded)
-        worker.failed.connect(self._on_preview_failed)
+        worker.failed.connect(self._on_preview_power_failed)
+        worker.finished.connect(lambda current=worker: self._on_buy_preview_worker_finished(current))
         worker.finished.connect(worker.deleteLater)
         worker.start()
         dialog.show()
@@ -2170,33 +2203,156 @@ class OrderConfigurationPage(QWidget):
             self._buy_preview_power = None
             self._buy_preview_dialog = None
 
+    def _on_buy_preview_worker_finished(self, worker):
+        # Do not inspect a QThread wrapper after its C++ object may be deleted.
+        if worker is getattr(self, "_buy_preview_thread", None):
+            self._buy_preview_worker_running = False
+
     def _get_preview_power_and_form(self, snapshot, factory):
         if factory is None:
-            raise RuntimeError("سرویس پیش‌نمایش آگاه در دسترس نیست")
+            raise RuntimeError("سرویس پیش‌نمایش کارگزاری در دسترس نیست")
         service = factory(snapshot[0], snapshot[1])
-        power = service.get_tradable_balance(snapshot[0])
+        stale_diagnostic = None
+        try:
+            getter = getattr(service, "get_cached_purchase_power", None)
+            power = (getter(snapshot[0]) if callable(getter) else None)
+            if power is None:
+                power = service.get_tradable_balance(snapshot[0])
+        except Exception:
+            adapter = None
+            try:
+                adapter = service.get_adapter(snapshot[0])
+            except Exception:
+                pass
+            diagnostic = getattr(adapter, "last_purchase_power_diagnostic", None)
+            transient = isinstance(diagnostic, str) and (diagnostic in {
+                "same_login_transport_error", "startsession_transport_error",
+                "startsession_schema_invalid", "money_transport_error", "money_schema_invalid",
+            } or (diagnostic.startswith(("same_login_http_", "startsession_http_", "money_http_"))
+                  and diagnostic.rsplit("_http_", 1)[-1].isdigit()))
+            stale_getter = getattr(service, "get_stale_purchase_power", None)
+            stale = stale_getter(snapshot[0]) if transient and callable(stale_getter) else None
+            if stale is not None:
+                power = stale[0]
+                stale_diagnostic = diagnostic
+            elif transient or diagnostic == "not_authenticated":
+                raise RuntimeError(diagnostic) from None
+            else:
+                raise RuntimeError("purchase_power_unavailable") from None
+        # Mofid's documented money schema uses JSON numbers. Accept an
+        # exactly-integral finite float, but never round a financial value.
+        if (not isinstance(power, bool) and isinstance(power, float)
+                and math.isfinite(power) and power.is_integer()):
+            power = int(power)
         if isinstance(power, bool) or not isinstance(power, int) or power < 0:
             raise ValueError("قدرت خرید معتبر نیست")
-        return {"power": power}
+        return {"power": power, "stale_diagnostic": stale_diagnostic}
 
     def _on_preview_power_loaded(self, request_id, snapshot, data):
-        if (self._buy_preview_dialog is None
+        if (request_id != self._buy_preview_request_id or self._buy_preview_dialog is None
                 or snapshot != self._buy_preview_dialog_snapshot
                 or self.store.active_account_id() != snapshot[0]):
             return
         self._buy_preview_power = data["power"]
         self._buy_preview_snapshot_value = snapshot
-        self.preview_power_label.setText(f"قدرت خرید: {self._buy_preview_power:,} ریال")
+        diagnostic = data.get("stale_diagnostic")
+        if diagnostic:
+            if "_http_" in diagnostic:
+                status = "HTTP " + diagnostic.rsplit("_http_", 1)[-1]
+            elif diagnostic.endswith("_schema_invalid"):
+                status = "پاسخ نامعتبر"
+            else:
+                status = "خطای اتصال"
+            self.preview_power_label.setText(
+                f"قدرت خرید قبلی: {self._buy_preview_power:,} ریال "
+                "(به‌روزرسانی ناموفق؛ بررسی شود)"
+            )
+        else:
+            self.preview_power_label.setText(f"قدرت خرید: {self._buy_preview_power:,} ریال")
 
-    def _on_preview_failed(self, request_id, message):
-        if request_id == self._buy_preview_request_id and self._buy_preview_dialog is not None:
-            self.preview_power_label.setText(message)
+    def _on_preview_power_failed(self, request_id, message):
+        if request_id != self._buy_preview_request_id or self._buy_preview_dialog is None:
+            return
+        stage = message if isinstance(message, str) else ""
+        # Compatibility with account service wrappers that do not propagate
+        # adapter diagnostics through their exception; get_adapter is local
+        # object access only and no broker/network operation is performed.
+        if stage in ("purchase_power_unavailable", "") or "secret token" in stage:
+            try:
+                account_id = self._buy_preview_dialog_snapshot[0]
+                record = self.store.get(account_id)
+                service = self._buy_preview_factory(account_id, record.broker_name)
+                adapter = service.get_adapter(account_id)
+                candidate = getattr(adapter, "last_purchase_power_diagnostic", None)
+                if isinstance(candidate, str):
+                    stage = candidate
+            except Exception:
+                pass
+        if stage == "not_authenticated":
+            text = "نشست مفید منقضی یا واردنشده است؛ دوباره وارد حساب شوید"
+        elif isinstance(stage, str) and stage.startswith(("same_login_http_", "startsession_http_", "money_http_")):
+            endpoint, status = stage.rsplit("_http_", 1)
+            endpoint_name = {
+                "same_login": "فعال‌سازی نشست مفید",
+                "startsession": "آغاز نشست مفید",
+                "money": "دریافت قدرت خرید مفید",
+            }[endpoint]
+            if status.isdigit():
+                text = f"{endpoint_name} با خطای HTTP {status} مواجه شد"
+            else:
+                text = "دریافت قدرت خرید مفید ناموفق بود؛ اتصال سرویس را بررسی کنید"
+        elif stage.endswith("_schema_invalid"):
+            text = "ساختار پاسخ قدرت خرید مفید معتبر نیست؛ پشتیبانی سرویس را بررسی کنید"
+        elif stage == "purchase_power_unavailable":
+            text = "دریافت قدرت خرید مفید ناموفق بود؛ اتصال سرویس را بررسی کنید و دوباره تلاش کنید"
+        elif isinstance(stage, str) and "schema_invalid" in stage:
+            text = "ساختار پاسخ قدرت خرید مفید معتبر نیست؛ پشتیبانی سرویس را بررسی کنید"
+        elif isinstance(stage, str) and ("timeout" in stage or "transport_error" in stage):
+            text = "اتصال به سرویس مفید زمان‌بر یا ناموفق بود؛ دوباره تلاش کنید"
+        else:
+            text = "دریافت قدرت خرید ناموفق بود؛ اتصال سرویس مفید را بررسی کنید و دوباره تلاش کنید"
+        self.preview_power_label.setText(text)
+
+    def _on_preview_calculation_failed(self, request_id, message):
+        if request_id != self._buy_preview_request_id or self._buy_preview_dialog is None:
+            return
+        safe = {
+            "مبلغ از قدرت خرید حساب بیشتر است",
+            "اطلاعات معتبر نماد مفید در دسترس نیست",
+            "اطلاعات کمیسیون یا محدودیت نماد مفید نامعتبر است",
+            "مبلغ برای حداقل تعداد مجاز مفید کافی نیست",
+            "تعداد محاسبه‌شده از بودجه بیشتر است",
+        }
+        pricing_error = isinstance(message, str) and (
+            message.startswith("فرادادهٔ قیمت‌گذاری مفید ") or
+            (message.startswith("فیلد ") and "از پاسخ مشخصات نماد مفید" in message)
+        )
+        lookup_error = isinstance(message, str) and message in {
+            "جزئیات نماد مفید برای شناسهٔ انتخاب‌شده خالی است",
+            "بازیابی مشخصات نماد مفید ناموفق بود؛ شناسهٔ نماد را بررسی کنید",
+        }
+        text = message if message in safe or pricing_error or lookup_error else "محاسبه ناموفق بود؛ اطلاعات قیمت‌گذاری نماد یا اتصال سرویس را بررسی کنید"
+        if isinstance(message, str) and message == "purchase_power_unavailable":
+            text = "دریافت قدرت خرید حساب ناموفق بود؛ اتصال سرویس را بررسی کنید"
+        elif isinstance(message, str) and message.endswith("_transport_error"):
+            text = "اتصال به سرویس مفید ناموفق بود؛ دوباره تلاش کنید"
+        elif isinstance(message, str) and "_http_" in message:
+            endpoint, status = message.rsplit("_http_", 1)
+            endpoint_name = {"same_login": "فعال‌سازی نشست مفید", "startsession": "آغاز نشست مفید",
+                             "money": "دریافت قدرت خرید مفید"}.get(endpoint)
+            if endpoint_name and status.isdigit():
+                text = f"{endpoint_name} با خطای HTTP {status} مواجه شد"
+        self.preview_result_label.setText(text)
+        self.preview_calculate_button.setEnabled(True)
+        self.preview_confirm_button.setEnabled(False)
+        self._buy_preview_result = None
 
     def _preview_inputs_changed(self, *_):
         self._buy_preview_request_id += 1
         self._buy_preview_result = None
         if hasattr(self, "preview_confirm_button"):
             self.preview_confirm_button.setEnabled(False)
+            self.preview_calculate_button.setEnabled(not getattr(self, "_buy_preview_worker_running", False))
 
     def _set_preview_price_limit(self, kind):
         """Reuse the page's existing TSETMC price-limits worker/factory."""
@@ -2267,39 +2423,83 @@ class OrderConfigurationPage(QWidget):
             price = _valid_limit(_parse_exact_integral_text(self.preview_price_input.text()))
             if amount is None or amount <= 0 or price is None or price <= 0:
                 raise ValueError("مبلغ و قیمت باید عدد صحیح و مثبت باشند")
-            if self._buy_preview_power is None or amount > self._buy_preview_power:
+            if self._buy_preview_power is not None and amount > self._buy_preview_power:
                 raise ValueError("مبلغ از قدرت خرید حساب بیشتر است")
-            if price is None or price <= 0:
-                raise ValueError("قیمت باید عدد صحیح و مثبت باشد")
             snapshot = snapshot[:4] + (price,) + snapshot[5:]
             self._buy_preview_snapshot_value = snapshot + (amount,)
             if self._buy_preview_factory is None:
-                raise RuntimeError("سرویس پیش‌نمایش آگاه در دسترس نیست")
+                raise RuntimeError("سرویس پیش‌نمایش کارگزاری در دسترس نیست")
             self.preview_result_label.setText("در حال محاسبه…")
+            self.preview_calculate_button.setEnabled(False)
             self.preview_confirm_button.setEnabled(False)
             self._buy_preview_request_id += 1
             request_id = self._buy_preview_request_id
             worker = _BuyPreviewWorker(request_id, self._buy_preview_snapshot_value,
                                        self._calculate_buy_preview, self)
             self._buy_preview_worker = self._buy_preview_thread = worker
+            self._buy_preview_worker_running = True
             worker.succeeded.connect(self._on_buy_preview_calculated)
-            worker.failed.connect(self._on_preview_failed)
+            worker.failed.connect(self._on_preview_calculation_failed)
+            worker.finished.connect(lambda current=worker: self._on_buy_preview_worker_finished(current))
             worker.finished.connect(worker.deleteLater)
             worker.start()
         except Exception as exc:
             self.preview_result_label.setText(str(exc))
+            self.preview_calculate_button.setEnabled(True)
 
     def _calculate_buy_preview(self, snap):
         account_id, broker_name, ins_code, nsc_id, price, generation, side, amount = snap
         record = self.store.get(account_id)
-        if record.broker_name != "آگاه":
-            raise ValueError("ماشین‌حساب پیش‌نمایش فقط برای آگاه در دسترس است")
+        if record.broker_name not in ("آگاه", "مفید"):
+            raise ValueError("ماشین‌حساب این کارگزاری پشتیبانی نمی‌شود")
         if self.store.active_account_id() != account_id:
             raise ValueError("حساب فعال هنگام محاسبه تغییر کرده است")
         service = self._buy_preview_factory(account_id, broker_name)
-        power = service.get_tradable_balance(account_id)
+        power = self._get_preview_power_and_form(snap, lambda *_: service)["power"]
+        if isinstance(power, bool) or not isinstance(power, int) or power < 0:
+            raise ValueError("قدرت خرید حساب معتبر نیست")
         if amount > power:
             raise ValueError("مبلغ از قدرت خرید حساب بیشتر است")
+        if record.broker_name == "مفید":
+            provider = self._quantity_limits_factory or self._order_identity_factory
+            if provider is None:
+                raise ValueError("اطلاعات معتبر نماد مفید در دسترس نیست")
+            # Provider factories are account-bound by MainWindow; calculators
+            # execute on the worker thread and never call the Agah broker path.
+            instrument = provider(account_id, broker_name)
+            try:
+                details = instrument.get_instrument(ins_code)[1]
+            except Exception as exc:
+                from brokers.base import InstrumentLookupError
+                if isinstance(exc, InstrumentLookupError):
+                    field = exc.diagnostic.get("field")
+                    if field:
+                        raise ValueError(f"فیلد {field} از پاسخ مشخصات نماد مفید موجود نیست یا معتبر نیست") from None
+                    if exc.reason_code == "DETAILS_EMPTY":
+                        raise ValueError("جزئیات نماد مفید برای شناسهٔ انتخاب‌شده خالی است") from None
+                    raise ValueError("بازیابی مشخصات نماد مفید ناموفق بود؛ شناسهٔ نماد را بررسی کنید") from None
+                raise
+            pricing = _mofid_pricing(details)
+            commission, hide_price, csize = pricing
+            minimum = _valid_limit(getattr(details, "minimum_order_quantity", None), allow_zero=False)
+            maximum = _valid_limit(getattr(details, "maximum_order_quantity_for_buy", None), allow_zero=False)
+            if any(value is None for value in (minimum, maximum)):
+                raise ValueError("اطلاعات کمیسیون یا محدودیت نماد مفید نامعتبر است")
+            unit_cost = price * (1 + commission) + hide_price
+            if unit_cost <= 0:
+                raise ValueError("پارامترهای قیمت مفید نامعتبر است")
+            quantity = math.floor(Fraction(amount) / unit_cost / csize)
+            quantity = min(quantity, maximum)
+            if quantity < minimum:
+                raise ValueError("مبلغ برای حداقل تعداد مجاز مفید کافی نیست")
+            quantity += (-quantity) % minimum
+            fee = _mofid_total(price, quantity, pricing)
+            total = price * quantity + fee
+            if total > amount or total > power:
+                raise ValueError("تعداد محاسبه‌شده از بودجه بیشتر است")
+            base = price * quantity
+            return {"price": price, "quantity": quantity, "amount": base,
+                    "fee": fee, "total": total}
         broker = service.get_adapter(account_id)._broker
         quantity = broker.get_buy_capacity(nsc_id, 1, amount, price)
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
@@ -2334,6 +2534,7 @@ class OrderConfigurationPage(QWidget):
             f"مبلغ سفارش = {result['amount']:,}\nکارمزد = {result['fee']:,}\nمبلغ کل خرید = {result['total']:,}"
         )
         self.preview_confirm_button.setEnabled(True)
+        self.preview_calculate_button.setEnabled(True)
 
     def _apply_buy_preview(self):
         result = self._buy_preview_result
@@ -6383,6 +6584,9 @@ class OrderConfigurationPage(QWidget):
         )
         low = _valid_limit(self._quantity_range[0], allow_zero=False)
         high = _valid_limit(self._quantity_range[1], allow_zero=False)
+        if current_account and current_account[1] == "مفید" and low is not None and high is not None and low <= high:
+            self.quantity_input.setText(str(high))
+            self._on_quantity_changed()
         valid = low is not None and high is not None and low <= high
         if not valid:
             self._log_limit_hint(request_id, "quantity", "LIMIT_QUANTITY_UNAVAILABLE", hide_reason="invalid_bounds", bounds_valid=False)
@@ -7728,7 +7932,7 @@ class OrderConfigurationPage(QWidget):
             quantity = _valid_limit(_parse_exact_integral_text(self.quantity_input.text()), allow_zero=False)
             reason = (
                 "ACCOUNT_MISSING" if record is None else
-                "BROKER_MISMATCH" if record.broker_name != "آگاه" else
+                "BROKER_MISMATCH" if record.broker_name not in ("آگاه", "مفید") else
                 "SYMBOL_MISSING" if instrument is None else
                 "INSTRUMENT_ID_MISSING" if not getattr(instrument, "ins_code", None) else
                 "IDENTITY_PENDING" if not self._order_nsc_id else
@@ -7768,17 +7972,53 @@ class OrderConfigurationPage(QWidget):
 
         def calculate(_snapshot):
             if factory is None:
-                raise RuntimeError("سرویس کارمزد آگاه در دسترس نیست")
+                raise RuntimeError("service_unavailable")
             service = factory(record.account_id, record.broker_name)
-            power = service.get_tradable_balance(record.account_id)
+            if service is None:
+                raise RuntimeError("service_unavailable")
+            stale_diagnostic = None
+            try:
+                cached_getter = getattr(service, "get_cached_purchase_power", None)
+                power = cached_getter(record.account_id) if callable(cached_getter) else None
+                if power is None:
+                    power = service.get_tradable_balance(record.account_id)
+            except Exception:
+                adapter = None
+                try:
+                    adapter = service.get_adapter(record.account_id)
+                except Exception:
+                    pass
+                diagnostic = getattr(adapter, "last_purchase_power_diagnostic", None)
+                transient = isinstance(diagnostic, str) and (
+                    diagnostic in {"same_login_transport_error", "startsession_transport_error",
+                                   "startsession_schema_invalid", "money_transport_error",
+                                   "money_schema_invalid"}
+                    or (diagnostic.startswith(("same_login_http_", "startsession_http_", "money_http_"))
+                        and diagnostic.rsplit("_http_", 1)[-1].isdigit())
+                )
+                stale_getter = getattr(service, "get_stale_purchase_power", None)
+                stale = stale_getter(record.account_id) if transient and callable(stale_getter) else None
+                if stale is None:
+                    raise RuntimeError("قدرت خرید مفید در دسترس نیست") from None
+                power, _fetched_at = stale
+                stale_diagnostic = diagnostic
             if isinstance(power, bool) or not isinstance(power, int) or power < 0:
                 raise ValueError("قدرت خرید حساب معتبر نیست")
+            if record.broker_name == "مفید":
+                provider_factory = self._quantity_limits_factory or self._order_identity_factory
+                if provider_factory is None:
+                    raise RuntimeError("اطلاعات نماد مفید در دسترس نیست")
+                details = provider_factory(record.account_id, record.broker_name).get_instrument(instrument.ins_code)[1]
+                fee = _mofid_total(price, quantity, _mofid_pricing(details))
+                total = price * quantity + fee
+                return {"power": power, "stale_diagnostic": stale_diagnostic, "fee": fee,
+                         "base": price * quantity, "total": total}
             broker = service.get_adapter(record.account_id)._broker
             data = broker.get_commission_info(self._order_nsc_id, price, quantity, 1)
             fee = data.get("commissionSum") if isinstance(data, dict) else None
             if isinstance(fee, bool) or not isinstance(fee, int) or fee < 0:
                 raise ValueError("پاسخ کارمزد آگاه معتبر نیست")
-            return {"power": power, "fee": fee, "base": price * quantity,
+            return {"power": power, "stale_diagnostic": stale_diagnostic, "fee": fee, "base": price * quantity,
                     "total": price * quantity + fee}
 
         worker = _BuyPreviewWorker(request_id, snapshot, calculate, self)
@@ -7805,15 +8045,21 @@ class OrderConfigurationPage(QWidget):
             return
         self.fee_label.setText(STRINGS.format_grouped(result["fee"]))
         self.final_amount_label.setText(STRINGS.format_grouped(result["total"]))
-        if result["total"] > result["power"]:
-            self._set_amount_warning("مبلغ نهایی از موجودی شما بیشتر است")
+        if result["power"] is not None and result["total"] > result["power"]:
+            warning = "مبلغ نهایی از موجودی شما بیشتر است"
         else:
-            self._set_amount_warning("")
+            warning = ""
+        if result.get("stale_diagnostic"):
+            stale_text = "قدرت خرید قبلی: {:,} ریال (به‌روزرسانی ناموفق؛ بررسی شود)".format(result["power"])
+            warning = f"{warning}؛ {stale_text}" if warning else stale_text
+        self._set_amount_warning(warning)
         self._fit_amounts_group_height()
 
     def _on_auto_amount_failed(self, request_id, message):
         if request_id == self._auto_amount_request_id:
-            self.fee_label.setText(f"نامشخص: {message}")
+            self.fee_label.setText("خدمات کارگزاری مفید در دسترس نیست" if str(message) == "service_unavailable"
+                                   else "قدرت خرید مفید در دسترس نیست" if "قدرت خرید مفید" in str(message)
+                                   else "محاسبه کارمزد ناموفق بود")
             self.final_amount_label.setText(STRINGS.VALUE_NOT_AVAILABLE)
             self._set_amount_warning("")
         self._fit_amounts_group_height()

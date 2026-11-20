@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         # window composes no service (offline/lazy contract preserved).
         self._feedback_services = {}
         self._authentication_service = None
+        self._mofid_instrument_providers = {}
         self._credential_store = None
         self._session_manager = None
 
@@ -274,6 +275,9 @@ class MainWindow(QMainWindow):
         self.order_configuration_page.set_order_identity_factory(
             self._real_order_identity_resolver
         )
+        self.order_configuration_page.set_quantity_limits_factory(
+            self._real_order_identity_resolver
+        )
         self.order_configuration_page.set_buy_preview_factory(
             lambda account_id, broker_name: self.authentication_service
         )
@@ -402,7 +406,19 @@ class MainWindow(QMainWindow):
         return TsetmcTradingStateQuery()
 
     def _real_order_identity_resolver(self, account_id, broker_name):
-        """Resolve the account-owned instrument provider lazily."""
+        """Resolve identity through the exact account's provider path."""
+        if broker_name == "مفید":
+            key = (account_id, broker_name)
+            provider = self._mofid_instrument_providers.get(key)
+            adapter = self.authentication_service.get_adapter(account_id)
+            if adapter is None:
+                return None
+            if provider is None or getattr(provider, "_adapter", None) is not adapter:
+                from brokers.mofid.instrument_provider import MofidInstrumentProvider
+                from market.tsetmc import TSETMC
+                provider = MofidInstrumentProvider(TSETMC(), adapter)
+                self._mofid_instrument_providers[key] = provider
+            return provider
         manager = self._shared_broker_manager()
         return manager.get_instrument_provider_for_account(account_id, broker_name)
 
@@ -720,7 +736,10 @@ class MainWindow(QMainWindow):
         orders may still receive feedback). Fail-safe: never raises.
         """
         try:
+            if event in ("account_changed", "active_account_changed"):
+                self._mofid_instrument_providers.clear()
             if event in ("logout", "delete", "broker_changed"):
+                self._mofid_instrument_providers.pop((account_id, broker_name), None)
                 page = getattr(self, "order_configuration_page", None)
                 if page is not None:
                     page.on_broker_session_event(account_id, event)

@@ -46,9 +46,7 @@ class AccountsPage(QWidget):
         self._pending_login_account_id = None
         self._pending_authentication_service = None
         self._login_status_by_account = {}
-        # account_id -> validated numeric tradable balance (purchase power).
-        # Fetched only on a successful login; table rebuilds/sorts read this
-        # cache and never call the broker API again.
+        # Display-only mirror; AuthenticationService owns the expiring cache.
         self._purchase_power_by_account = {}
         self._captcha_dialog = None
         self._cancelled_login_account_id = None
@@ -176,6 +174,20 @@ class AccountsPage(QWidget):
 
     def _refresh_list(self, *_):
         records = self._records()
+        if self._authentication_service_factory is not None:
+            try:
+                service = self._authentication_service_factory()
+                for record in records:
+                    if not service.is_logged_in(record.account_id):
+                        self._purchase_power_by_account.pop(record.account_id, None)
+                        continue
+                    cached = service.get_cached_purchase_power(record.account_id)
+                    if cached is None:
+                        self._purchase_power_by_account.pop(record.account_id, None)
+                    else:
+                        self._purchase_power_by_account[record.account_id] = cached
+            except Exception:
+                pass
         active_id = self.store.active_account_id()
         selected_id = self._selected_account_id()
         self.accounts_table.setRowCount(len(records))

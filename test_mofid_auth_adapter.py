@@ -49,7 +49,7 @@ class FakeSession:
                     return Response(200, text='<form action="/Login"><input name="__RequestVerificationToken" value="csrf2"><input name="CaptchaInput"><img src="/DNTCaptchaImage/Show"></form>', url=url)
                 if self.unknown_html:
                     return Response(200, text="<html>invalid credentials</html>", url=url)
-                return Response(200, text='<form action="/Login"><input name="__RequestVerificationToken" value="csrf2"><div>Sign in</div></form>', url=url)
+                return Response(302, headers={"Location": self.redirect + "?code=fake-code&state=" + ("bad" if self.bad_state else self.state)}, url=url)
             return Response(302, headers={"Location": self.redirect + "?code=fake-code&state=" + ("bad" if self.bad_state else self.state)}, url=url)
         if parsed.path == "/connect/token":
             data = kwargs["data"]
@@ -212,6 +212,7 @@ def test_invalid_token_response_fields_are_not_authenticated(key, value):
 @pytest.mark.parametrize("body", [
     {"buyPowerT0": 11, "buyPowerT1": 22, "buyPowerT2": 33},
     {"buyPowerT2": 0},
+    {"buyPowerT2": 33.0},
 ])
 def test_purchase_power_reads_t2_from_exact_account_endpoint(body):
     class MoneySession:
@@ -229,12 +230,13 @@ def test_purchase_power_reads_t2_from_exact_account_endpoint(body):
     transport = MoneySession()
     adapter = create(transport)
     adapter._authenticated = type("Session", (), {"access_token": "offline-token"})()
-    expected = body["buyPowerT2"]
+    expected = int(body["buyPowerT2"])
     assert adapter.get_tradable_balance() == expected
     expected_headers = {"Authorization": "Bearer offline-token"}
     assert transport.calls == [
         ("POST", "https://api-mts.orbis.easytrader.ir/easy/api/account/same-login", {
             "headers": expected_headers, "allow_redirects": False,
+            "timeout": (5, 15),
             "json": {"uuid": adapter._account_uuid, "userDeviceInfo": {
                 "appBuildNo": "offline-build", "width": 1366, "height": 768,
                 "devicePlatform": "Desktop", "platformInfo": "offline-agent",
@@ -242,16 +244,108 @@ def test_purchase_power_reads_t2_from_exact_account_endpoint(body):
         }),
         ("GET", "https://api-mts.orbis.easytrader.ir/easy/api/startsession", {
             "headers": expected_headers, "allow_redirects": False,
+            "timeout": (5, 15),
         }),
         ("GET", "https://api-mts.orbis.easytrader.ir/easy/api/money", {
             "headers": expected_headers, "allow_redirects": False,
+            "timeout": (5, 15),
         }),
     ]
+
+
+def test_same_login_runs_once_per_authenticated_session_and_adapter():
+    class MoneySession:
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            if url.endswith("/startsession"):
+                return Response(body={"serverTime": "t", "startSessionTimeStamp": "s"})
+            if url.endswith("/money") or url.endswith("/same-login"):
+                return Response(body={"buyPowerT2": 10})
+            return Response(body={})
+
+    transport = MoneySession()
+    adapter = create(transport)
+    adapter._authenticated = type("Session", (), {"access_token": "offline-token"})()
+    adapter.get_tradable_balance()
+    adapter.get_tradable_balance()
+    assert [url.rsplit("/", 1)[-1] for _, url, _ in transport.calls] == [
+        "same-login", "startsession", "money", "startsession", "money"
+    ]
+    adapter._authenticated = type("Session", (), {"access_token": "replacement-token"})()
+    adapter.get_tradable_balance()
+    assert [url.rsplit("/", 1)[-1] for _, url, _ in transport.calls][-3:] == [
+        "same-login", "startsession", "money"
+    ]
+
+
+def test_same_login_failure_retries_and_adapters_are_isolated():
+    class MoneySession:
+        def __init__(self):
+            self.calls = []
+            self.fail_once = True
+
+        def request(self, method, url, **kwargs):
+            self.calls.append(url)
+            if url.endswith("/same-login") and self.fail_once:
+                self.fail_once = False
+                return Response(status=503)
+            if url.endswith("/startsession"):
+                return Response(body={"serverTime": "t", "startSessionTimeStamp": "s"})
+            if url.endswith("/money"):
+                return Response(body={"buyPowerT2": 10})
+            return Response(body={})
+
+    transport = MoneySession()
+    adapter = create(transport)
+    adapter._authenticated = type("Session", (), {"access_token": "offline-token"})()
+    with pytest.raises(Exception):
+        adapter.get_tradable_balance()
+    adapter.get_tradable_balance()
+    other_transport = MoneySession()
+    other_transport.fail_once = False
+    other = create(other_transport)
+    other._authenticated = type("Session", (), {"access_token": "offline-token"})()
+    other.get_tradable_balance()
+    assert sum(url.endswith("/same-login") for url in transport.calls) == 2
+    assert sum(url.endswith("/same-login") for url in other_transport.calls) == 1
+
+
+def test_same_login_marker_cleared_on_logout_and_successful_login():
+    class LoginMoneySession(FakeSession):
+        def request(self, method, url, allow_redirects=False, **kwargs):
+            if url.endswith("/same-login"):
+                self.calls.append((method, url, kwargs))
+                return Response(body={})
+            if url.endswith("/startsession"):
+                return Response(body={"serverTime": "t", "startSessionTimeStamp": "s"})
+            if url.endswith("/money"):
+                return Response(body={"buyPowerT2": 10})
+            return super().request(method, url, allow_redirects=allow_redirects, **kwargs)
+
+    transport = LoginMoneySession(captcha=False)
+    adapter = create(transport)
+    adapter.begin_login("user", "pw")
+    adapter.get_tradable_balance()
+    adapter.clear_authenticated_session()
+    assert adapter._same_login_session is None
+    assert adapter._same_login_token is None
+    # Seed stale markers to verify successful login independently of logout.
+    adapter._same_login_session = object()
+    adapter._same_login_token = "stale-token"
+    adapter.begin_login("user", "pw")
+    assert adapter._same_login_session is None
+    assert adapter._same_login_token is None
+    adapter.get_tradable_balance()
+    assert sum(url.endswith("/same-login") for _, url, _ in transport.calls) == 2
 
 
 @pytest.mark.parametrize("body", [
     None, [], {}, {"buyPowerT0": 1, "buyPowerT1": 2}, {"buyPowerT2": True},
     {"buyPowerT2": -1}, {"buyPowerT2": float("inf")}, {"buyPowerT2": "3"},
+    {"buyPowerT2": 3.5},
 ])
 def test_purchase_power_malformed_response_fails_closed(body):
     class MoneySession:
@@ -295,6 +389,7 @@ def test_session_activation_failure_prevents_money_request(status, body):
     ]
     assert transport.calls[0][2] == {
         "headers": {"Authorization": "Bearer offline-token"}, "allow_redirects": False,
+        "timeout": (5, 15),
         "json": {"uuid": adapter._account_uuid, "userDeviceInfo": {
             "appBuildNo": "offline-build", "width": 1366, "height": 768,
             "devicePlatform": "Desktop", "platformInfo": "offline-agent",

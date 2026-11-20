@@ -421,6 +421,79 @@ def test_complete_login_retains_authenticated_adapter():
     assert adapter.is_authenticated() is True
 
 
+def test_purchase_power_cache_is_account_scoped_and_expires(monkeypatch):
+    service = make_service()
+    seed_and_begin(service, ACC_A)
+    service.complete_login(ACC_A, "1234")
+    seed_and_begin(service, ACC_B)
+    service.complete_login(ACC_B, "5678")
+    calls = {ACC_A: 0, ACC_B: 0}
+    for account_id in (ACC_A, ACC_B):
+        adapter = service.get_adapter(account_id)
+        def balance(account_id=account_id):
+            calls[account_id] += 1
+            return 100 + calls[account_id]
+        adapter.get_tradable_balance = balance
+
+    assert service.get_tradable_balance(ACC_A) == 101
+    assert service.get_tradable_balance(ACC_A) == 101
+    assert service.get_tradable_balance(ACC_B) == 101
+    assert calls == {ACC_A: 1, ACC_B: 1}
+
+    monkeypatch.setattr("ui.authentication_service.time.monotonic", lambda: 10**9)
+    assert service.get_cached_purchase_power(ACC_A) is None
+    assert service.get_tradable_balance(ACC_A) == 102
+    assert calls[ACC_A] == 2
+
+
+def test_logout_invalidates_purchase_power_cache():
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.get_adapter(ACC_A)
+    adapter.get_tradable_balance = lambda: 123
+    assert service.get_tradable_balance(ACC_A) == 123
+    service.logout(ACC_A)
+    assert service.get_cached_purchase_power(ACC_A) is None
+    assert service.get_stale_purchase_power(ACC_A) is None
+
+
+def test_stale_purchase_power_expiry_refresh_and_identity_isolation(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr("ui.authentication_service.time.monotonic", lambda: clock[0])
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.get_adapter(ACC_A)
+    adapter.get_tradable_balance = lambda: 123
+    assert service.get_stale_purchase_power(ACC_A) is None
+    assert service.get_tradable_balance(ACC_A) == 123
+    assert service.get_stale_purchase_power(ACC_A) == (123, 100.0)
+    assert service.get_stale_purchase_power(ACC_B) is None
+    clock[0] += 31
+    assert service.get_cached_purchase_power(ACC_A) is None
+    assert service.get_stale_purchase_power(ACC_A) == (123, 100.0)
+    adapter.get_tradable_balance = lambda: 456
+    assert service.get_tradable_balance(ACC_A) == 456
+    assert service.get_stale_purchase_power(ACC_A) == (456, 131.0)
+    service._sessions.replace_token(ACC_A, "different-token")
+    assert service.get_stale_purchase_power(ACC_A) is None
+
+
+def test_stale_purchase_power_invalidated_by_adapter_or_broker_change():
+    service = _logout_service()
+    _log_in(service)
+    adapter = service.get_adapter(ACC_A)
+    adapter.get_tradable_balance = lambda: 123
+    service.get_tradable_balance(ACC_A)
+    service._adapters[ACC_A] = object()
+    assert service.get_stale_purchase_power(ACC_A) is None
+    service._adapters[ACC_A] = adapter
+    service.get_tradable_balance(ACC_A)
+    original_get = service._accounts.get
+    service._accounts.get = lambda account_id: type("Record", (), {"broker_name": "other"})()
+    assert service.get_stale_purchase_power(ACC_A) is None
+    service._accounts.get = original_get
+
+
 def test_get_adapter_returns_none_before_login():
     service = make_service()
     seed_account(service._accounts, service._credentials)

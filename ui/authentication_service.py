@@ -67,6 +67,8 @@ hard-code نشده است. پیاده‌سازی‌های آداپتر از طر
 """
 
 from typing import Callable, Dict, Optional
+import time
+import math
 
 from .account_store import AccountStore, AccountStoreError
 from .credential_store import CredentialStore, CredentialNotFoundError
@@ -137,6 +139,8 @@ class AuthenticationService:
     + مجموعه‌ای از آداپترهای مستقل، یکی برای هر حساب.
     """
 
+    PURCHASE_POWER_CACHE_TTL_SECONDS = 30.0
+
     def __init__(
         self,
         account_store: AccountStore,
@@ -174,6 +178,8 @@ class AuthenticationService:
         # برای طول عمر یک چالش باز است و بعد از موفقیت به _adapters
         # منتقل می‌شود، و بعد از شکست یا لغو کاملاً حذف می‌شود.
         self._pending_logins: Dict[str, "AuthenticationAdapter"] = {}
+        self._purchase_power_cache = {}
+        self._stale_purchase_power_cache = {}
 
     # ------------------------------------------------------------------
     # داخلی
@@ -377,6 +383,8 @@ class AuthenticationService:
         """
         self._detach_account_authentication(adapter)
         self._adapters.pop(account_id, None)
+        self._purchase_power_cache.pop(account_id, None)
+        self._stale_purchase_power_cache.pop(account_id, None)
 
         if self._session_is_logged_out(account_id):
             return True
@@ -517,6 +525,8 @@ class AuthenticationService:
         LOGGED_OUT.
         """
         self._pending_logins.pop(account_id, None)
+        self._purchase_power_cache.pop(account_id, None)
+        self._stale_purchase_power_cache.pop(account_id, None)
         try:
             if self._sessions.state(account_id) is SessionState.LOGIN_PENDING:
                 self._sessions.fail_login(account_id)
@@ -654,6 +664,8 @@ class AuthenticationService:
                 adapter
             )
             self._adapters.pop(account_id, None)
+            self._purchase_power_cache.pop(account_id, None)
+            self._stale_purchase_power_cache.pop(account_id, None)
 
             if not self._session_is_logged_out(account_id):
                 try:
@@ -807,6 +819,8 @@ class AuthenticationService:
             # صریحاً اعلام می‌شود و هیچ ادعای وضعیت امن‌سازی‌شده‌ای مطرح
             # نمی‌گردد.
             self._adapters.pop(account_id, None)
+            self._purchase_power_cache.pop(account_id, None)
+            self._stale_purchase_power_cache.pop(account_id, None)
             try:
                 self._sessions.logout(account_id)
             except Exception:
@@ -885,6 +899,8 @@ class AuthenticationService:
         current_state = self._sessions.state(account_id)
         adapter = self._adapters.pop(account_id, None)
         pending = self._pending_logins.pop(account_id, None)
+        self._purchase_power_cache.pop(account_id, None)
+        self._stale_purchase_power_cache.pop(account_id, None)
 
         # A live session without its matching service-owned adapter cannot be
         # proven clean. Still attempt local logout below, but never report full
@@ -960,19 +976,91 @@ class AuthenticationService:
         ``NotImplementedError`` می‌دهند و هیچ رفتار حدسی انجام نمی‌شود.
         """
         if not self.is_logged_in(account_id):
+            self._purchase_power_cache.pop(account_id, None)
+            self._stale_purchase_power_cache.pop(account_id, None)
             raise AuthenticationServiceError(
                 "برای دریافت قدرت خرید، این حساب باید وارد شده باشد"
             )
         adapter = self._adapters.get(account_id)
         if adapter is None:
+            self._purchase_power_cache.pop(account_id, None)
+            self._stale_purchase_power_cache.pop(account_id, None)
             raise AuthenticationServiceError(
                 "آداپتر احرازشده‌ی این حساب در دسترس نیست"
             )
-        return adapter.get_tradable_balance()
+        record = self._resolve_account(account_id)
+        token = self._sessions.get_token(account_id)
+        self.get_stale_purchase_power(account_id)  # discard mismatched identity
+        now = time.monotonic()
+        cached = self._purchase_power_cache.get(account_id)
+        if cached is not None:
+            expires, broker, cached_adapter, cached_token, value = cached
+            if (now < expires and broker == record.broker_name
+                    and cached_adapter is adapter and cached_token == token):
+                return value
+            self._purchase_power_cache.pop(account_id, None)
+        value = adapter.get_tradable_balance()
+        # Do not retain malformed values or a response from a changed session.
+        if (not isinstance(value, bool) and isinstance(value, (int, float))
+                and (isinstance(value, int) or math.isfinite(value))
+                and value >= 0 and value == int(value)
+                and self.is_logged_in(account_id)
+                and self._adapters.get(account_id) is adapter
+                and self._sessions.get_token(account_id) == token
+                and self._resolve_account(account_id).broker_name == record.broker_name):
+            fetched_at = time.monotonic()
+            self._stale_purchase_power_cache[account_id] = (
+                fetched_at, record.broker_name, adapter, token, value,
+            )
+        else:
+            raise AuthenticationServiceError("قدرت خرید معتبر نیست")
+        self._purchase_power_cache[account_id] = (
+            fetched_at + self.PURCHASE_POWER_CACHE_TTL_SECONDS,
+            record.broker_name, adapter, token, value,
+        )
+        return value
+
+    def get_stale_purchase_power(self, account_id: str):
+        """Return the last successful value and fetch time for this session only."""
+        cached = self._stale_purchase_power_cache.get(account_id)
+        if cached is None:
+            return None
+        fetched_at, broker, adapter, token, value = cached
+        try:
+            valid = (token is not None and self.is_logged_in(account_id)
+                     and self._accounts.get(account_id).broker_name == broker
+                     and self._adapters.get(account_id) is adapter
+                     and self._sessions.get_token(account_id) == token)
+        except Exception:
+            valid = False
+        if not valid:
+            self._stale_purchase_power_cache.pop(account_id, None)
+            self._purchase_power_cache.pop(account_id, None)
+            return None
+        return value, fetched_at
 
     def get_purchase_power(self, account_id: str):
         """نام نمایشی/عمومی همان ``get_tradable_balance``."""
         return self.get_tradable_balance(account_id)
+
+    def get_cached_purchase_power(self, account_id: str):
+        """Return an unexpired value only for the current account session."""
+        cached = self._purchase_power_cache.get(account_id)
+        if cached is None:
+            return None
+        expires, broker, adapter, token, value = cached
+        try:
+            record = self._accounts.get(account_id)
+            current = self._adapters.get(account_id)
+            valid = (time.monotonic() < expires and self.is_logged_in(account_id)
+                     and broker == record.broker_name and adapter is current
+                     and token == self._sessions.get_token(account_id))
+        except Exception:
+            valid = False
+        if not valid:
+            self._purchase_power_cache.pop(account_id, None)
+            return None
+        return value
 
     def get_adapter(self, account_id: str) -> Optional["AuthenticationAdapter"]:
         """

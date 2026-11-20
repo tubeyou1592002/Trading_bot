@@ -31,3 +31,7 @@ class BrokerInstrument:
     bid_ask_list: list | None = None
 
     is_fund: bool = False
+    buy_commission: int | float | None = None
+    hide_price: int | float | None = None
+    csize: int | float | None = None
+    buy_ratio: int | float | None = None
